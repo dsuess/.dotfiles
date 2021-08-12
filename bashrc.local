@@ -38,3 +38,7 @@ if [ -x /usr/bin/dircolors ]; then
     alias fgrep='fgrep --color=auto'
     alias egrep='egrep --color=auto'
 fi
+
+[ -f ~/.fzf.bash ] && source ~/.fzf.bash
+
+export PATH=$HOME/bin:$PATH

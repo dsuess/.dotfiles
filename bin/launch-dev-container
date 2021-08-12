@@ -1,0 +1,17 @@
+#!/bin/sh
+
+docker run \
+   --rm \
+   --name ai_general_gpu_dev_ds \
+   --gpus device=7 \
+   --memory=32g --memory-swap=32g --cpus=8 \
+   --network bridge \
+   -it -p 6009:6009 \
+   -e NB_UID=$(id -u) -e NB_GID=$(id -g) -e GRANT_SUDO=yes -e GEN_CERT=yes -e AWS_DEFAULT_REGION=ap-southeast-2 \
+   -v /home/NEARMAP.LOCAL/$(id -un):/home/jovyan \
+   -v /data:/data \
+   -v /mnt/data:/mnt/data \
+   -v /home/NEARMAP.LOCAL/daniel.suess/.dotfiles/:/home/NEARMAP.LOCAL/daniel.suess/.dotfiles/ \
+   -w /home/jovyan \
+   --user root \
+   nearmapltd/ai_general_gpu:latest start.sh /bin/bash

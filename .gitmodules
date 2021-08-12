@@ -10,3 +10,6 @@
 [submodule "conda-zsh-completion"]
 	path = conda-zsh-completion
 	url = https://github.com/esc/conda-zsh-completion
+[submodule "fzf"]
+	path = fzf
+	url = https://github.com/junegunn/fzf

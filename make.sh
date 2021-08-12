@@ -40,6 +40,9 @@ done
 
 # More stuff
 ln -s ~/.dotfiles/matplotlibrc ~/.config/matplotlib/matplotlibrc
+ln -s ~/.dotfiles/bin ~/bin
+
+~/.dotfiles/fzf/install
 
 # set global git template dir
 git config --global init.templatedir ~/.git_template
