@@ -25,7 +25,7 @@ alias ln='ln -i'
 
 alias scp="noglob scp"
 alias ccat="pygmentize -O style=monokai -f console256 -g"
-alias fuck="unalias fuck; eval $(thefuck --alias); fuck"
+#alias fuck="unalias fuck; eval $(thefuck --alias); fuck"
 alias nvsm="nvidia-smi"
 alias whois="ps -o user= -p"
 

@@ -1,11 +1,11 @@
 [user]
-   email = daniel@dsuess.me
+   email = daniel.suess@nearmap.com
    name = Daniel Suess
 [core]
    editor = vi
 	excludesfile = ~/.gitignore
 [init]
-	templatedir = /home/users/daniel/.git_template
+	templatedir = /home/NEARMAP.LOCAL/daniel.suess/.git_template
 [merge]
    tool = vimdiff
 [difftool]
