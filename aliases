@@ -6,6 +6,7 @@ alias nb="tmux new -s ipython -d; tmux new-window -t ipython '/home/users/daniel
 
 # Git aliases
 alias gs="git status -s"
+alias gc="git commit"
 alias gss="git --no-pager status"
 alias ga="git add"
 alias gl="git --no-pager lv -50 --no-merges"
@@ -23,7 +24,6 @@ alias cp='cp -i'
 alias ln='ln -i'
 
 
-alias scp="noglob scp"
 alias ccat="pygmentize -O style=monokai -f console256 -g"
 #alias fuck="unalias fuck; eval $(thefuck --alias); fuck"
 alias nvsm="nvidia-smi"
