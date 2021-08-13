@@ -1,10 +1,25 @@
 #!/bin/sh
 
+set -e
+
+CPUS=8
+MEMORY=32
+GPUS=all
+
+while getopts u:a:f: flag
+do
+    case "${flag}" in
+        c) CPUS=${OPTARG};;
+        m) MEMORY=${OPTARG};;
+        g) GPUS=${OPTARG};;
+    esac
+done
+
 docker run \
    --rm \
    --name ai_general_gpu_dev_ds \
-   --gpus all \
-   --memory=32g --memory-swap=32g --cpus=32 \
+   --gpus ${GPUS} \
+   --memory=${MEMORY}g --memory-swap=${MEMORY}g --cpus=$CPUS \
    --network bridge \
    -e NB_UID=$(id -u) -e NB_GID=$(id -g) -e GRANT_SUDO=yes -e GEN_CERT=yes -e AWS_DEFAULT_REGION=ap-southeast-2 \
    -v /home/NEARMAP.LOCAL/$(id -un):/home/jovyan \
