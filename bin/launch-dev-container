@@ -16,7 +16,6 @@ do
 done
 
 docker run \
-   --rm \
    --name ai_general_gpu_dev_ds \
    --gpus ${GPUS} \
    --memory=${MEMORY}g --memory-swap=${MEMORY}g --cpus=$CPUS \
