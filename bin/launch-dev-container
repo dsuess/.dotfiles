@@ -5,19 +5,32 @@ set -e
 CPUS=8
 MEMORY=32
 GPUS=all
+CONTAINER_NAME=ai_general_gpu_dev_ds
 
-while getopts u:a:f: flag
+while getopts "c:m:g:n:" flag
 do
     case "${flag}" in
         c) CPUS=${OPTARG};;
         m) MEMORY=${OPTARG};;
         g) GPUS=${OPTARG};;
+        n) CONTAINER_NAME=${OPTARG};;
+        \?) echo "Invalid option: -"$OPTARG"" >&2
+            exit 1;;
+        : ) echo "Option -"$OPTARG" requires an argument." >&2
+            exit 1;;
     esac
 done
 
+echo "c=$CPUS m=$MEMORY g=$GPUS n=$CONTAINER_NAME"
+
+if [ -z "$CONTAINER_NAME"];
+then
+   return -1
+fi
+
 docker run \
-   --name ai_general_gpu_dev_ds \
-   --gpus ${GPUS} \
+   --name "${CONTAINER_NAME}" \
+   --gpus "${GPUS}" \
    --memory=${MEMORY}g --memory-swap=${MEMORY}g --cpus=$CPUS \
    --network bridge \
    -e NB_UID=$(id -u) -e NB_GID=$(id -g) -e GRANT_SUDO=yes -e GEN_CERT=yes -e AWS_DEFAULT_REGION=ap-southeast-2 \
