@@ -40,4 +40,5 @@ docker run \
    -v /home/NEARMAP.LOCAL/daniel.suess/.dotfiles/:/home/NEARMAP.LOCAL/daniel.suess/.dotfiles/ \
    -w /home/jovyan \
    --user root \
+   --shm-size=64g \
    -t nearmapltd/ai_general_gpu:latest start.sh /bin/bash

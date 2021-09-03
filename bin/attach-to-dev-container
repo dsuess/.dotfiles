@@ -1,15 +1,17 @@
 #!/bin/sh
 
 NAME=ai_general_gpu_dev_ds
+RUN_SHELL=zsh
 
-while getopts n: flag
+while getopts n:s: flag
 do
     case "${flag}" in
         n) NAME=${OPTARG};;
+        s) RUN_SHELL=${OPTARG};;
     esac
 done
 docker exec \
    -e NB_UID=$(id -u) -e NB_GID=$(id -g) -e GRANT_SUDO=yes -e GEN_CERT=yes -e AWS_DEFAULT_REGION=ap-southeast-2 \
    -w /home/jovyan \
    --user $(id -u):$(id -g) \
-   -it ${NAME} $@
+   -it ${NAME} $RUN_SHELL
