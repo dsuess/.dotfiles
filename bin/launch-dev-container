@@ -6,14 +6,16 @@ CPUS=8
 MEMORY=32
 GPUS=all
 CONTAINER_NAME=ai_general_gpu_dev_ds
+IMAGE_NAME=nearmapltd/ai_general_gpu:latest
 
-while getopts "c:m:g:n:" flag
+while getopts "c:m:g:n:i:" flag
 do
     case "${flag}" in
         c) CPUS=${OPTARG};;
         m) MEMORY=${OPTARG};;
         g) GPUS=${OPTARG};;
         n) CONTAINER_NAME=${OPTARG};;
+        i) IMAGE_NAME=${OPTARG};;
         \?) echo "Invalid option: -"$OPTARG"" >&2
             exit 1;;
         : ) echo "Option -"$OPTARG" requires an argument." >&2
@@ -41,4 +43,4 @@ docker run \
    -w /home/jovyan \
    --user root \
    --shm-size=64g \
-   -t nearmapltd/ai_general_gpu:latest start.sh /bin/bash
+   -t $IMAGE_NAME start.sh /bin/bash
