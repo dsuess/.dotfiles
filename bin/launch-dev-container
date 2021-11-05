@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
@@ -6,7 +6,7 @@ CPUS=8
 MEMORY=32
 GPUS=all
 CONTAINER_NAME=ai_general_gpu_dev_ds
-IMAGE_NAME=nearmapltd/ai_general_gpu:latest
+IMAGE_NAME=ai_general_daniel:latest
 
 while getopts "c:m:g:n:i:" flag
 do
@@ -25,12 +25,27 @@ done
 
 echo "c=$CPUS m=$MEMORY g=$GPUS n=$CONTAINER_NAME"
 
-if [ -z "$CONTAINER_NAME"];
+if [ -z "$CONTAINER_NAME" ];
 then
    return -1
 fi
 
-docker run \
+if [ "$IMAGE_NAME" == "ai_general_daniel:latest" ];
+then
+   if [[ -z "${CONDA_TOKEN+x}" ]]
+   then
+      echo "Please set conda token"
+      return -1
+   fi
+
+   echo "Building container"
+   cd $HOME/.dotfiles/docker
+   docker build --build-arg CONDA_TOKEN=${CONDA_TOKEN} -t ai_general_daniel:latest -f dev.Dockerfile .
+   cd $HOME
+fi
+
+
+docker run -d \
    --name "${CONTAINER_NAME}" \
    --gpus "${GPUS}" \
    --memory=${MEMORY}g --memory-swap=${MEMORY}g --cpus=$CPUS \
