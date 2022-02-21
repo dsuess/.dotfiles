@@ -3,9 +3,8 @@ FROM nearmapltd/ai_general_gpu:latest
 USER root
 
 RUN apt-get update && \
-    apt-get install -y zsh
-    # && \
-   # chmod -R a+w /opt/conda
+    apt-get install -y zsh && \
+    chmod -R a+w /opt/conda
 
 USER jovyan
 
