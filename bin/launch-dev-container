@@ -44,19 +44,19 @@ then
    cd $HOME
 fi
 
+#-p 9999:9999 -p 9998:9998 \
 
 docker run -d \
    --name "${CONTAINER_NAME}" \
    --gpus "${GPUS}" \
    --memory=${MEMORY}g --cpus=$CPUS \
-   --network bridge \
+   --network host \
    -e NB_UID=$(id -u) -e NB_GID=$(id -g) -e GRANT_SUDO=yes -e GEN_CERT=yes -e AWS_DEFAULT_REGION=ap-southeast-2 \
-   -p 9999:9999 -p 9998:9998 \
    -v /home/NEARMAP.LOCAL/$(id -un):/home/jovyan \
    -v /data:/data \
    -v /mnt/data:/mnt/data \
    -v /home/NEARMAP.LOCAL/daniel.suess/.dotfiles/:/home/NEARMAP.LOCAL/daniel.suess/.dotfiles/ \
    -w /home/jovyan \
    --user root \
-   --shm-size=4g \
+   --shm-size=128g \
    -t $IMAGE_NAME start.sh /bin/bash
