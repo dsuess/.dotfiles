@@ -1,3 +1,6 @@
+zstyle ':completion::complete:*' use-cache 1
+ZSH_DISABLE_COMPFIX="true"
+
 source ~/.dotfiles/vars.sh
 ## OH-MY-ZSH SPECIFIC STUFF ###################################################
 ZSH=$HOME/.oh-my-zsh
@@ -34,11 +37,6 @@ stty start undef
 
 export ZSH_TMUX_AUTOCONNECT=false
 
-# setup conda completion
-fpath+=~/.dotfiles/my-zsh/plugins/dvc/
-fpath+=~/.dotfiles/conda-zsh-completion
-compinit -i
-zstyle ':completion::complete:*' use-cache 1
 
 # setup ssh completion in the right order
 hosts=()
@@ -80,7 +78,7 @@ alias fuck="unalias fuck; eval $(thefuck --alias); fuck"
 ## Personal aliases ###########################################################
 
 source ~/.dotfiles/commands.sh
-eval "$(hub alias -s)"
+# eval "$(hub alias -s)"
 
 # Programming
 alias vi="/usr/local/bin/vim -u ~/.virc"
@@ -154,10 +152,13 @@ alias chgrp='chgrp --preserve-root'
 alias print-ls='lpstat -p -d'
 alias clipboard='pbcopy'
 
+# Utils
+alias sync-bookmarks="cp ~/Library/Application\ Support/BraveSoftware/Brave-Browser/Default/Bookmarks ~/Library/Application\ Support/Google/Chrome/Default/Bookmarks"
+
 ##############################
 #  Load the more extensions  #
 ##############################
-source /usr/local/Cellar/fzf/0.25.0/shell/key-bindings.zsh
+source /usr/local/Cellar/fzf/0.32.1/shell/key-bindings.zsh
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 if [ -f /Users/dsuess/.dotfiles/tmux_startup.sh ]; then
     source /Users/dsuess/.dotfiles/tmux_startup.sh
