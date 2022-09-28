@@ -1,10 +1,12 @@
-FROM nearmapltd/ai_general_gpu:latest
+FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_gpu:latest
 
 USER root
 
 RUN apt-get update && \
-    apt-get install -y zsh && \
-    chmod -R a+w /opt/conda
+    apt-get install -y zsh python3-pip
+
+RUN /usr/bin/python3 -m pip install poetry==1.2 && \
+    /usr/bin/python3 -m pip install -U requests chardet urllib3
 
 USER jovyan
 
