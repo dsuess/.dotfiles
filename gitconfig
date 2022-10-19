@@ -23,4 +23,4 @@
 	required = true
 	clean = git-lfs clean -- %f
 [credential]
-	helper = "!f() { /home/jovyan/.vscode-server/bin/379476f0e13988d90fab105c5c19e7abc8b1dea8/node /tmp/vscode-remote-containers-afc0628cc3d8e1fdf0f64dfd160b2260efd85b03.js $*; }; f"
+	helper = store
