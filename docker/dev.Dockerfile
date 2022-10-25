@@ -8,6 +8,11 @@ RUN apt-get update && \
 RUN /usr/bin/python3 -m pip install poetry==1.2 && \
     /usr/bin/python3 -m pip install -U requests chardet urllib3
 
+RUN mkdir /opt/poetry && \
+    chmod a+w /opt/poetry
+
+ENV POETRY_VIRTUALENVS_PATH=/opt/poetry
+
 USER jovyan
 
 ARG CONDA_TOKEN
@@ -15,3 +20,4 @@ ENV CONDA_TOKEN=$CONDA_TOKEN
 
 RUN conda config --prepend channels pytorch && \
     conda config --prepend channels "https://conda.anaconda.org/t/${CONDA_TOKEN}/nearmap"
+
