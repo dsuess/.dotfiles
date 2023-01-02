@@ -1,4 +1,4 @@
-FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_gpu:torch.f9e8e5d
+FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_gpu:ailib-latest
 
 USER root
 
