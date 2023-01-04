@@ -1,6 +1,6 @@
 #!/bin/sh
 
-NAME=ai_general_gpu_dev_ds
+NAME=dev_ds
 RUN_SHELL=zsh
 
 while getopts n:s: flag

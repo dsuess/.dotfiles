@@ -5,7 +5,7 @@ set -e
 CPUS=8
 MEMORY=32
 GPUS=all
-CONTAINER_NAME=ai_general_gpu_dev_ds
+CONTAINER_NAME=dev_ds
 IMAGE_NAME=ai_general_daniel:latest
 
 while getopts "c:m:g:n:i:" flag
@@ -47,6 +47,7 @@ fi
 #-p 9999:9999 -p 9998:9998 \
 
 docker run -d \
+   --security-opt seccomp=unconfined \
    --name "${CONTAINER_NAME}" \
    --gpus "${GPUS}" \
    --memory=${MEMORY}g --cpus=$CPUS \
