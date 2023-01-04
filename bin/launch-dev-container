@@ -58,6 +58,6 @@ docker run -d \
    -v /mnt/data:/mnt/data \
    -v /home/NEARMAP.LOCAL/daniel.suess/.dotfiles/:/home/NEARMAP.LOCAL/daniel.suess/.dotfiles/ \
    -w /home/jovyan \
-   --user root \
+   --user root --group-add users \
    --shm-size=128g \
    -t $IMAGE_NAME start.sh /bin/bash
