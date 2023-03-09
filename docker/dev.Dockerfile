@@ -3,7 +3,7 @@ FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_gpu
 USER root
 
 RUN apt-get update && \
-    apt-get install -y zsh python3-pip
+    apt-get install -y zsh python3-pip silversearcher-ag jq
 
 RUN mkdir /opt/poetry && \
     chmod a+w /opt/poetry
