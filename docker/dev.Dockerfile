@@ -20,6 +20,8 @@ USER jovyan
 ARG CONDA_TOKEN
 ENV CONDA_TOKEN=$CONDA_TOKEN
 
+ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
+
 RUN conda config --prepend channels pytorch && \
     conda config --prepend channels "https://conda.anaconda.org/t/${CONDA_TOKEN}/nearmap"
 
