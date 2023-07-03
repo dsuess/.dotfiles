@@ -1,6 +1,7 @@
 [user]
-    email = daniel@dsuess.me
+    email = suess.daniel@gmail.com
     name = Daniel Suess
+    signingkey = /Users/dsuess/.ssh/id_rsa
 [core]
     editor = vim -u ~/.virc
     excludesfile = ~/.gitignore
@@ -13,30 +14,19 @@
     conflictstyle = diff3
 [difftool]
     prompt = false
-[difftool "tex-worddiff"]
-    cmd = tex-worddiff $LOCAL $REMOTE
 [diff]
     tool = vimdiff
 [mergetool "vimdiff"]
-    cmd = nvim -d $BASE $LOCAL $REMOTE $MERGED -c '$wincmd w' -c 'wincmd J'
+    cmd = vim -d $BASE $LOCAL $REMOTE $MERGED -c '$wincmd w' -c 'wincmd J'
 [alias]
     lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     lv = log --reverse --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     broom = "! git rm $(git ls-files --deleted)"
-[filter "hawser"]
-    clean = git hawser clean %f
-    smudge = git hawser smudge %f
-    required = true
 [github]
     user = dseuss
-    token = 696699226924a36484ec6d211afe866350c4f910
-[gui]
-[rerere]
-    enabled = true
-[gui]
-    recentrepo = /Users/dsuess/Documents/confidence
-[filter "lfs"]
-	clean = git-lfs clean -- %f
-	smudge = git-lfs smudge -- %f
-	process = git-lfs filter-process
-	required = true
+[commit]
+	gpgsign = true
+[tag]
+	gpgsign = true
+[gpg]
+	format = ssh
