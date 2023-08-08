@@ -1,3 +1,0 @@
-#!/bin/bash
-
-NVIM_LISTEN_ADDRESS=/tmp/vimrsocket NVR_CMD=$HOME/Bin/vimr /usr/local/bin/nvr "$@"

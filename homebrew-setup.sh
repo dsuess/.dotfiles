@@ -2,7 +2,7 @@
 
 brew tap homebrew/cask-versions
 
-for TGT in "karabiner-elements bettertouchtool 1password iterm2 alfred visual-studio-code-insiders google-chrome dash"
+for TGT in "karabiner-elements bettertouchtool 1password iterm2 alfred visual-studio-code-insiders google-chrome dash zotero spotify"
   do
   brew install --cask $TGT
   done

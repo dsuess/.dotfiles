@@ -1,5 +1,0 @@
-#!/bin/sh
-
-TARGET=$(python -c "import site; print(site.getusersitepackages())")
-echo "Symlinking sitecustomize.py to $TARGET"
-ln -s ~/.dotfiles/sitecustomize.py $TARGET/sitecustomize.py

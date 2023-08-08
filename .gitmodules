@@ -4,9 +4,9 @@
 [submodule "xcape"]
 	path = xcape
 	url = https://github.com/alols/xcape
-[submodule "my-zsh/plugins/zsh-syntax-highlighting"]
-	path = my-zsh/plugins/zsh-syntax-highlighting
-	url = git://github.com/zsh-users/zsh-syntax-highlighting.git
+#[submodule "my-zsh/plugins/zsh-syntax-highlighting"]
+    #path = my-zsh/plugins/zsh-syntax-highlighting
+    #url = git://github.com/zsh-users/zsh-syntax-highlighting.git
 [submodule "realpath-osx"]
 	path = realpath-osx
 	url = https://github.com/harto/realpath-osx

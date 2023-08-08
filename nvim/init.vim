@@ -22,8 +22,7 @@ set secure
 set exrc
 set nomodeline
 
-let g:python_host_prog='/usr/local/opt/python@2/bin/python2'
-let g:python3_host_prog='/usr/local/bin/python3'
+let g:python3_host_prog='/opt/homebrew/bin/python3'
 
 
 " KEY SETTINGS {{{1
@@ -528,50 +527,6 @@ Plug 'jiangmiao/auto-pairs'
 " rainbox_parentheses -- nice coloring for parentheses {{{2
 Plug 'kien/rainbow_parentheses.vim'
 
-
-" YouCompleteMe -- autocompletion & more {{{2
-Plug 'Valloric/YouCompleteMe'
-" Plug 'rdnetto/YCM-Generator', {'branch': 'stable'}
-
-" set python_binary to the one in the currently active conda env
-if !empty($CONDA_PREFIX)
-  let g:ycm_python_binary_path = $CONDA_PREFIX . '/bin/python'
-endif
-
-"" Tab completion is run through SuperTab
-let g:ycm_key_list_select_completion = ['<S-TAB>', '<Down>']
-let g:ycm_key_list_previous_completion = ['<UP>']
-nnoremap <leader>di :YcmShowDetailedDiagnostic<CR>
-
-"" Also use tag file entries
-let g:ycm_collect_identifiers_from_tags_files = 1
-
-let g:ycm_show_diagnostics_ui = 1
-
-"" Enable autocompletion in comments
-let g:ycm_complete_in_comments = 1
-"" Keep YCM from mapping to <CR>
-inoremap <expr><CR>  pumvisible() ? "\<CR>" : "\<CR>"
-
-"" use global clang config file
-let g:ycm_global_ycm_extra_conf = '~/.dotfiles/ycm_extra_conf.py'
-"" always ask if it's save to run
-let g:ycm_confirm_extra_conf = 0
-
-let g:ycm_semantic_triggers =  {
-      \   'tex' : ['cite{'],
-      \   'haskell': ['.'],
-      \   'cython': ['.'],
-      \   'html': ['.'],
-      \   'javascript': ['.']
-      \ }
-
-nnoremap <leader>yd :YcmCompleter GoToDefinition<CR>
-nnoremap <leader>yc :YcmCompleter GoToDeclaration<CR>
-nnoremap <leader>yg :YcmCompleter GoTo<CR>
-nnoremap <leader>yh :YcmCompleter GetDoc<CR>
-nnoremap <leader>yf :YcmCompleter FixIt<CR>
-nnoremap <leader>yt :YcmCompleter GetType<CR>
 
 " completion menu navigation using j/k {{{2
 function! OmniPopup(action)

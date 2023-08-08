@@ -158,7 +158,7 @@ alias sync-bookmarks="cp ~/Library/Application\ Support/BraveSoftware/Brave-Brow
 ##############################
 #  Load the more extensions  #
 ##############################
-source /usr/local/Cellar/fzf/0.32.1/shell/key-bindings.zsh
+source /opt/homebrew/Cellar/fzf/0.42.0//shell/key-bindings.zsh
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 if [ -f /Users/dsuess/.dotfiles/tmux_startup.sh ]; then
     source /Users/dsuess/.dotfiles/tmux_startup.sh
