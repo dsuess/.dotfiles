@@ -57,7 +57,8 @@ docker run -d \
    -v /data:/data \
    -v /mnt/data:/mnt/data \
    -v /home/NEARMAP.LOCAL/daniel.suess/.dotfiles/:/home/NEARMAP.LOCAL/daniel.suess/.dotfiles/ \
+   --mount source=conda-pkgs,target=/opt/storage \
    -w /home/jovyan \
    --user root --group-add users \
-   --shm-size=128g \
+   --shm-size=384g \
    -t $IMAGE_NAME start.sh /bin/bash

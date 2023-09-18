@@ -1,4 +1,4 @@
-FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_gpu:ailib-latest
+FROM 871430721921.dkr.ecr.ap-southeast-2.amazonaws.com/ai-systems/ai_general_cpu:dev-latest
 
 USER root
 
@@ -24,3 +24,10 @@ RUN conda config --prepend channels pytorch && \
     conda config --prepend channels "https://conda.anaconda.org/t/${CONDA_TOKEN}/nearmap"
 
 ENV PATH=/opt/poetry/poetry/bin:$PATH
+ENV BUCKET_URI_PLANCK_LTX=/mnt/data/datasets/planck-ltx-datastore.nearmap.com
+ENV PLANCK_LTX_BUCKET_URI=/mnt/data/datasets/planck-ltx-datastore.nearmap.com
+ENV HYDRA_FULL_ERROR=1
+ENV CONDA_PKGS_DIRS=/opt/storage
+
+RUN mkdir /opt/storage \
+&& chmod a+w /opt/storage
