@@ -2,12 +2,12 @@
 
 brew tap homebrew/cask-versions
 
-for TGT in "karabiner-elements bettertouchtool 1password iterm2 alfred visual-studio-code-insiders google-chrome dash zotero spotify"
+for TGT in "karabiner-elements bettertouchtool 1password iterm2 alfred visual-studio-code google-chrome dash6 zotero spotify docker monitorcontrol"
   do
   brew install --cask $TGT
   done
 
 brew update
-brew install git zsh neovim fzf thefuck just php htop gnupg direnv tmux openssl pyenv
+brew install git zsh neovim fzf thefuck just php htop gnupg direnv tmux openssl pyenv the_silver_searcher fd
 
 
