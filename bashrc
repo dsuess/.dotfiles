@@ -72,3 +72,4 @@ fi
 unset __conda_setup
 # <<< conda initialize <<<
 
+export PYDEVD_DISABLE_FILE_VALIDATION=1

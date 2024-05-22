@@ -441,7 +441,6 @@ set sidescrolloff=0
 set display+=lastline
 
 "" show hidden characters, but hide on default
-set listchars=trail:⋅,eol:¬,tab:▸\
 set nolist
 
 "" use Q for formatting selection/paragraph
