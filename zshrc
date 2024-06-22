@@ -88,12 +88,10 @@ alias vim=nvim
 alias vmi="vim"
 alias vimr="vimr --cur-env"
 alias svi="sudo vi -u ~/.virc"
-alias cleanlatex="sh -c 'rm *.aux *.fdb_latexmk *.fls *.log *.synctex.gz *.out *.toc *.bib.bak *.end *.bbl *.blg *.toc *.auxlock *.table *.gnuplot'"
-alias conf="vim ~/.zshrc"
 alias chrome="/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome"
 # gem install terminal-share
 alias share=terminal-share
-alias ccat='pygmentize -O style=monokai -f console256 -g'
+alias bd="bat --diff"
 
 alias nb="tmux new -d -s tasks; tmux new-window -t tasks '/Users/dsuess/Library/Conda/bin/jupyter notebook'"
 alias pip-upgrade="pip install --upgrade"
@@ -158,7 +156,7 @@ alias sync-bookmarks="cp ~/Library/Application\ Support/BraveSoftware/Brave-Brow
 ##############################
 #  Load the more extensions  #
 ##############################
-source /opt/homebrew/Cellar/fzf/0.42.0//shell/key-bindings.zsh
+source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
 if [ -f /Users/dsuess/.dotfiles/tmux_startup.sh ]; then
     source /Users/dsuess/.dotfiles/tmux_startup.sh
