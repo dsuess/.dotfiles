@@ -9,6 +9,7 @@
 	templatedir = /Users/daniel.suess/.git_template
 [push]
     default = simple
+	autoSetupRemote = true
 [merge]
     tool = vimdiff
     conflictstyle = diff3

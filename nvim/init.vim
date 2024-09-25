@@ -118,7 +118,7 @@ let g:neosolarized_italic = 1
 Plug 'jacoborus/tender.vim'
 
 " onedark.vim -- another colorscheme {{{2
-Plug 'joshdick/onedark.vim'
+" Plug 'joshdick/onedark.vim'
 
 let g:onedark_terminal_italics = 1
 
@@ -800,7 +800,7 @@ let g:fzf_buffers_jump = 1
 Plug 'machakann/vim-highlightedyank'
 
 " vim-gitgutter -- show changes in gutter {{{2
-Plug 'airblade/vim-gitgutter'
+" Plug 'airblade/vim-gitgutter'
 
 "2}}}
 
@@ -920,7 +920,7 @@ let g:vimtex_quickfix_blgparser  = {'disable': 0}
 " PYTHON {{{2
 
 " python-mode -- the name says it all
-Plug 'klen/python-mode', { 'for': ['python'] }
+" Plug 'klen/python-mode', { 'for': ['python'] }
 
 "" Disable all unused stuff
 let g:pymode_doc = 0
@@ -983,7 +983,7 @@ let g:vim_isort_map = ''
 
 nnoremap <leader>IS :Isort<CR>
 
-Plug 'cjrh/vim-conda', { 'for': 'python' }
+" Plug 'cjrh/vim-conda', { 'for': 'python' }
 
 
 " HASKELL {{{2
