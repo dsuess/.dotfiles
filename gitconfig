@@ -5,7 +5,7 @@
    editor = vi
 	excludesfile = ~/.gitignore
 [init]
-	templatedir = /home/NEARMAP.LOCAL/daniel.suess/.git_template
+	templatedir = /home/sagemaker-user/.git_template
 [merge]
    tool = vimdiff
 [difftool]

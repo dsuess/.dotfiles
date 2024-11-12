@@ -62,7 +62,6 @@ else
         . "/opt/conda/etc/profile.d/conda.sh"
     else
         #export PATH="/opt/conda/bin:$PATH"
-        echo "NOPE"
     fi
 fi
 unset __conda_setup
