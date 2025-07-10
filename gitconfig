@@ -1,11 +1,9 @@
 [user]
-   email = daniel.suess@nearmap.com
+   email = danielsuess@canva.com
    name = Daniel Suess
 [core]
-   editor = vi
+   editor = vim
 	excludesfile = ~/.gitignore
-[init]
-	templatedir = /home/sagemaker-user/.git_template
 [merge]
    tool = vimdiff
 [difftool]
@@ -14,7 +12,9 @@
    tool = vimdiff
 [alias]
 	lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
-	lv = log --reverse --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
+   lv = log --reverse --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
+   addnw=!sh -c 'git diff -U0 -w --no-color --src-prefix=a/ --dst-prefix=b/ "$@" | git apply --cached --ignore-whitespace --unidiff-zero -'
+
 [push]
 	default = simple
 [filter "lfs"]
