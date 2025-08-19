@@ -31,3 +31,4 @@ alias whois="ps -o user= -p"
 
 alias docker-fail="docker run --rm -it \`docker ps --latest --format \"{{.Image}}\"\` bash"
 alias mm=micromamba
+alias claude="otter claude-code"

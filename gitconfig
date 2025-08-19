@@ -24,3 +24,5 @@
 	clean = git-lfs clean -- %f
 [credential]
 	helper = store
+[init]
+	templatedir = /home/coder/.git_template
