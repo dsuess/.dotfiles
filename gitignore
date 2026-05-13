@@ -1,39 +1,3 @@
 ## SYSTEM
 .DS_STORE
 .tmp_files
-
-## PYTHON
-*.pyc
-.ipynb_checkpoints
-.eggs
-.cache
-.pyre/
-.pyre_configuration
-.watchmanconfig
-
-## TEX
-*.aux
-*.bbl
-*.blg
-*.fdb_latexmk
-*.fls
-*.log
-*.out
-*.pdfsync
-*.synctex.gz
-*.bcf
-*.run.xml
-*.brf
-*.toc
-*.tdo
-
-## EDITOR
-*.sublime-project
-*.sublime-workspace
-*.orig
-.vscode/
-.env
-.lvimrc
-.envrc
-.latexrun.db
-.latexrun.db.lock

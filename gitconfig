@@ -3,26 +3,30 @@
     name = Daniel Suess
     signingkey = /Users/dsuess/.ssh/id_rsa
 [core]
-    editor = vim -u ~/.virc
+    editor = nvim
     excludesfile = ~/.gitignore
 [push]
     default = simple
 	autoSetupRemote = true
 [merge]
-    tool = vimdiff
+    tool = nvimdiff
     conflictstyle = diff3
+[diff]
+    tool = nvimdiff
 [difftool]
     prompt = false
-[diff]
-    tool = vimdiff
-[mergetool "vimdiff"]
-    cmd = vim -d $BASE $LOCAL $REMOTE $MERGED -c '$wincmd w' -c 'wincmd J'
+
+[difftool "nvimdiff"]
+    cmd = nvim -d $LOCAL $REMOTE
+[mergetool "nvimdiff"]
+    cmd = nvim -d $BASE $LOCAL $REMOTE $MERGED -c '$wincmd w' -c 'wincmd J'
+
 [alias]
     lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     lv = log --reverse --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     broom = "! git rm $(git ls-files --deleted)"
 [github]
-    user = dseuss
+    user = dsuess
 [commit]
 	gpgsign = true
 [tag]

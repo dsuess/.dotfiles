@@ -5,5 +5,5 @@
 	path = xcape
 	url = https://github.com/alols/xcape
 [submodule "my-zsh/plugins/zsh-syntax-highlighting"]
-    path = my-zsh/plugins/zsh-syntax-highlighting
-    url = https://github.com/zsh-users/zsh-syntax-highlighting.git
+	path = my-zsh/plugins/zsh-syntax-highlighting
+	url = https://github.com/zsh-users/zsh-syntax-highlighting

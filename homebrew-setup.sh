@@ -8,6 +8,6 @@ for TGT in "karabiner-elements bettertouchtool 1password 1password-cli iterm2 al
   done
 
 brew update
-brew install git zsh neovim fzf thefuck just php htop gnupg direnv tmux openssl pyenv the_silver_searcher fd stow
+brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep
 
 

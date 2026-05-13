@@ -1,3 +1,0 @@
-#!/bin/sh
-
-openssl sha256 $1 | tail -c 65 | tr -d '\n'

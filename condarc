@@ -1,8 +1,0 @@
-channels:
-  - conda-forge
-  - pytorch
-  - anaconda
-changeps1: false
-pip_interop_enabled: true
-defaults:
-  - pdbpp
