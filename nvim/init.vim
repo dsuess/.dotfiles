@@ -34,10 +34,10 @@ Plug 'tpope/vim-repeat'
 Plug 'tpope/vim-unimpaired'
 
 " SuperTab -- share the tab key {{{2
-Plug 'ervandew/supertab'
+" Plug 'ervandew/supertab'
 
 "" Sync with YouCompleteMe
-let g:SuperTabDefaultCompletionType = '<S-TAB>'
+" let g:SuperTabDefaultCompletionType = '<S-TAB>'
 
 "2}}}
 
@@ -160,9 +160,6 @@ set lazyredraw
 set novisualbell
 
 " MOUSE & GUI {{{1
-
-"" autoselect in visual mode, use simple dialogs, icon, grey menus
-set guioptions=acig
 
 "" Scrolling with mouse wheel, even in tmux
 set mouse=a
@@ -509,9 +506,6 @@ vnoremap > >gv
 "" uniindent by s-tab
 "inoremap <S-TAB> <C-O><<
 
-"" toggle paste mode
-set pastetoggle=<F12>
-
 "" case toggling is an operator
 set tildeop
 
@@ -526,6 +520,9 @@ Plug 'jiangmiao/auto-pairs'
 
 " rainbox_parentheses -- nice coloring for parentheses {{{2
 Plug 'kien/rainbow_parentheses.vim'
+
+" goyo -- distraction free writing {{{2
+Plug 'junegunn/goyo.vim'
 
 
 " completion menu navigation using j/k {{{2
@@ -562,23 +559,23 @@ let g:dash_map = {
 
 
 " UltiSnips -- snippets {{{2
-Plug 'SirVer/ultisnips'
+" Plug 'SirVer/ultisnips'
 
-"" Next/Last snippet
- let g:UltiSnipsExpandTrigger="<tab>"
- let g:UltiSnipsJumpForwardTrigger="<tab>"
- let g:UltiSnipsJumpBackwardTrigger="<C-B>"
+" "" Next/Last snippet
+ " let g:UltiSnipsExpandTrigger="<tab>"
+ " let g:UltiSnipsJumpForwardTrigger="<tab>"
+ " let g:UltiSnipsJumpBackwardTrigger="<C-B>"
 
- "" set directories
- let g:UltiSnipsSnippetDirectories = ["ultisnippets"]
- let g:UltiSnipsSnippetsDir = "/Users/dsuess/.config/nvim/ultisnippets/"
+ " "" set directories
+ " let g:UltiSnipsSnippetDirectories = ["ultisnippets"]
+ " let g:UltiSnipsSnippetsDir = "/Users/dsuess/.config/nvim/ultisnippets/"
 
-let g:ultisnips_python_style = "google"
-let g:UltiSnipsUsePythonVersion = 3
+" let g:ultisnips_python_style = "google"
+" let g:UltiSnipsUsePythonVersion = 3
 
- "" from ftdetect/UltiSnips.vim
- " autocmd FileType * call UltiSnips#FileTypeChanged()
- autocmd BufNewFile,BufRead *.snippets setf snippets
+ " "" from ftdetect/UltiSnips.vim
+ " " autocmd FileType * call UltiSnips#FileTypeChanged()
+ " autocmd BufNewFile,BufRead *.snippets setf snippets
 
 " " vim-slime -- interact with tmux {{{2
 " if exists('$TMUX')

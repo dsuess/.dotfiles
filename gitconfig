@@ -5,8 +5,6 @@
 [core]
     editor = vim -u ~/.virc
     excludesfile = ~/.gitignore
-[init]
-	templatedir = /Users/daniel.suess/.git_template
 [push]
     default = simple
 	autoSetupRemote = true

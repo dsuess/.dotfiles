@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Select a tmux layout via fzf, including custom layouts.
+
+layouts=(
+  "even-horizontal"
+  "even-vertical"
+  "main-horizontal"
+  "main-vertical"
+  "tiled"
+  "focus-left"
+)
+
+choice=$(printf '%s\n' "${layouts[@]}" | fzf --prompt='Layout> ')
+[ -z "$choice" ] && exit 0
+
+case "$choice" in
+  focus-left)
+    # Move the current pane to position 1 (left), then apply main-vertical
+    tmux swap-pane -t .1 \; select-layout main-vertical
+    ;;
+  *)
+    tmux select-layout "$choice"
+    ;;
+esac
