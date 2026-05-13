@@ -78,8 +78,3 @@ source ~/.dotfiles/aliases
 # Local overrides (machine-specific, not tracked) ─────────────────────────────
 [[ -f "${HOME}/.zshrc.local" ]] && source "${HOME}/.zshrc.local"
 
-
-# >>> opentmux >>>
-export OPENCODE_PORT=4096
-alias opencode='opentmux'
-# <<< opentmux <<<

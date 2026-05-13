@@ -1,0 +1,40 @@
+# Credentials
+.credentials.json
+credentials.json
+
+# Internal state
+.claude.json
+.claude.json.backup.*
+settings.json.bak
+.update.lock
+security_warnings_*.json
+stats-cache.json
+mcp-needs-auth-cache.json
+
+# Session data
+history.jsonl
+backups
+cache
+debug
+file-history
+paste-cache
+session-env
+shell-snapshots
+sessions/
+
+# Agent and team state
+plans
+plugins
+tasks
+teams
+todos
+projects
+
+# Telemetry
+statsig
+telemetry
+usage-data
+
+# IDE integration
+ide/
+claude-usage-widget.json

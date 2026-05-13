@@ -1,3 +1,5 @@
 old
 *.pyc
 *.bak
+
+.claude

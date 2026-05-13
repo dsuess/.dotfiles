@@ -1,0 +1,57 @@
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_INSTALLATION_CHECKS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cd *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/rtk-rewrite.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "npx -y @owloops/claude-powerline@v1.26.0 --style=powerline"
+  },
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true,
+    "claude-powerline@claude-powerline": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-powerline": {
+      "source": {
+        "source": "github",
+        "repo": "Owloops/claude-powerline"
+      }
+    }
+  },
+  "sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "allowWrite": [
+        ".",
+        "~/.claude",
+        "~/.uv/cache"
+      ],
+      "denyRead": [
+        "~/"
+      ]
+    }
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "voiceEnabled": true,
+  "editorMode": "vim",
+  "model": "opus"
+}
