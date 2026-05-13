@@ -25,6 +25,7 @@
     lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     lv = log --reverse --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
     broom = "! git rm $(git ls-files --deleted)"
+    addnw = !sh -c 'git diff -U0 -w --no-color --src-prefix=a/ --dst-prefix=b/ "$@" | git apply --cached --ignore-whitespace --unidiff-zero -'
 [github]
     user = dsuess
 [commit]
@@ -33,3 +34,13 @@
 	gpgsign = true
 [gpg]
 	format = ssh
+
+# To override user/signing on other machines, create ~/.gitconfig.local with:
+#   [user]
+#       email = your-work-email@company.com
+#       name = Your Name
+#       signingkey = /path/to/key
+#   [commit]
+#       gpgsign = false
+[include]
+    path = ~/.gitconfig.local

@@ -1,0 +1,43 @@
+# Editor
+alias vim="nvim"
+alias vmi="nvim"
+
+# Git
+alias gs="git status -s"
+alias gss="git --no-pager status"
+alias ga="git add"
+alias gc="git commit"
+alias gl="git --no-pager lv -50 --no-merges"
+alias gll="git lg"
+alias gd="git difftool"
+alias gf="git fetch"
+alias gv="git difftool ...FETCH_HEAD"
+alias gr="git rm"
+alias gcd='cd $(git rev-parse --show-cdup)'
+
+# Tools
+alias bd="bat --diff"
+alias claude="EDITOR= claude --dangerously-skip-permissions"
+alias fuck="unalias fuck; eval \$(thefuck --alias); fuck"
+
+# Files & Navigation
+alias mkdir="mkdir -pv"
+alias du="du -h"
+alias df="df -h"
+alias scp="noglob scp"
+
+# Safety — confirm before overwriting
+alias mv="mv -i"
+alias cp="cp -i"
+alias ln="ln -i"
+
+# macOS-specific
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    alias xargs="gxargs"
+    alias fzf="fzf-tmux"
+    alias f="fzf-tmux -m"
+    alias ff="open -a Finder ./"
+    alias chown="chown --preserve-root"
+    alias chgrp="chgrp --preserve-root"
+fi
+

@@ -12,7 +12,11 @@ DISABLE_CORRECTION="false"
 COMPLETION_WAITING_DOTS="true"
 CASE_SENSITIVE="false"
 
-plugins=(git z brew pip zsh-syntax-highlighting tmux)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    plugins=(git z brew pip zsh-syntax-highlighting tmux)
+else
+    plugins=(git z pip tmux)
+fi
 source "$ZSH/oh-my-zsh.sh"
 
 # Zsh Options ──────────────────────────────────────────────────────────────────
@@ -39,18 +43,23 @@ if [[ $#hosts -gt 0 ]]; then
 fi
 
 # Tool Integration ─────────────────────────────────────────────────────────────
-
-# direnv
-eval "$(direnv hook zsh)"
-if [[ -n "$DIRENV_DIR" ]]; then
-  direnv reload
+if command -v direnv &>/dev/null; then
+    eval "$(direnv hook zsh)"
+    if [[ -n "$DIRENV_DIR" ]]; then
+      direnv reload
+    fi
 fi
 
-# thefuck
-alias fuck="unalias fuck; eval \$(thefuck --alias); fuck"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # fzf key bindings (homebrew)
+    source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
+else
+    # fzf
+    [[ -f ~/.fzf.zsh ]] && source ~/.fzf.zsh
+fi
 
 # z + fzf
-unalias z
+unalias z 2>/dev/null
 z() {
   if [[ $# -eq 0 ]]; then
     cd "$(_z -l 2>&1 | fzf +s --tac | sed 's/^[0-9,.]* *//')"
@@ -59,51 +68,18 @@ z() {
   fi
 }
 
-# fzf key bindings
-source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
-
 # Startup Scripts ──────────────────────────────────────────────────────────────
 [[ -e "${HOME}/.iterm2_shell_integration.zsh" ]] && source "${HOME}/.iterm2_shell_integration.zsh"
 [[ -f "${HOME}/.dotfiles/tmux_startup.sh" ]] && source "${HOME}/.dotfiles/tmux_startup.sh"
-[[ -f "${HOME}/.zshrc.local" ]] && source "${HOME}/.zshrc.local"
 
 # Aliases ──────────────────────────────────────────────────────────────────────
+source ~/.dotfiles/aliases
 
-# Editor
-alias vim="nvim"
-alias vmi="nvim"
+# Local overrides (machine-specific, not tracked) ─────────────────────────────
+[[ -f "${HOME}/.zshrc.local" ]] && source "${HOME}/.zshrc.local"
 
-# Git
-alias gs="git status -s"
-alias gss="git --no-pager status"
-alias ga="git add"
-alias gl="git --no-pager lv -50 --no-merges"
-alias gll="git lg"
-alias gd="git difftool"
-alias gf="git fetch"
-alias gv="git difftool ...FETCH_HEAD"
-alias gr="git rm"
-alias gcd='cd $(git rev-parse --show-cdup)'
 
-# Tools
-alias bd="bat --diff"
-alias xargs="gxargs"
-alias claude="EDITOR= claude --dangerously-skip-permissions"
-alias opencode="opentmux"
+# >>> opentmux >>>
 export OPENCODE_PORT=4096
-
-# Files & Navigation
-alias mkdir="mkdir -pv"
-alias du="du -h"
-alias df="df -h"
-alias fzf="fzf-tmux"
-alias f="fzf-tmux -m"
-alias scp="noglob scp"
-alias ff="open -a Finder ./"
-
-# Safety — confirm before overwriting
-alias mv="mv -i"
-alias cp="cp -i"
-alias ln="ln -i"
-alias chown="chown --preserve-root"
-alias chgrp="chgrp --preserve-root"
+alias opencode='opentmux'
+# <<< opentmux <<<
