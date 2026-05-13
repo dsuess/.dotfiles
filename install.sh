@@ -14,7 +14,7 @@ cmd_software() {
         brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop
 
         echo "🖥️  Installing GUI apps..."
-        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 ghostty alfred visual-studio-code google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc; do
+        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 ghostty alfred visual-studio-code google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed; do
             brew install --cask "$TGT"
         done
         echo "✅ Packages installed"
@@ -36,7 +36,7 @@ cmd_config() {
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim
+    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -49,6 +49,7 @@ cmd_config() {
     stow claude -t ~/.claude/
     stow opencode -t ~/.config/opencode/
     stow ghostty -t ~/.config/ghostty
+    stow zed -t ~/.config/zed
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

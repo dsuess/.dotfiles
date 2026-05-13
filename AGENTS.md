@@ -29,7 +29,7 @@ Each package mirrors the target directory tree. Running `stow <pkg> -t ~` create
 | `bash/`    | `~`               | `.bashrc`, `.bash_profile`      |
 | `git/`     | `~`               | `.gitconfig`, `.gitignore`      |
 | `tmux/`    | `~`               | `.tmux.conf`, `.tmux/`          |
-| `nvim/`    | `~`               | `.config/nvim/`                 |
+| `nvim/`    | `~/.config/nvim`  | Neovim config (lazy.nvim, LSP, treesitter) |
 | `oh-my-zsh/` | `~`             | `.oh-my-zsh/` (custom fork)     |
 | `my-zsh/`  | `~`               | Custom Oh-My-Zsh plugins/themes in `.dotfiles/my-zsh/` |
 | `bin/`     | `~/bin/`          | Personal scripts                |
@@ -37,6 +37,17 @@ Each package mirrors the target directory tree. Running `stow <pkg> -t ~` create
 | `opencode/`| `~/.config/opencode/` | OpenCode AI config          |
 | `ghostty/` | `~/.config/`          | Ghostty terminal config         |
 
+
+## Neovim Config (`nvim/`)
+
+Lua-based config using lazy.nvim. Stowed to `~/.config/nvim` (not `~`), so files live directly under `nvim/` (no `.config/nvim/` nesting).
+
+- `lua/core/` — options, keymaps, autocmds
+- `lua/plugins/` — one file per plugin group, auto-discovered by lazy.nvim `import`
+- `lua/lang/` — per-language LSP/tool config (returns tables consumed by plugins)
+- `after/ftplugin/` — buffer-local settings only
+
+To add a new language: create `lua/lang/<name>.lua` and add it to the `lang_modules` list in `lua/plugins/lsp.lua`.
 
 ## Machine-Specific Overrides
 
