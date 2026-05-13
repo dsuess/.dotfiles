@@ -558,25 +558,6 @@ let g:dash_map = {
   \}
 
 
-" UltiSnips -- snippets {{{2
-" Plug 'SirVer/ultisnips'
-
-" "" Next/Last snippet
- " let g:UltiSnipsExpandTrigger="<tab>"
- " let g:UltiSnipsJumpForwardTrigger="<tab>"
- " let g:UltiSnipsJumpBackwardTrigger="<C-B>"
-
- " "" set directories
- " let g:UltiSnipsSnippetDirectories = ["ultisnippets"]
- " let g:UltiSnipsSnippetsDir = "/Users/dsuess/.config/nvim/ultisnippets/"
-
-" let g:ultisnips_python_style = "google"
-" let g:UltiSnipsUsePythonVersion = 3
-
- " "" from ftdetect/UltiSnips.vim
- " " autocmd FileType * call UltiSnips#FileTypeChanged()
- " autocmd BufNewFile,BufRead *.snippets setf snippets
-
 " " vim-slime -- interact with tmux {{{2
 " if exists('$TMUX')
 "   Plug 'jpalardy/vim-slime'
@@ -861,58 +842,15 @@ autocmd BufReadPost fugitive://* set bufhidden=delete
 " linediff -- diff two blocks of text in arbitrary files {{{2
 Plug 'AndrewRadev/linediff.vim'
 
-" vim-localvimrc -- load local vimrc files {{{2
-Plug 'embear/vim-localvimrc'
-
-let g:localvimrc_persistent = 1
-let g:localvimrc_persistence_file = '/Users/dsuess/.config/nvim/localvimrc_persistent'
-"2}}}
 
 "" location of tag files (use first existend one)
 set tags=
-" set tags=.vimtags,/home/dsuess/.vim/tags
 nnoremap gT :exe "ptjump " . expand("<cword>")<CR>
 
 "" Goto tag using enter
 autocmd filetype help nnoremap <buffer> <cr> <C-]>
 
 " BUILDING & LANGUAGE SPECIFICS {{{1
-
-
-" LaTeXBox {{{2
-Plug 'lervag/vimtex', { 'for': 'tex' }
-Plug 'donRaphaco/neotex', { 'for': 'tex' }
-
-let g:vimtex_compiler_latexrun = {
-      \ 'options' : [
-      \    '--bibtex-cmd biber'
-      \  ]
-      \}
-
-let g:vimtex_compiler_progname = '/Users/dsuess/bin/nvr_vimr'
-let g:vimtex_compiler_method = 'latexrun'
-let g:vimtex_view_method = 'skim'
-let g:vimtex_quickfix_latexlog = {'default' : 0}
-let g:vimtex_quickfix_blgparser  = {'disable': 0}
-"
-" let g:vimtex_quickfix_latexlog = {
-"           \ 'default' : 1,
-"           \ 'general' : 1,
-"           \ 'references' : 1,
-"           \ 'overfull' : 0,
-"           \ 'underfull' : 0,
-"           \ 'font' : 1,
-"           \ 'packages' : {
-"           \   'default' : 1,
-"           \   'natbib' : 1,
-"           \   'biblatex' : 1,
-"           \   'babel' : 1,
-"           \   'hyperref' : 1,
-"           \   'scrreprt' : 1,
-"           \   'fixltx2e' : 1,
-"           \   'titlesec' : 1,
-"           \ },
-"           \}
 
 " PYTHON {{{2
 
@@ -965,7 +903,7 @@ let g:pymode_syntax_slow_sync = 0
 
 " vim-pydocstring
 Plug 'heavenshell/vim-pydocstring', { 'for': 'python' }
-let g:pydocstring_templates_dir = '/Users/dsuess/.config/nvim/pydocstring'
+let g:pydocstring_templates_dir = '~/.config/nvim/pydocstring'
 let g:pydocstring_enable_mapping = 0
 
 " python-syntax

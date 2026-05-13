@@ -1,7 +1,0 @@
-#!/bin/sh
-
-set -e
-
-IPADDR=$(vastai show instances --raw | jq -r '.[0].public_ipaddr')
-PORT=$(vastai show instances --raw | jq -r '.[0].ports."22/tcp".[0].HostPort')
-edssh -n $IPADDR -p $PORT vast.ai --write
