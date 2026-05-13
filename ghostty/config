@@ -1,0 +1,15 @@
+theme = catppuccin-mocha
+font-family = Anonymous Pro for Powerline
+font-size = 13
+background-blur-radius = 20
+mouse-hide-while-typing = true
+window-decoration = true
+macos-titlebar-style = tabs
+macos-option-as-alt = true
+keybind = global:ctrl+option+cmd+space=toggle_quick_terminal
+quick-terminal-animation-duration = 0.1
+quick-terminal-screen = main
+window-padding-x = 8
+window-padding-y = 8
+
+

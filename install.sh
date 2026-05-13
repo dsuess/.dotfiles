@@ -36,7 +36,7 @@ cmd_config() {
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode
+    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -48,6 +48,7 @@ cmd_config() {
     stow bin -t ~/bin/
     stow claude -t ~/.claude/
     stow opencode -t ~/.config/opencode/
+    stow ghostty -t ~/.config/ghostty
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
