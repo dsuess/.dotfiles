@@ -36,14 +36,14 @@ cmd_config() {
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty
+    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
     stow bash -t ~
     stow git -t ~
     stow tmux -t ~
-    stow nvim -t ~
+    stow nvim -t ~/.config/nvim
     stow oh-my-zsh -t ~
     stow bin -t ~/bin/
     stow claude -t ~/.claude/
