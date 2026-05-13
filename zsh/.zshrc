@@ -1,3 +1,10 @@
+# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
+# Initialization code that may require console input (password prompts, [y/n]
+# confirmations, etc.) must go above this block; everything else may go below.
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+
 zstyle ':completion::complete:*' use-cache 1
 ZSH_DISABLE_COMPFIX="true"
 
@@ -6,16 +13,16 @@ source ~/.dotfiles/vars.sh
 # Oh-My-Zsh Configuration ─────────────────────────────────────────────────────
 ZSH="$HOME/.oh-my-zsh"
 ZSH_CUSTOM="$HOME/.dotfiles/my-zsh"
-ZSH_THEME="customrobby"
+source $ZSH_CUSTOM/themes/powerlevel10k/powerlevel10k.zsh-theme
 
 DISABLE_CORRECTION="false"
 COMPLETION_WAITING_DOTS="true"
 CASE_SENSITIVE="false"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    plugins=(git z brew pip zsh-syntax-highlighting tmux)
+    plugins=(git z tmux brew zsh-syntax-highlighting)
 else
-    plugins=(git z pip tmux)
+    plugins=(git z tmux)
 fi
 source "$ZSH/oh-my-zsh.sh"
 
@@ -25,8 +32,8 @@ setopt share_history
 unsetopt correct
 
 # Terminal Settings ────────────────────────────────────────────────────────────
-stty stop undef
-stty start undef
+[[ -t 0 ]] && stty stop undef
+[[ -t 0 ]] && stty start undef
 
 # SSH Completion ───────────────────────────────────────────────────────────────
 hosts=()
@@ -80,3 +87,5 @@ source ~/.dotfiles/aliases
 # Local overrides (machine-specific, not tracked) ─────────────────────────────
 [[ -f "${HOME}/.zshrc.local" ]] && source "${HOME}/.zshrc.local"
 
+# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh

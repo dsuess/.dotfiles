@@ -7,3 +7,6 @@
 [submodule "my-zsh/plugins/zsh-syntax-highlighting"]
 	path = my-zsh/plugins/zsh-syntax-highlighting
 	url = https://github.com/zsh-users/zsh-syntax-highlighting
+[submodule "my-zsh/themes/powerlevel10k"]
+	path = my-zsh/themes/powerlevel10k
+	url = https://github.com/romkatv/powerlevel10k.git
