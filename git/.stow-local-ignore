@@ -1,0 +1,2 @@
+# Override default stow ignore list to allow .gitignore to be stowed
+\.stow-local-ignore

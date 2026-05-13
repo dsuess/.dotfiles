@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -e
+
+export INSTANCE_NAME=${1:-daniel-dev}
+
+echo $INSTANCE_NAME
+
+IPADDR=$(gcloud compute instances describe $INSTANCE_NAME --zone us-central1-a --format json | jq -r '.networkInterfaces[0].accessConfigs[0].natIP')
+edssh -n $IPADDR visonic.dev --write
