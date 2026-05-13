@@ -1,0 +1,178 @@
+{
+  "theme": "custom",
+  "display": {
+    "style": "powerline",
+    "charset": "unicode",
+    "colorCompatibility": "auto",
+    "autoWrap": false,
+    "padding": 1,
+    "lines": [
+      {
+        "segments": {
+          "directory": {
+            "enabled": true,
+            "style": "fish",
+            "showIcon": false
+          },
+          "model": {
+            "enabled": true,
+            "showIcon": false
+          },
+          "context": {
+            "enabled": false,
+            "showPercentageOnly": false,
+            "displayStyle": "text",
+            "autocompactBuffer": 33000,
+            "percentageMode": "used"
+          },
+          "block": {
+            "enabled": true,
+            "type": "tokens",
+            "burnType": "tokens",
+            "displayStyle": "capped"
+          },
+          "session": {
+            "enabled": false,
+            "type": "tokens",
+            "costSource": "calculated"
+          },
+          "tmux": {
+            "enabled": false
+          },
+          "today": {
+            "enabled": false,
+            "type": "tokens"
+          },
+          "git": {
+            "enabled": false,
+            "showSha": false,
+            "showWorkingTree": false,
+            "showOperation": false,
+            "showTag": false,
+            "showTimeSinceCommit": false,
+            "showStashCount": false,
+            "showUpstream": false,
+            "showRepoName": false
+          },
+          "weekly": {
+            "enabled": true,
+            "displayStyle": "text"
+          },
+          "version": {
+            "enabled": false
+          },
+          "sessionId": {
+            "enabled": false,
+            "showIdLabel": true
+          },
+          "metrics": {
+            "enabled": false,
+            "showResponseTime": true,
+            "showLastResponseTime": true,
+            "showDuration": true,
+            "showMessageCount": true,
+            "showLinesAdded": true,
+            "showLinesRemoved": true
+          },
+          "env": {
+            "enabled": false,
+            "variable": ""
+          }
+        }
+      }
+    ],
+    "showIcons": true
+  },
+  "budget": {
+    "session": {
+      "warningThreshold": 80,
+      "amount": 0,
+      "type": "tokens"
+    },
+    "today": {
+      "warningThreshold": 80,
+      "amount": 50
+    },
+    "block": {
+      "warningThreshold": 80,
+      "amount": 15
+    }
+  },
+  "modelContextLimits": {
+    "default": 200000,
+    "sonnet": 200000,
+    "opus": 200000
+  },
+  "colors": {
+    "custom": {
+      "directory": {
+        "bg": "#cba6f7",
+        "fg": "#1e1e2e"
+      },
+      "git": {
+        "bg": "#45475a",
+        "fg": "#cdd6f4"
+      },
+      "model": {
+        "bg": "#313244",
+        "fg": "#cdd6f4"
+      },
+      "session": {
+        "bg": "#1e1e2e",
+        "fg": "#94e2d5"
+      },
+      "block": {
+        "bg": "#313244",
+        "fg": "#89b4fa"
+      },
+      "today": {
+        "bg": "#181825",
+        "fg": "#a6e3a1"
+      },
+      "tmux": {
+        "bg": "#45475a",
+        "fg": "#a6e3a1"
+      },
+      "context": {
+        "bg": "#45475a",
+        "fg": "#cdd6f4"
+      },
+      "contextWarning": {
+        "bg": "#fab387",
+        "fg": "#1e1e2e"
+      },
+      "contextCritical": {
+        "bg": "#f38ba8",
+        "fg": "#1e1e2e"
+      },
+      "metrics": {
+        "bg": "#313244",
+        "fg": "#bac2de"
+      },
+      "version": {
+        "bg": "#313244",
+        "fg": "#b4befe"
+      },
+      "env": {
+        "bg": "#313244",
+        "fg": "#cba6f7"
+      },
+      "weekly": {
+        "bg": "#313244",
+        "fg": "#89b4fa"
+      },
+      "agent": {
+        "bg": "#313244",
+        "fg": "#cba6f7"
+      },
+      "thinking": {
+        "bg": "#313244",
+        "fg": "#cba6f7"
+      },
+      "cacheTimer": {
+        "bg": "#181825",
+        "fg": "#a6e3a1"
+      }
+    }
+  }
+}
