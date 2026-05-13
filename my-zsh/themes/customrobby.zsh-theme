@@ -1,12 +1,12 @@
-local ret_status="%(?:%{$fg_bold[green]%}➜ :%{$fg_bold[red]%}➜ %s)"
+local ret_status="%(?:%{%B%F{#a6e3a1}%}➜ :%{%B%F{#f38ba8}%}➜ %s)"
 
 if [[ -n "$SSH_CLIENT" ]]; then
-   PROMPT=' %{$fg_no_bold[yellow]%}${USER}@${HOST} %{$fg[cyan]%}%c %{$fg_bold[blue]%}$(git_prompt_info)%{$fg_bold[blue]%} % %{$reset_color%}'
+   PROMPT=' %{%F{#f9e2af}%}${USER}@${HOST} %{%F{#94e2d5}%}%c %{%B%F{#89b4fa}%}$(git_prompt_info)%{%b%F{#89b4fa}%} % %{%f%b%}'
 else
-   PROMPT=' %{$fg[cyan]%}%c %{$fg_bold[blue]%}$(git_prompt_info)%{$fg_bold[blue]%} % %{$reset_color%}'
+   PROMPT=' %{%F{#94e2d5}%}%c %{%B%F{#89b4fa}%}$(git_prompt_info)%{%b%F{#89b4fa}%} % %{%f%b%}'
 fi
 
-ZSH_THEME_GIT_PROMPT_PREFIX="git:(%{$fg[red]%}"
-ZSH_THEME_GIT_PROMPT_SUFFIX="%{$reset_color%}"
-ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[blue]%}) %{$fg[yellow]%}✗%{$reset_color%}"
-ZSH_THEME_GIT_PROMPT_CLEAN="%{$fg[blue]%})"
+ZSH_THEME_GIT_PROMPT_PREFIX="git:(%{%F{#f38ba8}%}"
+ZSH_THEME_GIT_PROMPT_SUFFIX="%{%f%b%}"
+ZSH_THEME_GIT_PROMPT_DIRTY="%{%F{#89b4fa}%}) %{%F{#fab387}%}✗%{%f%b%}"
+ZSH_THEME_GIT_PROMPT_CLEAN="%{%F{#89b4fa}%})"

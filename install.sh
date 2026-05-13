@@ -14,7 +14,7 @@ cmd_software() {
         brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop
 
         echo "🖥️  Installing GUI apps..."
-        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 alfred visual-studio-code google-chrome dash@6 zotero spotify docker monitorcontrol chatgpt obsidian slack arc; do
+        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 ghostty alfred visual-studio-code google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc; do
             brew install --cask "$TGT"
         done
         echo "✅ Packages installed"

@@ -101,26 +101,10 @@ let g:airline_section_y = ''
 
 nnoremap coa :AirlineToggle<CR>
 
-" vim-colors-solarized -- solarized color scheme {{{2
-" Plug 'altercation/vim-colors-solarized'
-Plug 'iCyMind/NeoSolarized'
+" catppuccin -- color scheme {{{2
+Plug 'catppuccin/nvim', { 'as': 'catppuccin' }
 
 set termguicolors
-
-let g:neosolarized_contrast = "normal"
-let g:neosolarized_visibility = "normal"
-let g:neosolarized_vertSplitBgTrans = 1
-let g:neosolarized_bold = 1
-let g:neosolarized_underline = 0
-let g:neosolarized_italic = 1
-
-" tender colorscheme {{{2
-Plug 'jacoborus/tender.vim'
-
-" onedark.vim -- another colorscheme {{{2
-" Plug 'joshdick/onedark.vim'
-
-let g:onedark_terminal_italics = 1
 
 " vim-startify -- startup screen {{{2
 Plug 'mhinz/vim-startify'
@@ -1082,21 +1066,12 @@ filetype plugin indent on
 
 call plug#end()
 
-"" Set colorscheme depending on terminal/gui-vim
-if &t_Co >= 256
-  "" 256-color terminal
-  "let g:airline_theme="powerlineish"
-  if has('nvim')
-    set background=dark
-    colorscheme NeoSolarized
-    let g:airline_theme = 'solarized'
-  else
-    colorscheme sorcerer
-  endif
-endif
-if has('gui_vimr')
-  colorscheme NeoSolarized
-  let g:airline_theme = 'solarized'
-  set background=dark
+"" Set colorscheme to catppuccin-mocha
+if has('nvim')
+  let g:catppuccin_flavour = 'mocha'
+  colorscheme catppuccin
+  let g:airline_theme = 'catppuccin'
+else
+  colorscheme sorcerer
 endif
 

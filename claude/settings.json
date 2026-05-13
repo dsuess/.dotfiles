@@ -52,6 +52,5 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "voiceEnabled": true,
-  "editorMode": "vim",
-  "model": "opus"
+  "editorMode": "vim"
 }
