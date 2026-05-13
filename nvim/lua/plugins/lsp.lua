@@ -24,28 +24,28 @@ end
 
 return {
   {
-    "neovim/nvim-lspconfig",
+    "mason-org/mason-lspconfig.nvim",
     event = { "BufReadPre", "BufNewFile" },
     dependencies = {
-      "williamboman/mason.nvim",
-      "williamboman/mason-lspconfig.nvim",
+      { "mason-org/mason.nvim", opts = {} },
+      "neovim/nvim-lspconfig",
       "hrsh7th/cmp-nvim-lsp",
     },
     config = function()
       local servers = collect_servers()
       local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
-      require("mason").setup()
-      require("mason-lspconfig").setup({
-        ensure_installed = vim.tbl_keys(servers),
-      })
-
-      -- Use new vim.lsp.config API (nvim 0.11+)
+      -- Configure each server via the new nvim 0.11 API
       for server, config in pairs(servers) do
         config.capabilities = capabilities
         vim.lsp.config(server, config)
       end
-      vim.lsp.enable(vim.tbl_keys(servers))
+
+      -- mason-lspconfig installs servers and auto-calls vim.lsp.enable()
+      require("mason-lspconfig").setup({
+        ensure_installed = vim.tbl_keys(servers),
+        automatic_enable = true,
+      })
 
       -- LSP keybindings on attach
       vim.api.nvim_create_autocmd("LspAttach", {
@@ -66,7 +66,4 @@ return {
       })
     end,
   },
-
-  { "williamboman/mason.nvim" },
-  { "williamboman/mason-lspconfig.nvim" },
 }

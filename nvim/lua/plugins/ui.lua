@@ -6,20 +6,11 @@ return {
     priority = 1000,
     opts = {
       flavour = "mocha",
-      integrations = {
-        cmp = true,
-        gitsigns = true,
-        mason = true,
-        neogit = true,
-        noice = true,
-        telescope = true,
-        treesitter = true,
-        which_key = true,
-      },
+      auto_integrations = true,
     },
     config = function(_, opts)
       require("catppuccin").setup(opts)
-      vim.cmd.colorscheme("catppuccin")
+      vim.cmd.colorscheme("catppuccin-nvim")
     end,
   },
 
@@ -29,9 +20,9 @@ return {
     dependencies = { "nvim-tree/nvim-web-devicons" },
     opts = {
       options = {
-        theme = "catppuccin",
-        component_separators = { left = "\u{e0b1}", right = "\u{e0b3}" },
-        section_separators = { left = "\u{e0b0}", right = "\u{e0b2}" },
+        theme = "auto",
+        component_separators = { left = "", right = "" },
+        section_separators = { left = "", right = "" },
       },
       sections = {
         lualine_a = { "mode" },

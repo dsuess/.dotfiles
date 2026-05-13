@@ -84,6 +84,7 @@ return {
           file_ignore_patterns = { "node_modules", ".git/", "__pycache__" },
           layout_config = { prompt_position = "top" },
           sorting_strategy = "ascending",
+          preview = { treesitter = false },
           mappings = {
             i = {
               ["<C-j>"] = "move_selection_next",
