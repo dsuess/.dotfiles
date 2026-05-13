@@ -48,8 +48,10 @@ cmd_config() {
     stow bin -t ~/bin/
     stow claude -t ~/.claude/
     stow opencode -t ~/.config/opencode/
-    stow ghostty -t ~/.config/ghostty
-    stow zed -t ~/.config/zed
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        stow ghostty -t ~/.config/ghostty
+        stow zed -t ~/.config/zed
+    fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
