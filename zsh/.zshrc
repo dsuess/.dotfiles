@@ -1,3 +1,11 @@
+# Load direnv's current-dir state BEFORE the p10k instant prompt block so its
+# "loading .envrc" / "export ..." stderr is emitted during the I/O-allowed
+# preamble. The hook itself is installed further down; by the time it fires
+# at precmd, the env is already current and direnv stays silent.
+if command -v direnv &>/dev/null; then
+  eval "$(direnv export zsh)"
+fi
+
 # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
 # Initialization code that may require console input (password prompts, [y/n]
 # confirmations, etc.) must go above this block; everything else may go below.
@@ -54,9 +62,6 @@ fi
 export FZF_DEFAULT_OPTS="$FZF_DEFAULT_OPTS --color=bg+:#313244,bg:#1e1e2e,spinner:#f5e0dc,hl:#f38ba8 --color=fg:#cdd6f4,header:#f38ba8,info:#cba6f7,pointer:#f5e0dc --color=marker:#f5e0dc,fg+:#cdd6f4,prompt:#cba6f7,hl+:#f38ba8"
 if command -v direnv &>/dev/null; then
     eval "$(direnv hook zsh)"
-    if [[ -n "$DIRENV_DIR" ]]; then
-      direnv reload
-    fi
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
