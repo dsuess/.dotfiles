@@ -51,6 +51,6 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "voiceEnabled": true,
-  "editorMode": "vim"
+  "editorMode": "vim",
+  "voiceEnabled": true
 }

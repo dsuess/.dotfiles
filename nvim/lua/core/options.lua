@@ -40,4 +40,5 @@ opt.mouse = "a"
 opt.updatetime = 250
 opt.timeoutlen = 300
 opt.completeopt = "menu,menuone,noselect"
+opt.wildmode = "longest:full,full"
 opt.wrap = false

@@ -1,0 +1,19 @@
+[
+  {
+    "context": "vim_mode == normal && !menu",
+    "bindings": {
+      // Paragraph motions (mirrors nvim J/K → }/{)
+      "shift-j": "editor::MoveToEndOfParagraph",
+      "shift-k": "editor::MoveToStartOfParagraph",
+      // Buffer navigation (mirrors nvim <S-h>/<S-l>)
+      "shift-h": "pane::ActivatePreviousItem",
+      "shift-l": "pane::ActivateNextItem",
+      // Jump list (mirrors nvim [j/]j)
+      "[ j": "pane::GoBack",
+      "] j": "pane::GoForward"
+    }
+  },
+  {
+    "context": "vim_mode == normal && !menu || vim_mode == visual && !menu"
+  }
+]
