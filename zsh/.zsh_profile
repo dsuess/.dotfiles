@@ -1,4 +1,4 @@
 source ~/.dotfiles/vars.sh
-if [ -f /Users/dsuess/.dotfiles/tmux_startup.sh ]; then
-    source /Users/dsuess/.dotfiles/tmux_startup.sh
+if [ -f "$HOME/.dotfiles/tmux_startup.sh" ]; then
+    source "$HOME/.dotfiles/tmux_startup.sh"
 fi

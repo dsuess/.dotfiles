@@ -1,0 +1,20 @@
+[
+  {
+    "label": "GitHub: Open Current File",
+    "command": "gh browse \"$ZED_RELATIVE_FILE\" -b \"$(git -C \"$ZED_WORKTREE_ROOT\" rev-parse --abbrev-ref HEAD)\"",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "never",
+    "hide": "always"
+  },
+  {
+    "label": "GitHub: Open Current File at Line",
+    "command": "gh browse \"$ZED_RELATIVE_FILE:$ZED_ROW\" -b \"$(git -C \"$ZED_WORKTREE_ROOT\" rev-parse --abbrev-ref HEAD)\"",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "never",
+    "hide": "always"
+  }
+]

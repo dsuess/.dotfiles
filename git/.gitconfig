@@ -1,7 +1,7 @@
 [user]
     email = suess.daniel@gmail.com
     name = Daniel Suess
-    signingkey = /Users/dsuess/.ssh/id_rsa
+    signingkey = ~/.ssh/id_rsa
 [core]
     editor = nvim
     excludesfile = ~/.gitignore
