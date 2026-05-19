@@ -109,6 +109,7 @@ return {
         { "<leader>b", group = "buffer" },
         { "<leader>j", group = "jupyter" },
         { "<leader>s", group = "show" },
+        { "<leader>x", group = "diagnostics" },
       },
     },
   },
