@@ -7,7 +7,7 @@ return {
         "WhoIsSethDaniel/mason-tool-installer.nvim",
         dependencies = { "mason-org/mason.nvim" },
         opts = {
-          ensure_installed = { "markdownlint" },
+          ensure_installed = { "markdownlint", "prettier" },
         },
       },
     },

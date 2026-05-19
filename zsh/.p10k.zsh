@@ -34,6 +34,7 @@
     # =========================[ Line #1 ]=========================
     # os_icon               # os identifier
     dir                     # current directory
+    host                    # hostname
     vcs                     # git status
     # =========================[ Line #2 ]=========================
     newline                 # \n
@@ -346,6 +347,11 @@
 
   # Custom prefix.
   # typeset -g POWERLEVEL9K_DIR_PREFIX='%fin '
+
+  ####################################[ host: hostname ]#####################################
+  typeset -g POWERLEVEL9K_HOST_PREFIX='󰒍 '
+  typeset -g POWERLEVEL9K_HOST_FOREGROUND=31
+  typeset -g POWERLEVEL9K_HOST_CONTENT_EXPANSION='%m'
 
   #####################################[ vcs: git status ]######################################
   # Branch icon. Set this parameter to '\UE0A0 ' for the popular Powerline branch icon.
