@@ -14,7 +14,7 @@ cmd_software() {
         brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop
 
         echo "🖥️  Installing GUI apps..."
-        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 ghostty alfred visual-studio-code google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed; do
+        for TGT in karabiner-elements bettertouchtool 1password 1password-cli iterm2 ghostty alfred visual-studio-code google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed steipete/tap/codexbar; do
             brew install --cask "$TGT"
         done
         echo "✅ Packages installed"
@@ -51,6 +51,7 @@ cmd_config() {
     if [[ "$PLATFORM" == "Darwin" ]]; then
         stow ghostty -t ~/.config/ghostty
         stow zed -t ~/.config/zed
+        stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
     fi
 }
 
