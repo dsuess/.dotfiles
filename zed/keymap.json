@@ -5,9 +5,7 @@
       // Paragraph motions (mirrors nvim J/K → }/{)
       "shift-j": "editor::MoveToEndOfParagraph",
       "shift-k": "editor::MoveToStartOfParagraph",
-      // Buffer navigation (mirrors nvim <S-h>/<S-l>)
-      "shift-h": "pane::ActivatePreviousItem",
-      "shift-l": "pane::ActivateNextItem",
+      "shift-l": "editor::JoinLines",
       // Jump list (mirrors nvim [j/]j)
       "[ j": "pane::GoBack",
       "] j": "pane::GoForward"
