@@ -52,6 +52,19 @@ cmd_config() {
         stow ghostty -t ~/.config/ghostty
         stow zed -t ~/.config/zed
         stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
+
+        OBSIDIAN_DOCS="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents"
+        if [[ -d "$OBSIDIAN_DOCS" ]]; then
+            for vault in "$OBSIDIAN_DOCS"/*/; do
+                obsidian_dir="${vault}.obsidian"
+                [[ -d "$obsidian_dir" ]] || continue
+                echo "🔗 Stowing obsidian into $obsidian_dir"
+                for f in obsidian/*; do
+                    rm -rf "$obsidian_dir/$(basename "$f")"
+                done
+                stow obsidian -t "$obsidian_dir"
+            done
+        fi
     fi
 }
 
