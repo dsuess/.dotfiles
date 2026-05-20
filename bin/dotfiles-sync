@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# dotfiles-sync — Re-stow all dotfile configs by invoking install.sh config
+# from the actual dotfiles repo, regardless of where this script was called from.
+
+set -euo pipefail
+
+# Resolve the real path of this script (it's typically a stow symlink in ~/bin)
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    target="$(readlink "$script_path")"
+    if [[ "$target" = /* ]]; then
+        script_path="$target"
+    else
+        script_path="$(cd -P "$(dirname "$script_path")" && pwd)/$target"
+    fi
+done
+
+dotfiles_dir="$(cd -P "$(dirname "$script_path")/.." && pwd)"
+
+cd "$dotfiles_dir"
+exec ./install.sh config
