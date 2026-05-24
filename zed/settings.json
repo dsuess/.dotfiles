@@ -65,4 +65,13 @@
     "light": "One Light",
     "dark": "One Dark",
   },
+  "lsp": {
+    "basedpyright": {
+      "settings": {
+        "basedpyright.analysis": {
+          "diagnosticMode": "workspace"
+        }
+      }
+    }
+  },
 }

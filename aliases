@@ -18,7 +18,7 @@ alias gcd='cd $(git rev-parse --show-cdup)'
 
 # Tools
 alias bd="bat --diff"
-alias claude="EDITOR= claude --dangerously-skip-permissions"
+alias claude="claude --dangerously-skip-permissions"
 alias fuck="unalias fuck; eval \$(thefuck --alias); fuck"
 
 # Files & Navigation

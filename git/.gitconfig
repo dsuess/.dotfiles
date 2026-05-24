@@ -5,6 +5,7 @@
 [core]
     editor = nvim
     excludesfile = ~/.gitignore
+    pager = bat --paging=always
 [push]
     default = simple
 	autoSetupRemote = true

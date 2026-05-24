@@ -27,7 +27,8 @@
   },
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,
-    "claude-powerline@claude-powerline": true
+    "claude-powerline@claude-powerline": true,
+    "clangd-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-powerline": {
@@ -47,6 +48,9 @@
       ],
       "denyRead": [
         "~/"
+      ],
+      "allowRead": [
+        "~/.gitconfig"
       ]
     }
   },
