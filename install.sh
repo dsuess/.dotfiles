@@ -36,7 +36,7 @@ cmd_config() {
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -48,6 +48,16 @@ cmd_config() {
     stow bin -t ~/bin/
     stow claude -t ~/.claude/
     stow opencode -t ~/.config/opencode/
+    stow pi -t ~/.pi/
+
+    # Install npm dependencies for pi extensions that need them
+    for pkg in ~/.pi/agent/extensions/*/package.json; do
+        if [[ -f "$pkg" ]]; then
+            dir="$(dirname "$pkg")"
+            echo "📦 Installing npm deps in $dir"
+            (cd "$dir" && npm install --omit=dev)
+        fi
+    done
     if [[ "$PLATFORM" == "Darwin" ]]; then
         stow ghostty -t ~/.config/ghostty
         stow zed -t ~/.config/zed

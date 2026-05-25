@@ -1,0 +1,19 @@
+{
+  "lastChangelogVersion": "0.75.5",
+  "defaultProvider": "zai",
+  "defaultModel": "glm-5.1",
+  "defaultThinkingLevel": "medium",
+  "editorPaddingX": 1,
+  "skills": [
+    "~/.claude/skills"
+  ],
+  "packages": [
+    "npm:claude-agent-sdk-pi",
+    "npm:pi-vim",
+    "extensions/statusbar.ts",
+    "extensions/sandbox",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:@narumitw/pi-plan-mode"
+  ],
+  "hideThinkingBlock": true
+}
