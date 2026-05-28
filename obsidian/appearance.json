@@ -1,3 +1,6 @@
 {
-  "showRibbon": true
+  "showRibbon": true,
+  "enabledCssSnippets": [
+    "xml-tags"
+  ]
 }

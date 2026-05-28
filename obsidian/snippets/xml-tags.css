@@ -1,0 +1,41 @@
+/* [!context] callout — minimal light background box with small title */
+.callout[data-callout="context"] {
+  background-color: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-left: none;
+  padding: 0.5em 0.8em;
+}
+
+.callout[data-callout="context"] .callout-title {
+  font-size: 1em;
+  font-weight: 700;
+  opacity: 0.5;
+  padding: 0;
+  gap: 0.4em;
+}
+
+.callout[data-callout="context"] .callout-icon svg {
+  display: none;
+}
+
+/* Compass icon — represents orientation/context */
+.callout[data-callout="context"] .callout-icon::after {
+  content: "🧭";
+  font-size: 0.9em;
+}
+
+.callout[data-callout="context"] .callout-content {
+  padding: 0;
+  font-size: calc(1em - 1pt);
+  color: #666666;
+}
+
+.theme-dark .callout[data-callout="context"] .callout-content {
+  color: #888888;
+}
+
+/* Dark mode */
+.theme-dark .callout[data-callout="context"] {
+  background-color: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
