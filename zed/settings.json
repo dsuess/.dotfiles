@@ -7,6 +7,50 @@
 // custom settings, run `zed: open default settings` from the
 // command palette (cmd-shift-p / ctrl-shift-p)
 {
+  "disable_ai": true,
+  "ssh_connections": [
+    {
+      "host": "coder.dev",
+      "args": [],
+      "projects": [
+        {
+          "paths": [
+            "/home/coder"
+          ]
+        },
+        {
+          "paths": [
+            "/home/coder/work/canva/image2design-utpify"
+          ]
+        },
+        {
+          "paths": [
+            "/home/coder/work/canva/pawels"
+          ]
+        },
+        {
+          "paths": [
+            "/home/coder/work/canva/presentation-expert-profiling"
+          ]
+        },
+        {
+          "paths": [
+            "/home/coder/work/canva/presentation-expert-profiling/design_generation_server/models/presentation_expert_trainer"
+          ]
+        },
+        {
+          "paths": [
+            "/home/coder/work/sceneforge-3d"
+          ]
+        }
+      ]
+    },
+    {
+      "host": "coder.dev",
+      "args": [],
+      "projects": []
+    }
+  ],
   "agent_servers": {
     "opencode": {
       "type": "registry"

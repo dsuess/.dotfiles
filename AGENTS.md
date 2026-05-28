@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). Each top-level directory is a stow package that gets symlinked into `$HOME` (or another target via `-t`).
 
+## Core Rule: Always Use Stow
+
+**Never manually create symlinks or copy files into target directories.** All symlinks must be created through stow, invoked via `./install.sh config`. To deploy a new file: add it to the appropriate package directory, then run `./install.sh config`.
+
 ## Installation
 
 ```bash
@@ -48,6 +52,20 @@ Lua-based config using lazy.nvim. Stowed to `~/.config/nvim` (not `~`), so files
 - `after/ftplugin/` — buffer-local settings only
 
 To add a new language: create `lua/lang/<name>.lua` and add it to the `lang_modules` list in `lua/plugins/lsp.lua`.
+
+## Obsidian Config (`obsidian/`)
+
+Stow target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/work/.obsidian`). The `install.sh config` command iterates over all vaults and runs `stow obsidian -t "$vault/.obsidian"` for each.
+
+Key files:
+- `appearance.json` — theme, ribbon, and **`enabledCssSnippets`** (list of snippet filenames without `.css`)
+- `snippets/` — CSS snippet files; each `.css` file here is available in Obsidian's Appearance settings
+
+**To add a new CSS snippet:**
+1. Create `obsidian/snippets/<name>.css`
+2. Add `"<name>"` to the `enabledCssSnippets` array in `obsidian/appearance.json`
+3. Run `./install.sh config` to re-stow (deploys the new file into all vaults)
+4. Reload Obsidian (command palette → "Reload app without saving") to pick up changes
 
 ## Machine-Specific Overrides
 
