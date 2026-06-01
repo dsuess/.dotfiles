@@ -1,0 +1,7 @@
+{
+  "app.model.cycleForward": ["ctrl+."],
+  "app.model.cycleBackward": ["ctrl+shift+."],
+  "app.models.toggleProvider": ["ctrl+shift+p"],
+  "app.message.steer": ["enter"],
+  "app.session.togglePath": []
+}

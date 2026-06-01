@@ -250,12 +250,6 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 			execute: (pi) => pi.sendUserMessage("/tree"),
 		},
 		{
-			id: "app.session.togglePath",
-			label: "Toggle Session Path Display",
-			keybindingId: "app.session.togglePath",
-			category: "Sessions",
-		},
-		{
 			id: "app.session.toggleSort",
 			label: "Toggle Session Sort Mode",
 			keybindingId: "app.session.toggleSort",
