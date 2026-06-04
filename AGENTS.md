@@ -27,20 +27,19 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 
 Each package mirrors the target directory tree. Running `stow <pkg> -t ~` creates symlinks from `~` into the package. Key packages:
 
-| Package    | Stow target       | What it configures              |
-|------------|-------------------|---------------------------------|
-| `zsh/`     | `~`               | `.zshrc`, `.zsh_profile`        |
-| `bash/`    | `~`               | `.bashrc`, `.bash_profile`      |
-| `git/`     | `~`               | `.gitconfig`, `.gitignore`      |
-| `tmux/`    | `~`               | `.tmux.conf`, `.tmux/`          |
-| `nvim/`    | `~/.config/nvim`  | Neovim config (lazy.nvim, LSP, treesitter) |
-| `oh-my-zsh/` | `~`             | `.oh-my-zsh/` (custom fork)     |
-| `my-zsh/`  | `~`               | Custom Oh-My-Zsh plugins/themes in `.dotfiles/my-zsh/` |
-| `bin/`     | `~/bin/`          | Personal scripts                |
-| `claude/`  | `~/.claude/`      | Claude Code settings, hooks, CLAUDE.md |
-| `opencode/`| `~/.config/opencode/` | OpenCode AI config          |
-| `ghostty/` | `~/.config/`          | Ghostty terminal config         |
-
+| Package      | Stow target           | What it configures                                     |
+| ------------ | --------------------- | ------------------------------------------------------ |
+| `zsh/`       | `~`                   | `.zshrc`, `.zsh_profile`                               |
+| `bash/`      | `~`                   | `.bashrc`, `.bash_profile`                             |
+| `git/`       | `~`                   | `.gitconfig`, `.gitignore`                             |
+| `tmux/`      | `~`                   | `.tmux.conf`, `.tmux/`                                 |
+| `nvim/`      | `~/.config/nvim`      | Neovim config (lazy.nvim, LSP, treesitter)             |
+| `oh-my-zsh/` | `~`                   | `.oh-my-zsh/` (custom fork)                            |
+| `my-zsh/`    | `~`                   | Custom Oh-My-Zsh plugins/themes in `.dotfiles/my-zsh/` |
+| `bin/`       | `~/bin/`              | Personal scripts                                       |
+| `claude/`    | `~/.claude/`          | Claude Code settings, hooks, CLAUDE.md                 |
+| `opencode/`  | `~/.config/opencode/` | OpenCode AI config                                     |
+| `ghostty/`   | `~/.config/`          | Ghostty terminal config                                |
 
 ## Neovim Config (`nvim/`)
 
@@ -58,10 +57,12 @@ To add a new language: create `lua/lang/<name>.lua` and add it to the `lang_modu
 Stow target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/work/.obsidian`). The `install.sh config` command iterates over all vaults and runs `stow obsidian -t "$vault/.obsidian"` for each.
 
 Key files:
+
 - `appearance.json` — theme, ribbon, and **`enabledCssSnippets`** (list of snippet filenames without `.css`)
 - `snippets/` — CSS snippet files; each `.css` file here is available in Obsidian's Appearance settings
 
 **To add a new CSS snippet:**
+
 1. Create `obsidian/snippets/<name>.css`
 2. Add `"<name>"` to the `enabledCssSnippets` array in `obsidian/appearance.json`
 3. Run `./install.sh config` to re-stow (deploys the new file into all vaults)
@@ -70,6 +71,6 @@ Key files:
 ## Machine-Specific Overrides
 
 Files intentionally not tracked in git, sourced by the stowed configs:
+
 - `~/.zshrc.local` — Machine-specific shell config
 - `~/.gitconfig.local` — Machine-specific git identity/signing key
-
