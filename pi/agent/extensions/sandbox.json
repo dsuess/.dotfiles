@@ -25,7 +25,7 @@
       "~/.npmrc",
       "~/.pypirc"
     ],
-    "allowWrite": [".", "~/.pi", "~/.uv/cache"],
+    "allowWrite": [".", "~/.pi", "~/.uv", "~/.cache/uv", "~/.local/share/uv"],
     "denyWrite": [".env", ".env.*", "*.pem", "*.key"],
     "allowGitConfig": true
   }
