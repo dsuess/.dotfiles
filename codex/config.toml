@@ -1,0 +1,45 @@
+approval_policy = "never"
+default_permissions = "cwd-only"
+
+[permissions.cwd-only]
+description = "Allow edits only in the active workspace root; allow installed CLI tools and RTK state."
+
+[permissions.cwd-only.filesystem]
+":minimal" = "read"
+":tmpdir" = "write"
+"~/.codex" = "read"
+"~/bin" = "read"
+"~/.local/bin" = "read"
+"~/.local/share/rtk" = "write"
+"~/.config/rtk" = "write"
+"~/Library/Application Support/rtk" = "write"
+"/opt/homebrew" = "read"
+"/usr/local/bin" = "read"
+"~/.config/git" = "read"
+"~/.gitconfig" = "read"
+"~/.gitconfig.local" = "read"
+"~/.gitignore" = "read"
+"~/.profile" = "read"
+"~/.bash_profile" = "read"
+"~/.bashrc" = "read"
+"~/.zprofile" = "read"
+"~/.zshenv" = "read"
+"~/.zshrc" = "read"
+"~/.ssh/config" = "read"
+"~/.ssh/known_hosts" = "read"
+
+[permissions.cwd-only.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.cwd-only.network]
+enabled = true
+mode = "full"
+
+[projects."/Users/dsuess/.dotfiles"]
+trust_level = "trusted"
+
+[tui]
+vim_mode_default = true
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4
