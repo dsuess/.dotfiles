@@ -19,6 +19,7 @@ return {
         "toml",
         "gitcommit",
         "diff",
+        "zig",
       },
       highlight = { enable = true },
       indent = { enable = true },

@@ -1,7 +1,7 @@
 -- Gather server configs from lang/ modules
 local function collect_servers()
   local servers = {}
-  local lang_modules = { "lang.python" }
+  local lang_modules = { "lang.python", "lang.zig" }
   for _, mod in ipairs(lang_modules) do
     local lang = require(mod)
     if lang.servers then

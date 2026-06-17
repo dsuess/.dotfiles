@@ -7,7 +7,6 @@ map({ "n", "v" }, "q;", "q:")
 -- Save / quit
 map("n", "s", "<cmd>w<CR>")                             -- old: nnoremap s :w
 map("n", "<C-q>", "<cmd>q<CR>")                         -- old: nnoremap <C-q> :q
-map("n", "<leader>q", "<cmd>only<CR>", { desc = "Close other windows" })
 vim.cmd([[cmap w!! w !sudo tee % > /dev/null]])          -- old: cmap w!! ...
 
 -- Clear search highlight

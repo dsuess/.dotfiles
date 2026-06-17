@@ -1,0 +1,5 @@
+return {
+  servers = {
+    zls = {},
+  },
+}
