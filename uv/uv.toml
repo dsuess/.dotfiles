@@ -1,0 +1,4 @@
+# Always use uv-managed Python interpreters; never a system-installed one.
+python-preference = "only-managed"
+# Auto-download a managed Python when a required version is missing.
+python-downloads = "automatic"

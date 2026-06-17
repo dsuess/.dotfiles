@@ -36,7 +36,7 @@ cmd_config() {
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -50,6 +50,7 @@ cmd_config() {
     stow opencode -t ~/.config/opencode/
     stow codex -t ~/.codex/
     stow pi -t ~/.pi/
+    stow uv -t ~/.config/uv
 
     # Install npm dependencies for pi extensions that need them
     for pkg in ~/.pi/agent/extensions/*/package.json; do
