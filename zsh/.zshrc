@@ -72,6 +72,21 @@ else
     [[ -f ~/.fzf.zsh ]] && source ~/.fzf.zsh
 fi
 
+# Ctrl+O: fzf file picker rooted at $HOME (sibling to Ctrl+T, which uses $PWD).
+# ^O defaults to accept-line-and-down-history, which we don't use interactively.
+# Reuses FZF_CTRL_T_COMMAND if set so it honours the same listing (fd/gitignore).
+fzf-home-file-widget() {
+  local file
+  file=$(cd "$HOME" && eval "${FZF_CTRL_T_COMMAND:-command find -L . -type f 2>/dev/null}" \
+    | fzf --height 40% --reverse --prompt '~/ > ') || { zle redisplay; return }
+  [[ -z $file ]] && { zle redisplay; return }
+  local full="$HOME/${file#./}"
+  LBUFFER+="${(q)full} "
+  zle redisplay
+}
+zle -N fzf-home-file-widget
+bindkey '^O' fzf-home-file-widget
+
 # z + fzf
 unalias z 2>/dev/null
 z() {
