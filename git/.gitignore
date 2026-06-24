@@ -1,3 +1,5 @@
 ## SYSTEM
 .DS_STORE
 .tmp_files
+
+**/.claude/settings.local.json
