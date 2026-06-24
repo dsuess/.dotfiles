@@ -23,7 +23,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "npx -y @owloops/claude-powerline@v1.26.0 --style=powerline"
+    "command": "~/.claude/statusline.sh"
   },
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,

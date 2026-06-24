@@ -19,9 +19,9 @@
             "showIcon": false
           },
           "context": {
-            "enabled": false,
-            "showPercentageOnly": false,
-            "displayStyle": "text",
+            "enabled": true,
+            "showPercentageOnly": true,
+            "displayStyle": "capped",
             "autocompactBuffer": 33000,
             "percentageMode": "used"
           },
@@ -55,7 +55,7 @@
             "showRepoName": false
           },
           "weekly": {
-            "enabled": true,
+            "enabled": false,
             "displayStyle": "text"
           },
           "version": {
