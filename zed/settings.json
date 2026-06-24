@@ -90,7 +90,7 @@
     "trust_all_worktrees": true
   },
   "terminal": {
-    "font_family": "Anonymous Pro for Powerline",
+    "font_family": "AnonymicePro Nerd Font",
     "font_size": 13.0
   },
   "project_panel": {
