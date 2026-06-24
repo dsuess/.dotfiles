@@ -40,6 +40,7 @@
   },
   "sandbox": {
     "enabled": true,
+    "network": {},
     "filesystem": {
       "allowWrite": [
         ".",
@@ -50,13 +51,16 @@
         "~/"
       ],
       "allowRead": [
-        "~/.gitconfig"
+        ".",
+        "~/.gitconfig",
+        "~/.dotfiles"
       ]
     }
   },
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
   "editorMode": "vim",
   "voiceEnabled": true,
-  "model": "opus"
+  "tui": "fullscreen"
 }
