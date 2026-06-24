@@ -11,6 +11,9 @@ fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
     export EDITOR=/opt/homebrew/bin/nvim
-    export LC_ALL=en_US.UTF-8
+    # LANG only — deliberately NOT LC_ALL. LC_ALL overrides every locale
+    # category and gets forwarded over SSH (SendEnv LC_*), breaking logins on
+    # hosts that lack en_US.UTF-8. LANG is the polite default a remote can
+    # override; per-host needs go in ~/.ssh/config (SetEnv).
     export LANG=en_US.UTF-8
 fi
