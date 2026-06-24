@@ -74,10 +74,18 @@ fi
 
 # Ctrl+O: fzf file picker rooted at $HOME (sibling to Ctrl+T, which uses $PWD).
 # ^O defaults to accept-line-and-down-history, which we don't use interactively.
-# Reuses FZF_CTRL_T_COMMAND if set so it honours the same listing (fd/gitignore).
+# Uses fd with --hidden (so dotfiles are pickable) and --follow (so stowed
+# symlinks resolve to their files), minus heavy machine-managed trees: macOS
+# system/app data, media libraries, dev build output, and hidden tool caches.
 fzf-home-file-widget() {
   local file
-  file=$(cd "$HOME" && eval "${FZF_CTRL_T_COMMAND:-command find -L . -type f 2>/dev/null}" \
+  file=$(cd "$HOME" && fd --type f --hidden --follow 2>/dev/null \
+    --exclude Library --exclude Applications \
+    --exclude Pictures --exclude Movies --exclude Music --exclude '*.photoslibrary' \
+    --exclude node_modules --exclude .git --exclude .venv \
+    --exclude target --exclude build --exclude dist --exclude __pycache__ \
+    --exclude .cache --exclude .Trash --exclude .npm --exclude .cargo \
+    --exclude .rustup --exclude .gradle --exclude .m2 --exclude .cocoapods \
     | fzf --height 40% --reverse --prompt '~/ > ') || { zle redisplay; return }
   [[ -z $file ]] && { zle redisplay; return }
   local full="$HOME/${file#./}"
