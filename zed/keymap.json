@@ -8,7 +8,11 @@
       "shift-l": "editor::JoinLines",
       // Jump list (mirrors nvim [j/]j)
       "[ j": "pane::GoBack",
-      "] j": "pane::GoForward"
+      "] j": "pane::GoForward",
+      // Reclaim ctrl-r for redo in normal mode (VSCode base keymap
+      // otherwise steals it for projects::OpenRecent, which stays
+      // reachable via cmd-alt-o / outside normal mode)
+      "ctrl-r": "vim::Redo"
     }
   },
   {
