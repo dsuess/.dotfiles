@@ -26,15 +26,19 @@
     "command": "~/.claude/statusline.sh"
   },
   "enabledPlugins": {
-    "swift-lsp@claude-plugins-official": true,
-    "claude-powerline@claude-powerline": true,
-    "clangd-lsp@claude-plugins-official": true
+    "claude-powerline@claude-powerline": true
   },
   "extraKnownMarketplaces": {
     "claude-powerline": {
       "source": {
         "source": "github",
         "repo": "Owloops/claude-powerline"
+      }
+    },
+    "zircote-lsp": {
+      "source": {
+        "source": "github",
+        "repo": "zircote/lsp-marketplace"
       }
     }
   },
@@ -58,9 +62,9 @@
     }
   },
   "effortLevel": "high",
+  "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
   "editorMode": "vim",
-  "voiceEnabled": true,
-  "tui": "fullscreen"
+  "voiceEnabled": true
 }

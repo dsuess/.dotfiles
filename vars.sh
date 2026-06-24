@@ -5,6 +5,10 @@ export FZF_DEFAULT_COMMAND='fd --type f'
 # opt dir (not linked onto PATH); the rustup.rs installer writes ~/.cargo/env instead.
 if [[ -d /opt/homebrew/opt/rustup/bin ]]; then
     export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+    # Homebrew's rustup proxies don't cover ~/.cargo/bin, where `cargo install`
+    # drops crate binaries (cargo-audit, etc.); ~/.cargo/env would add this, but
+    # Homebrew rustup never writes it, so add it ourselves.
+    [[ -d "$HOME/.cargo/bin" ]] && export PATH="$HOME/.cargo/bin:$PATH"
 elif [[ -f "$HOME/.cargo/env" ]]; then
     source "$HOME/.cargo/env"
 fi
