@@ -1,6 +1,10 @@
 return {
   {
     "christoomey/vim-tmux-navigator",
+    -- Inside herdr, core/herdr.lua drives <C-hjkl> instead (tmux-only plugin).
+    cond = function()
+      return vim.env.HERDR_PANE_ID == nil
+    end,
     cmd = {
       "TmuxNavigateLeft",
       "TmuxNavigateDown",

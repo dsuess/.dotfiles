@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# herdr-aware pane navigation — the equivalent of tmux's is_vim Ctrl+h/j/k/l
+# passthrough. Bound to bare Ctrl+h/j/k/l via herdr's [[keys.command]].
+#
+# If the focused pane runs (n)vim, forward the keystroke to it (Neovim's own
+# herdr.lua keymap then moves within nvim or crosses the edge into a herdr pane).
+# Otherwise move herdr's focus directly.
+#
+# Usage: herdr-nav <left|right|up|down> <ctrl-key>
+
+set -euo pipefail
+
+dir="${1:?usage: herdr-nav <direction> <key>}"
+key="${2:?usage: herdr-nav <direction> <key>}"
+pane="${HERDR_PANE_ID:-}"
+
+is_vim() {
+  herdr pane process-info --current 2>/dev/null | grep -qiE '(^|/)g?\.?n?vim?x?(diff)?\b'
+}
+
+if [ -n "$pane" ] && is_vim; then
+  herdr pane send-keys "$pane" "$key"
+else
+  herdr pane focus --direction "$dir" --current
+fi

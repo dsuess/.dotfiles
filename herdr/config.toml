@@ -1,0 +1,120 @@
+# herdr configuration — mirrors ~/.tmux.conf (tmux/.tmux.conf) where concepts map.
+# Concept mapping: tmux window -> herdr tab, tmux status bar -> sidebar,
+# tmux copy-mode -> scrollback, tmux session -> workspace.
+# Stowed to ~/.config/herdr via `stow herdr -t ~/.config/herdr`.
+
+[theme]
+# tmux uses catppuccin-mocha
+name = "catppuccin"
+
+auto_switch = false
+[keys]
+# Prefix: tmux `set -g prefix C-s`
+prefix = "ctrl+s"
+
+# tmux `bind-key F12 source-file ~/.tmux.conf`
+reload_config = "prefix+f12"
+
+# tmux `bind-key b set -g status` (toggle status bar -> sidebar)
+toggle_sidebar = "prefix+b"
+
+# herdr's settings default is prefix+s, but we reuse prefix+s for split_horizontal
+# below, so move settings to prefix+, (the conventional "preferences" mnemonic).
+settings = "prefix+comma"
+
+# tmux `bind-key c-m resize-pane -Z` (C-m == Enter)
+zoom = "prefix+enter"
+
+# tmux `bind-key y copy-mode` (copy-mode -> scrollback)
+edit_scrollback = "prefix+y"
+
+# tmux `bind-key Tab select-window -n` (next window -> next tab)
+next_tab = "prefix+tab"
+
+# tmux `bind-key n new-window` (new window -> new tab)
+new_tab = "prefix+n"
+
+# No tmux mirror: tmux's rename-window (`,`) maps to herdr `settings` (prefix+,)
+# here, so name the focused tab on prefix+. (the adjacent punctuation key).
+rename_tab = "prefix+."
+
+# tmux `bind-key C-q killp`
+close_pane = "prefix+ctrl+q"
+
+# tmux `bind-key C-s splitw` (stacked: new pane below -> split down).
+# Can't mirror as prefix+ctrl+s: prefix IS ctrl+s, so that's a double-prefix
+# press (reserved). Use prefix+s instead (settings moved to prefix+, above).
+split_horizontal = "prefix+s"
+
+# tmux `bind-key C-v splitw -h` (side by side -> split right).
+# Drops the ctrl to match herdr's own default (prefix+v).
+split_vertical = "prefix+v"
+
+# tmux `bind-key w find-window` (nearest switcher)
+workspace_picker = "prefix+w"
+
+# Agent switching (no tmux analog). prefix+[ / prefix+] cycle the focused agent;
+# prefix+1..9 jumps to a specific agent. This reuses the number keys that herdr
+# defaults to switch_tab, so switch_tab is disabled below (tabs: prefix+tab / prefix+p).
+previous_agent = "prefix+["
+next_agent     = "prefix+]"
+focus_agent    = "prefix+1..9"
+switch_tab     = ""   # disable tab number-jump; freed for focus_agent
+
+# tmux `bind-key H/J/K/L resize-pane` -> herdr resize mode, then h/j/k/l
+resize_mode = "prefix+r"
+
+# tmux vim-style pane nav `bind -n C-h/j/k/l ...`.
+# Kept as prefix fallback; bare Ctrl+h/j/k/l is handled by the [[keys.command]]
+# entries below (the herdr-aware equivalent of tmux's is_vim passthrough).
+focus_pane_left = "prefix+h"
+focus_pane_down = "prefix+j"
+focus_pane_up = "prefix+k"
+focus_pane_right = "prefix+l"
+
+# Navigate-mode space switching (active while navigate mode / prefix+w is open).
+# Shift+h/Shift+l move between spaces; plain h/j/k/l still move panes (unchanged),
+# and up/down arrows still switch spaces too. navigate_pane_* left at defaults.
+navigate_workspace_up   = "shift+h"   # previous space
+navigate_workspace_down = "shift+l"   # next space
+
+# No herdr equivalent for these tmux bindings (left unbound):
+#   m       synchronize-panes (multi-input)  — herdr has no synchronized input
+#   S-h/S-l swap-window                       — herdr has no tab-reorder binding
+#   C-^     last-window                       — herdr has no last-tab binding
+#   t       fzf layout popup                  — tmux-specific bin/tmux-select-layout
+#   s       choose-session                    — herdr has no session-picker binding
+#                                               (prefix+s is reused for split_horizontal)
+#   Space   send-prefix, p paste-buffer       — no herdr analog
+
+# Bare Ctrl+h/j/k/l pane navigation with Neovim passthrough.
+# herdr cannot do conditional (is_vim) bindings natively, so bin/herdr-nav
+# inspects the focused pane and either forwards the key to (n)vim or moves focus.
+[[keys.command]]
+key = "ctrl+h"
+type = "shell"
+command = "herdr-nav left ctrl+h"
+
+[[keys.command]]
+key = "ctrl+j"
+type = "shell"
+command = "herdr-nav down ctrl+j"
+
+[[keys.command]]
+key = "ctrl+k"
+type = "shell"
+command = "herdr-nav up ctrl+k"
+
+[[keys.command]]
+key = "ctrl+l"
+type = "shell"
+command = "herdr-nav right ctrl+l"
+
+[ui]
+# tmux `set -g mouse on` -> herdr captures mouse by default (mouse_capture = true).
+# Accent matches tmux `pane-active-border-style fg=#cba6f7` (catppuccin mauve).
+accent = "#cba6f7"
+
+[ui.sound]
+# tmux `set -g bell-action none` / `set -g visual-bell off` -> no audible bell.
+enabled = false

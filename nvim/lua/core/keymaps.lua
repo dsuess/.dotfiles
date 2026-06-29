@@ -22,6 +22,9 @@ map("t", "<C-h>", [[<C-\><C-n><C-w>h]])
 map("t", "<C-j>", [[<C-\><C-n><C-w>j]])
 map("t", "<C-k>", [[<C-\><C-n><C-w>k]])
 map("t", "<C-l>", [[<C-\><C-n><C-w>l]])
+-- Inside herdr, make <C-hjkl> cross from the edge into adjacent herdr panes.
+-- (Outside herdr, vim-tmux-navigator handles this; see lua/plugins/tmux.lua.)
+require("core.herdr").setup()
 
 -- Tab navigation
 map("n", "<C-Tab>", "<cmd>tabprevious<CR>")

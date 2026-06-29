@@ -40,6 +40,7 @@ Each package mirrors the target directory tree. Running `stow <pkg> -t ~` create
 | `claude/`    | `~/.claude/`          | Claude Code settings, hooks, CLAUDE.md                 |
 | `opencode/`  | `~/.config/opencode/` | OpenCode AI config                                     |
 | `uv/`        | `~/.config/uv/`       | uv global config (managed-Python preference)           |
+| `herdr/`     | `~/.config/herdr/`    | herdr workspace manager (tmux-mirrored keys + theme)   |
 | `ghostty/`   | `~/.config/`          | Ghostty terminal config                                |
 
 ## Neovim Config (`nvim/`)
