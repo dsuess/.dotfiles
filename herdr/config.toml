@@ -75,8 +75,8 @@ focus_pane_right = "prefix+l"
 # Navigate-mode space switching (active while navigate mode / prefix+w is open).
 # Shift+h/Shift+l move between spaces; plain h/j/k/l still move panes (unchanged),
 # and up/down arrows still switch spaces too. navigate_pane_* left at defaults.
-navigate_workspace_up   = "shift+h"   # previous space
-navigate_workspace_down = "shift+l"   # next space
+navigate_workspace_up   = "shift+k"   # previous space
+navigate_workspace_down = "shift+j"   # next space
 
 # No herdr equivalent for these tmux bindings (left unbound):
 #   m       synchronize-panes (multi-input)  — herdr has no synchronized input
