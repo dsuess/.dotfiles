@@ -3,6 +3,8 @@ set -e
 
 PLATFORM="$(uname -s)"
 
+OBSIDIAN_VAULT="notes"   # canonical vault for the drift check; match the real folder name
+
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 cmd_software() {
@@ -67,18 +69,58 @@ cmd_config() {
         stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
 
         OBSIDIAN_DOCS="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents"
-        if [[ -d "$OBSIDIAN_DOCS" ]]; then
-            for vault in "$OBSIDIAN_DOCS"/*/; do
-                obsidian_dir="${vault}.obsidian"
-                [[ -d "$obsidian_dir" ]] || continue
-                echo "🔗 Stowing obsidian into $obsidian_dir"
-                for f in obsidian/*; do
-                    rm -rf "$obsidian_dir/$(basename "$f")"
-                done
-                stow obsidian -t "$obsidian_dir"
-            done
-        fi
+        [[ -d "$OBSIDIAN_DOCS" ]] && sync_obsidian "$OBSIDIAN_DOCS"
     fi
+}
+
+# Deploy obsidian config as real files (iCloud can't sync symlinks to iPadOS),
+# with a safe round-trip: pull the canonical vault's config back into the repo
+# first and refuse to deploy if it drifted from the committed state.
+sync_obsidian() {
+    local docs="$1"
+    local canonical="$docs/$OBSIDIAN_VAULT/.obsidian"
+
+    # 1. Clean baseline so drift is detectable.
+    if [[ -n "$(git status --porcelain obsidian)" ]]; then
+        echo "❌ obsidian/ has uncommitted changes — commit or stash first." >&2
+        exit 1
+    fi
+
+    # 2. Pull the canonical vault's tracked config back into the repo.
+    #    Stage via a dereferencing copy (-L) so legacy stow symlinks that point
+    #    back into the repo resolve to real content instead of self-referencing
+    #    (or destroying) the repo file. `-e` skips broken/dangling links.
+    if [[ -d "$canonical" ]]; then
+        local stage; stage="$(mktemp -d)"
+        for f in obsidian/*; do
+            base="$(basename "$f")"
+            [[ -e "$canonical/$base" ]] || continue
+            cp -RL "$canonical/$base" "$stage/$base"
+            rm -rf "$f"
+            cp -R "$stage/$base" obsidian/
+        done
+        rm -rf "$stage"
+
+        # 3. Any change means the device drifted — stop and let the user commit.
+        if [[ -n "$(git status --porcelain obsidian)" ]]; then
+            echo "❌ The '$OBSIDIAN_VAULT' vault has config changes not in the repo." >&2
+            echo "   Review: git diff obsidian/  — commit (or 'git checkout obsidian/' to discard), then re-run." >&2
+            exit 1
+        fi
+    else
+        echo "⚠️  Vault '$OBSIDIAN_VAULT' config not found; skipping drift check." >&2
+    fi
+
+    # 4. Deploy repo → all vaults as real files.
+    for vault in "$docs"/*/; do
+        obsidian_dir="${vault}.obsidian"
+        [[ -d "$obsidian_dir" ]] || continue
+        echo "📋 Copying obsidian config into $obsidian_dir"
+        for f in obsidian/*; do
+            rm -rf "$obsidian_dir/$(basename "$f")"
+            cp -R "$f" "$obsidian_dir/"
+        done
+    done
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

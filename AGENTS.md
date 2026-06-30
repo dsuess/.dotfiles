@@ -10,6 +10,8 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 
 **Never manually create symlinks or copy files into target directories.** All symlinks must be created through stow, invoked via `./install.sh config`. To deploy a new file: add it to the appropriate package directory, then run `./install.sh config`.
 
+**Exception — `obsidian/`:** this one package is deployed by *copying* real files (not stow symlinks), because its iCloud vaults sync to iOS/iPadOS, which cannot follow symlinks. See the Obsidian section below.
+
 ## Installation
 
 ```bash
@@ -56,7 +58,16 @@ To add a new language: create `lua/lang/<name>.lua` and add it to the `lang_modu
 
 ## Obsidian Config (`obsidian/`)
 
-Stow target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/work/.obsidian`). The `install.sh config` command iterates over all vaults and runs `stow obsidian -t "$vault/.obsidian"` for each.
+Target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/notes/.obsidian`). Unlike every other package, obsidian is **copied as real files**, not stowed as symlinks — iCloud Drive does not sync symlinks to iOS/iPadOS, so symlinked config never reaches the iPad. The copy logic lives in `sync_obsidian()` in `install.sh`.
+
+`./install.sh config` performs a safe round-trip for obsidian:
+
+1. Requires `obsidian/` to have no uncommitted git changes (clean baseline).
+2. Pulls the canonical vault's tracked config back into the repo (`OBSIDIAN_VAULT`, default `notes`).
+3. If that pull changed anything, it **errors** — the device changed config that isn't committed. Run `git diff obsidian/`, then commit (or `git checkout obsidian/` to discard) and re-run.
+4. Otherwise it copies the repo config as real files into every vault's `.obsidian/`.
+
+So config edited in Obsidian on any device (iCloud brings it down to the Mac's `notes` vault) is captured back into the repo for review/commit before it deploys — never silently overwritten.
 
 Key files:
 
@@ -67,7 +78,7 @@ Key files:
 
 1. Create `obsidian/snippets/<name>.css`
 2. Add `"<name>"` to the `enabledCssSnippets` array in `obsidian/appearance.json`
-3. Run `./install.sh config` to re-stow (deploys the new file into all vaults)
+3. Run `./install.sh config` (deploys the new file into all vaults as real files)
 4. Reload Obsidian (command palette → "Reload app without saving") to pick up changes
 
 ## Machine-Specific Overrides
