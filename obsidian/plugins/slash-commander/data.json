@@ -1,0 +1,97 @@
+{
+  "version": 2,
+  "confirmDeletion": false,
+  "showDescriptions": false,
+  "showSourcesForDuplicates": true,
+  "debug": false,
+  "mainTrigger": "/",
+  "extraTriggers": [],
+  "useExtraTriggers": false,
+  "triggerOnlyOnNewLine": true,
+  "queryPattern": {},
+  "bindings": [
+    {
+      "id": "d38d02cf-11e5-4cef-b607-fe42682f5b0d",
+      "icon": "pen-tool",
+      "name": "Ink: New Handwriting",
+      "action": "ink:create-handwritten-section",
+      "mode": "mobile",
+      "triggerMode": "newline",
+      "isGroup": false,
+      "children": []
+    },
+    {
+      "id": "0125b574-e2e7-45ff-b60f-6f6c16f955b1",
+      "icon": "pencil",
+      "name": "Ink: New Drawing",
+      "action": "ink:create-drawing-section",
+      "mode": "mobile",
+      "triggerMode": "newline",
+      "isGroup": false,
+      "children": []
+    },
+    {
+      "name": "Table",
+      "id": "editor:insert-table",
+      "action": "editor:insert-table",
+      "icon": "table-2",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Callout",
+      "id": "editor:insert-callout",
+      "action": "editor:insert-callout",
+      "icon": "indent",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Code",
+      "id": "editor:insert-codeblock",
+      "action": "editor:insert-codeblock",
+      "icon": "terminal",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Math",
+      "id": "editor:insert-mathblock",
+      "action": "editor:insert-mathblock",
+      "icon": "percent",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Embed",
+      "id": "editor:insert-embed",
+      "action": "editor:insert-embed",
+      "icon": "sticky-note",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Attachment",
+      "id": "editor:attach-file",
+      "action": "editor:attach-file",
+      "icon": "paperclip",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    },
+    {
+      "name": "Property",
+      "id": "markdown:add-metadata-property",
+      "action": "markdown:add-metadata-property",
+      "icon": "plus-circle",
+      "mode": "any",
+      "triggerMode": "anywhere",
+      "children": []
+    }
+  ]
+}
