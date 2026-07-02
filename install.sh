@@ -197,6 +197,14 @@ cmd_software() {
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
             brew install --cask "$TGT"
         done
+
+        # herdr plugins (Ctrl+h/j/k/l nav across herdr panes ↔ Neovim splits).
+        # Idempotent; the config.toml plugin_action keybindings depend on it.
+        if command -v herdr >/dev/null 2>&1; then
+            echo "🧭 Installing herdr plugins..."
+            herdr plugin list --plugin vim-herdr-navigation --json 2>/dev/null | grep -q vim-herdr-navigation \
+                || herdr plugin install paulbkim-dev/vim-herdr-navigation --yes
+        fi
         echo "✅ Packages installed"
     else
         echo "🐧 Linux detected — bootstrapping tools without a package manager..."

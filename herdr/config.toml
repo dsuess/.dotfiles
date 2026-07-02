@@ -87,28 +87,41 @@ navigate_workspace_down = "shift+j"   # next space
 #                                               (prefix+s is reused for split_horizontal)
 #   Space   send-prefix, p paste-buffer       — no herdr analog
 
-# Bare Ctrl+h/j/k/l pane navigation with Neovim passthrough.
-# herdr cannot do conditional (is_vim) bindings natively, so bin/herdr-nav
-# inspects the focused pane and either forwards the key to (n)vim or moves focus.
+# Bare Ctrl+h/j/k/l pane navigation with Neovim passthrough, provided by the
+# vim-herdr-navigation plugin (installed via `herdr plugin install`, see install.sh).
+# herdr cannot do conditional (is_vim) bindings natively, so the plugin's
+# navigate.sh inspects the focused pane and either forwards the key to (n)vim
+# (whose vendored core/herdr.lua then moves within nvim or crosses the edge back
+# into herdr) or moves herdr focus directly.
 [[keys.command]]
 key = "ctrl+h"
-type = "shell"
-command = "herdr-nav left ctrl+h"
+type = "plugin_action"
+command = "vim-herdr-navigation.left"
+description = "Window/pane left"
 
 [[keys.command]]
 key = "ctrl+j"
-type = "shell"
-command = "herdr-nav down ctrl+j"
+type = "plugin_action"
+command = "vim-herdr-navigation.down"
+description = "Window/pane down"
 
 [[keys.command]]
 key = "ctrl+k"
-type = "shell"
-command = "herdr-nav up ctrl+k"
+type = "plugin_action"
+command = "vim-herdr-navigation.up"
+description = "Window/pane up"
 
 [[keys.command]]
 key = "ctrl+l"
-type = "shell"
-command = "herdr-nav right ctrl+l"
+type = "plugin_action"
+command = "vim-herdr-navigation.right"
+description = "Window/pane right"
+
+[[keys.command]]
+key = "prefix+p"
+type = "plugin_action"
+command = "jt.command-palette.open"
+description = "Command palette"
 
 [ui]
 # tmux `set -g mouse on` -> herdr captures mouse by default (mouse_capture = true).

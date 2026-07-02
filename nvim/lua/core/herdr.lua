@@ -1,8 +1,10 @@
 -- Seamless Ctrl+h/j/k/l navigation between Neovim splits and herdr panes.
--- The herdr counterpart of vim-tmux-navigator (lua/plugins/tmux.lua): try to
--- move within Neovim; if already at the edge, hand focus to the adjacent herdr
--- pane via the `herdr pane focus` socket API. Only active inside a herdr pane
--- (HERDR_PANE_ID is exported by herdr); a no-op otherwise.
+-- Vendored editor side of the vim-herdr-navigation herdr plugin (its
+-- editor/nvim.lua); kept in-repo so it stays under stow and adds terminal-mode
+-- nav. The herdr counterpart of vim-tmux-navigator (lua/plugins/tmux.lua): try
+-- to move within Neovim; if already at the edge, hand focus to the adjacent
+-- herdr pane via the `herdr pane focus` socket API. Only active inside a herdr
+-- pane (HERDR_PANE_ID is exported by herdr); a no-op otherwise.
 
 local M = {}
 
@@ -13,7 +15,12 @@ function M.nav(dir)
   vim.cmd("wincmd " .. wincmd[dir])
   if vim.api.nvim_get_current_win() == before then
     -- No Neovim split in that direction: cross into the herdr pane.
-    vim.fn.system({ "herdr", "pane", "focus", "--direction", dir, "--current" })
+    -- HERDR_BIN_PATH lets herdr point at its own binary (matches the plugin).
+    local herdr = vim.env.HERDR_BIN_PATH
+    if herdr == nil or herdr == "" then
+      herdr = "herdr"
+    end
+    vim.fn.system({ herdr, "pane", "focus", "--direction", dir, "--current" })
   end
 end
 
