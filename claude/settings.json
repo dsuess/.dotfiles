@@ -1,13 +1,11 @@
 {
   "env": {
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
     "DISABLE_AUTOUPDATER": "1",
-    "DISABLE_INSTALLATION_CHECKS": "1",
-    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"
+    "DISABLE_INSTALLATION_CHECKS": "1"
   },
   "permissions": {
-    "allow": [
-      "Bash(cd *)"
-    ]
+    "allow": ["Bash(cd *)", "Bash(bazel *)"]
   },
   "hooks": {
     "PreToolUse": [
@@ -16,7 +14,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/rtk-rewrite.sh"
+            "command": "rtk hook claude"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '~/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10
           }
         ]
       }
@@ -48,20 +58,17 @@
     "enabled": true,
     "network": {},
     "filesystem": {
-      "allowWrite": [
-        ".",
-        "~/.claude",
-        "~/.uv/cache"
-      ],
-      "denyRead": [
-        "~/"
-      ],
+      "allowWrite": [".", "~/.claude", "~/.uv/cache"],
+      "denyRead": ["~/"],
       "allowRead": [
         ".",
+        "~/src",
         "~/.gitconfig",
+        "~/.gitconfig.local",
         "~/.dotfiles"
       ]
-    }
+    },
+    "excludedCommands": ["bazel"]
   },
   "effortLevel": "high",
   "tui": "fullscreen",
