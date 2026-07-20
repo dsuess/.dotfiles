@@ -37,6 +37,12 @@
 - Zero context switching required from the user
 - Go fix failing CI tests without being told how
 
+### 7. Try Before Asking
+- When a command is rejected/prompted or you're unsure it'll work, retry the corrected form instead of ending the turn to ask
+- Fix the obvious cause first: absolute paths instead of `cd ... &&` (a leading `cd` in a compound command triggers a prompt), split compound commands, run sandboxed
+- A sandboxed read-only retry is cheap and safe – attempt it rather than asking permission
+- Only stop to ask when the choice is genuinely the user's: destructive, irreversible, or ambiguous intent
+
 ## Task Management
 
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
@@ -51,3 +57,11 @@
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+## System Config
+
+All my system config lives in `~/.dotfiles` (a git repo). Files under `~/.claude`, `~/.gitconfig`, etc.
+are symlinks into it. When editing config, resolve the symlink and edit the real target under
+`~/.dotfiles`, then remember it's an uncommitted change in that repo to sync.
+
+@RTK.md
