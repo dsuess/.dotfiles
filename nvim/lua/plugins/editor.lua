@@ -20,6 +20,7 @@ return {
         "gitcommit",
         "diff",
         "zig",
+        "dart",
       },
       highlight = { enable = true },
       indent = { enable = true },
@@ -105,6 +106,7 @@ return {
     opts = {
       spec = {
         { "<leader>f", group = "find/format" },
+        { "<leader>F", group = "flutter" },
         { "<leader>g", group = "git/grep" },
         { "<leader>l", group = "lsp" },
         { "<leader>b", group = "buffer" },
