@@ -227,9 +227,10 @@ cmd_config() {
     echo "🧹 Removing old symlinks..."
     rm -f ~/.zshrc ~/.zsh_profile ~/.bashrc ~/.bash_profile
     rm -f ~/.gitconfig ~/.gitignore ~/.tmux.conf
+    [[ -L ~/.claude/skills ]] && rm -f ~/.claude/skills
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.pi
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.pi
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -240,6 +241,9 @@ cmd_config() {
     stow oh-my-zsh -t ~
     stow bin -t ~/bin/
     stow claude -t ~/.claude/
+    # Claude uses ~/.claude/skills; Codex, OpenCode, and Pi use ~/.agents/skills.
+    stow agents -t ~/.claude/
+    stow agents -t ~/.agents/
     stow opencode -t ~/.config/opencode/
     stow codex -t ~/.codex/
     stow pi -t ~/.pi/

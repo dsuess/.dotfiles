@@ -5,7 +5,7 @@
   "defaultThinkingLevel": "high",
   "editorPaddingX": 1,
   "skills": [
-    "~/.claude/skills"
+    "~/.agents/skills"
   ],
   "packages": [
     "npm:pi-vim",

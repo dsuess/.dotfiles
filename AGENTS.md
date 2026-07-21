@@ -88,11 +88,22 @@ Each package mirrors the target directory tree. Running `stow <pkg> -t ~` create
 | `oh-my-zsh/` | `~`                   | `.oh-my-zsh/` (custom fork)                            |
 | `my-zsh/`    | `~`                   | Custom Oh-My-Zsh plugins/themes in `.dotfiles/my-zsh/` |
 | `bin/`       | `~/bin/`              | Personal scripts                                       |
+| `agents/`    | `~/.agents/`, `~/.claude/` | Shared skills for Codex, Claude, OpenCode, and Pi  |
 | `claude/`    | `~/.claude/`          | Claude Code settings, hooks, CLAUDE.md                 |
 | `opencode/`  | `~/.config/opencode/` | OpenCode AI config                                     |
 | `uv/`        | `~/.config/uv/`       | uv global config (managed-Python preference)           |
 | `herdr/`     | `~/.config/herdr/`    | herdr workspace manager (tmux-mirrored keys + theme)   |
 | `ghostty/`   | `~/.config/`          | Ghostty terminal config                                |
+
+## Shared Agent Skills (`agents/skills`)
+
+`agents/skills/` is the canonical source for personal skills shared across agent tools. `./install.sh config` stows the `agents/` package into both discovery roots without copying files:
+
+- Claude reads `~/.claude/skills/`.
+- Codex and OpenCode read `~/.agents/skills/`.
+- Pi is configured in `pi/agent/settings.json` to read `~/.agents/skills/`.
+
+Keep each skill directory name identical to the `name` in its `SKILL.md` frontmatter so every consumer discovers it consistently.
 
 ## Neovim Config (`nvim/`)
 

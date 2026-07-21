@@ -1,5 +1,5 @@
 ---
-name: plan-review-annotations
+name: plan-review
 description: >-
   Process inline `!`/`?` annotations a user left in a Claude Code plan file. Use when the user returns from
   editing a plan and points you at their annotations, comments, feedback, or `!`/`?` markers — e.g. "address
