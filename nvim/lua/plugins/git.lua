@@ -52,4 +52,24 @@ return {
     },
     opts = {},
   },
+
+  -- GitHub pull request review
+  {
+    "pwntester/octo.nvim",
+    cmd = "Octo",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-telescope/telescope.nvim",
+      "nvim-tree/nvim-web-devicons",
+    },
+    keys = {
+      { "<leader>gP", "<cmd>Octo pr list<CR>", desc = "GitHub pull requests" },
+      { "<leader>gR", "<cmd>Octo review<CR>", desc = "Review current pull request" },
+    },
+    opts = {
+      picker = "telescope",
+      use_local_fs = true,
+      enable_builtin = true,
+    },
+  },
 }

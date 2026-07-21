@@ -9,6 +9,20 @@
       // Jump list (mirrors nvim [j/]j)
       "[ j": "pane::GoBack",
       "] j": "pane::GoForward",
+      // Debugger (no F-keys; intentionally reclaims built-in space-d diagnostics)
+      "space d s": "debugger::Start",
+      "space d r": "debugger::Restart",
+      "space d c": "debugger::Continue",
+      "space d p": "debugger::Pause",
+      "space d x": "debugger::Stop",
+      "space d n": "debugger::StepOver",
+      "space d i": "debugger::StepInto",
+      "space d o": "debugger::StepOut",
+      "space d u": "editor::RunToCursor",
+      "space d b": "editor::ToggleBreakpoint",
+      "space d l": "editor::EditLogBreakpoint",
+      "space d e": "editor::EvaluateSelectedText",
+      "space d t": "debug_panel::ToggleFocus",
       // Reclaim ctrl-r for redo in normal mode (VSCode base keymap
       // otherwise steals it for projects::OpenRecent, which stays
       // reachable via cmd-alt-o / outside normal mode)

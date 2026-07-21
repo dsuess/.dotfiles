@@ -8,9 +8,34 @@ description: >-
 
 # Plan Review Annotations
 
-When reviewing a plan, the user marks up the plan file (typically opened with Ctrl+G) with two kinds of
-inline annotation. This skill defines exactly how to interpret them. The whole point is that the user's
-feedback lives as plain text inside the plan, and the two markers tell you *how* to act on each line.
+When reviewing a plan, the user marks up the plan text with two kinds of inline annotation. This skill
+defines exactly how to interpret them. The whole point is that the user's feedback lives as plain text
+inside the plan, and the two markers tell you *how* to act on each line.
+
+## Where the plan lives
+
+Every plan you present via ExitPlanMode is persisted by Claude Code to a flat folder:
+
+```
+~/.claude/plans/<slug>.md
+```
+
+The slug derives from the session's first prompt plus a random suffix; the **most recently modified**
+`.md` in that folder is the current plan. When the user presses **Ctrl+G** at the approval dialog, their
+editor opens *this file*, and the edits they save land back on disk here. That is how inline annotations
+reach you — not through the approval dialog (whose options are fixed and only ever offer "implement"
+paths), but as saved edits to the plan file.
+
+## Telling the user how to invoke this (do this whenever you present a plan)
+
+Because the approval dialog cannot show a "review my annotations" option, the user has to reach this skill
+deliberately. Whenever you present a plan, end the plan with a one-line reminder of the path back:
+
+> To give inline feedback: press **Ctrl+G**, mark lines with `!` (directive) or `?` (question), save,
+> then choose **Keep planning with feedback** and say "process my plan annotations".
+
+The critical mechanic: the user must pick **Keep planning with feedback**, *not* any approve option —
+approving starts implementation and these annotations are never seen.
 
 ## The two markers
 
@@ -26,11 +51,22 @@ one revised plan that folds in both the `!` directives and the decisions reached
 
 ## Workflow
 
-### Step 1 — Find the annotations
+### Step 1 — Locate the plan file, then find the annotations
 
-Scan the plan for annotation lines: a line is an annotation if its first non-whitespace character is `!`
-or `?`. Collect them in order, keeping track of which plan section/step each one sits under (that context
-usually tells you what the annotation refers to).
+First find the file the user annotated. The current plan is the most recently modified plan file:
+
+```
+ls -t ~/.claude/plans/*.md | head -5
+```
+
+The newest entry is almost always the one — confirm it by checking its content matches the plan you just
+presented (you have that plan in context). Ignore `*-agent-*.md` files: those are subagent plans, not the
+user's. If the newest file does not match what you proposed, say so and ask the user which file they
+edited rather than guessing.
+
+Read that file, then scan it for annotation lines: a line is an annotation if its first non-whitespace
+character is `!` or `?`. Collect them in order, keeping track of which plan section/step each one sits
+under (that context usually tells you what the annotation refers to).
 
 Be careful about false positives:
 - Ignore `!` or `?` that appear **inside fenced code blocks** (between ``` fences) or inline code spans —
@@ -74,8 +110,11 @@ Once — and only once — every `?` is resolved:
 3. Optionally, note briefly where notable changes came from (which directive or which resolved question)
    so the user can verify their feedback landed.
 
-Then hold for approval as normal. **Stay in plan mode** — do not begin implementing. The output of this
-skill is a revised plan for the user to review, not executed changes.
+Present the revised plan through ExitPlanMode as normal — that re-persists a fresh `~/.claude/plans/`
+file, so the user can annotate the new version the same way and the loop repeats until they approve. End
+it with the same Ctrl+G reminder from above. **Stay in plan mode** — do not begin implementing. The output
+of this skill is a revised plan for the user to review, not executed changes. Do not hand-write into
+`~/.claude/plans/` yourself; let ExitPlanMode own that file.
 
 ## Edge cases
 
@@ -83,9 +122,10 @@ skill is a revised plan for the user to review, not executed changes.
   the revised plan (Step 4).
 - **Only `?` lines, no `!` lines:** discuss all questions, then produce the revised plan reflecting the
   decisions reached.
-- **No annotations found:** tell the user you didn't find any `!` or `?` lines, and ask whether they saved
-  the file or used a different marker — a common cause is feedback left in the plan-review comment UI,
-  which does not reach the model; only edits to the plan text itself do.
+- **No annotations found:** tell the user you didn't find any `!` or `?` lines in the current plan file,
+  and ask whether they saved the Ctrl+G edit (an unsaved buffer never reaches disk) or annotated a
+  different file. A common cause is feedback left in the plan-review comment UI, which does not reach the
+  model; only saved edits to the plan text itself do.
 - **A line is both a statement and a question:** treat the leading marker as authoritative. `! also,
   should we cache?` is a directive (the user is telling you to add caching); `? should we cache?` is a
   question to discuss.

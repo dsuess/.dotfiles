@@ -259,6 +259,8 @@ cmd_config() {
         echo "⚠️  npm not found — skipping pi extension npm deps."
     fi
     if [[ "$PLATFORM" == "Darwin" ]]; then
+        configure_macos_keyboard
+
         stow ghostty -t ~/.config/ghostty
         stow zed -t ~/.config/zed
         stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
@@ -266,6 +268,13 @@ cmd_config() {
         OBSIDIAN_DOCS="$HOME/Documents"
         [[ -d "$OBSIDIAN_DOCS" ]] && sync_obsidian "$OBSIDIAN_DOCS"
     fi
+}
+
+configure_macos_keyboard() {
+    echo "⌨️  Configuring macOS keyboard repeat..."
+    defaults write -g ApplePressAndHoldEnabled -bool false
+    defaults write -g InitialKeyRepeat -int 25
+    defaults write -g KeyRepeat -int 2
 }
 
 # Deploy obsidian config as real files (iCloud can't sync symlinks to iPadOS),

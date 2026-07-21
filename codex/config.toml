@@ -1,5 +1,9 @@
 approval_policy = "never"
 default_permissions = "cwd-only"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+plan_mode_reasoning_effort = "xhigh"
+hide_agent_reasoning = true
 
 [permissions.cwd-only]
 description = "Allow edits only in the active workspace root; allow installed CLI tools and RTK state."
@@ -12,6 +16,10 @@ description = "Allow edits only in the active workspace root; allow installed CL
 "~/.local/bin" = "read"
 "~/.local/share/rtk" = "write"
 "~/.config/rtk" = "write"
+"~/.config/uv" = "read"
+"~/.uv/cache" = "write"
+"~/.cache/uv" = "write"
+"~/.local/share/uv" = "write"
 "~/Library/Application Support/rtk" = "write"
 "/opt/homebrew" = "read"
 "/usr/local/bin" = "read"
@@ -19,6 +27,7 @@ description = "Allow edits only in the active workspace root; allow installed CL
 "~/.gitconfig" = "read"
 "~/.gitconfig.local" = "read"
 "~/.gitignore" = "read"
+"~/.dotfiles" = "read"
 "~/.profile" = "read"
 "~/.bash_profile" = "read"
 "~/.bashrc" = "read"
@@ -27,6 +36,8 @@ description = "Allow edits only in the active workspace root; allow installed CL
 "~/.zshrc" = "read"
 "~/.ssh/config" = "read"
 "~/.ssh/known_hosts" = "read"
+"~/.rustup" = "write"
+"~/.cargo" = "write"
 
 [permissions.cwd-only.filesystem.":workspace_roots"]
 "." = "write"
@@ -38,8 +49,21 @@ mode = "full"
 [projects."/Users/dsuess/.dotfiles"]
 trust_level = "trusted"
 
+[projects."/Users/dsuess/Code/reachy"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Code/visonic"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Library/Mobile Documents/iCloud~md~obsidian/Documents/notes/AOCRA Coaching"]
+trust_level = "trusted"
+
 [tui]
 vim_mode_default = true
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
+"gpt-5.6-sol" = 4
