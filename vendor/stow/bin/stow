@@ -1,4 +1,4 @@
-#!/usr/bin/perl5.34
+#!/usr/bin/perl
 
 # GNU Stow - manage farms of symbolic links
 # Copyright (C) 1993, 1994, 1995, 1996 by Bob Glickstein
