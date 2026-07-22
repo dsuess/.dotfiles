@@ -27,6 +27,10 @@ return {
     ft = "python",
     opts = {
       backend = "kitty",
+      -- Use the ImageMagick CLI (`magick`) instead of the `magick` luarock, so lazy
+      -- never has to build a rock via hererocks (which needs a C toolchain to compile
+      -- Lua 5.1 — unavailable on the rootless Linux box). Requires ImageMagick on PATH.
+      processor = "magick_cli",
       max_height_window_percentage = 50,
       integrations = {
         markdown = { enabled = true },

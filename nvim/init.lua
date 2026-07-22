@@ -21,4 +21,8 @@ require("core.autocmds")
 require("lazy").setup({ import = "plugins" }, {
   checker = { enabled = true, notify = false },
   change_detection = { notify = false },
+  -- No plugin here needs luarocks (image.nvim uses the ImageMagick CLI, not the rock).
+  -- Disabling it stops lazy trying to build rocks via hererocks, which fails on hosts
+  -- without a C toolchain to compile Lua 5.1.
+  rocks = { enabled = false },
 })
