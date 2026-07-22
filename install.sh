@@ -229,14 +229,18 @@ cmd_config() {
     stow uv -t ~/.config/uv
     stow herdr -t ~/.config/herdr
 
-    # Install npm dependencies for pi extensions that need them
-    for pkg in ~/.pi/agent/extensions/*/package.json; do
-        if [[ -f "$pkg" ]]; then
-            dir="$(dirname "$pkg")"
-            echo "📦 Installing npm deps in $dir"
-            (cd "$dir" && npm install --omit=dev)
-        fi
-    done
+    # Install npm dependencies for pi extensions that need them (skip if no npm)
+    if command -v node >/dev/null 2>&1; then
+        for pkg in ~/.pi/agent/extensions/*/package.json; do
+            if [[ -f "$pkg" ]]; then
+                dir="$(dirname "$pkg")"
+                echo "📦 Installing npm deps in $dir"
+                (cd "$dir" && npm install --omit=dev)
+            fi
+        done
+    else
+        echo "⚠️  npm not found — skipping pi extension npm deps."
+    fi
     if [[ "$PLATFORM" == "Darwin" ]]; then
         stow ghostty -t ~/.config/ghostty
         stow zed -t ~/.config/zed
