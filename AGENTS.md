@@ -32,9 +32,9 @@ function returns early on `Darwin`, so the macOS install path is unchanged. On L
 there may be no package manager or root, `install.sh` provisions the tools it needs itself,
 into `~/.local/bin` (already on `PATH` via `vars.sh`). Prerequisites the bootstrap does *not*
 provide and that must exist first: `perl`, `curl`, `tar`, and a sha256 tool (`sha256sum` or
-`shasum`). `git`/`zsh`/`tmux`/`neovim` are also out of scope — install those via the distro.
+`shasum`). `git`/`zsh`/`tmux` are also out of scope — install those via the distro.
 
-Two mechanisms, both in `install.sh`:
+Three mechanisms, all in `install.sh`:
 
 - **`stow` — vendored, not downloaded.** GNU Stow is a Perl program, so there is no static
   binary. The unmodified GNU Stow 2.4.1 Perl files live in `vendor/stow/` and run under the
@@ -49,6 +49,13 @@ Two mechanisms, both in `install.sh`:
   mismatch aborts — an unverified binary is never installed). Tools already on `PATH` are
   skipped. Arch is auto-detected (`x86_64` / `aarch64`).
 
+- **neovim — downloaded AppImage, extracted (not mounted).** `ensure_neovim()` fetches the
+  pinned neovim AppImage, verifies it against a hardcoded SHA256, then *extracts* it with
+  `--appimage-extract` rather than running it mounted — extraction uses the AppImage's own
+  embedded runtime and needs **no FUSE** (installing FUSE would need root). The extracted tree
+  lands in `~/.local/lib/nvim` and `~/.local/bin/nvim` symlinks its `AppRun` launcher. Skipped
+  if `nvim` is already on `PATH`; arch auto-detected.
+
 ### Refreshing / bumping versions
 
 - **Vendored stow:** re-copy the three files from an upstream install
@@ -62,6 +69,10 @@ Two mechanisms, both in `install.sh`:
   `curl -s https://api.github.com/repos/<owner>/<repo>/releases/tags/<tag>` → each asset's
   `"digest": "sha256:…"`. `type` is `raw` (bare binary) or `targz` (tarball; `member` is the
   binary's basename inside it).
+- **neovim:** edit the `NVIM_VERSION`, `NVIM_URL_X86`/`NVIM_SHA_X86`, and
+  `NVIM_URL_ARM`/`NVIM_SHA_ARM` constants above `ensure_neovim()`. Replace the version, **both**
+  URLs, and **both** SHA256s. Checksums come from the same per-asset `digest` field of the
+  GitHub release API (assets `nvim-linux-x86_64.appimage` / `nvim-linux-arm64.appimage`).
 
 ## Stow Package Layout
 

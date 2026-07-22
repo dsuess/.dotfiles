@@ -120,6 +120,60 @@ direnv|raw||https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.li
 TOOLS
 }
 
+# neovim ships as an AppImage, which normally needs FUSE at runtime — and installing
+# FUSE needs root, which this bootstrap can't assume. So rather than run the AppImage
+# mounted, we download the pinned asset, verify it, and *extract* it: `--appimage-extract`
+# uses the AppImage's own embedded runtime and needs no FUSE. The extracted tree lives in
+# ~/.local/lib/nvim and ~/.local/bin/nvim symlinks its AppRun launcher. Skips if nvim is
+# already on PATH. Linux-only. To bump the version, replace NVIM_VERSION, both URLs, and
+# both SHA256s (authoritative source: each asset's `digest` from the GitHub release API).
+NVIM_VERSION="v0.12.4"
+NVIM_URL_X86="https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-x86_64.appimage"
+NVIM_SHA_X86="cdbd8b533b500e272021e1021eafcfe28a77fc4d769465a8f1a48a34002383a7"
+NVIM_URL_ARM="https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-arm64.appimage"
+NVIM_SHA_ARM="3b819841c975b9c206eff5676b5827921cc09867059452615e2e02d9c0a665af"
+
+ensure_neovim() {
+    [[ "$PLATFORM" == "Darwin" ]] && return 0
+    if command -v nvim >/dev/null 2>&1; then
+        echo "✓ nvim already available ($(command -v nvim))"
+        return 0
+    fi
+
+    local url sha
+    case "$(uname -m)" in
+        x86_64|amd64)  url="$NVIM_URL_X86"; sha="$NVIM_SHA_X86" ;;
+        aarch64|arm64) url="$NVIM_URL_ARM"; sha="$NVIM_SHA_ARM" ;;
+        *) echo "⚠️  Unsupported arch '$(uname -m)'; skipping neovim." >&2; return 0 ;;
+    esac
+
+    command -v curl >/dev/null 2>&1 || { echo "❌ 'curl' is required to install neovim." >&2; exit 1; }
+
+    mkdir -p "$LOCAL_BIN"
+    case ":$PATH:" in *":$LOCAL_BIN:"*) ;; *) export PATH="$LOCAL_BIN:$PATH" ;; esac
+
+    local dest="$HOME/.local/lib/nvim" tmp
+    echo "⬇️  neovim $NVIM_VERSION ($url)"
+    tmp="$(mktemp -d)"
+    if ! curl -fsSL "$url" -o "$tmp/nvim.appimage"; then
+        echo "❌ Download failed: $url" >&2; rm -rf "$tmp"; exit 1
+    fi
+    verify_sha256 "$tmp/nvim.appimage" "$sha"
+
+    # Extract (no FUSE) rather than mount. Runs from $tmp so squashfs-root lands there.
+    chmod +x "$tmp/nvim.appimage"
+    if ! ( cd "$tmp" && ./nvim.appimage --appimage-extract >/dev/null ); then
+        echo "❌ Failed to extract neovim AppImage" >&2; rm -rf "$tmp"; exit 1
+    fi
+
+    rm -rf "$dest"
+    mkdir -p "$(dirname "$dest")"
+    mv "$tmp/squashfs-root" "$dest"
+    ln -sf "$dest/AppRun" "$LOCAL_BIN/nvim"
+    rm -rf "$tmp"
+    echo "✅ installed neovim → $LOCAL_BIN/nvim (extracted to $dest)"
+}
+
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 cmd_software() {
@@ -140,11 +194,12 @@ cmd_software() {
         echo ""
         ensure_stow          # vendored GNU Stow (via system perl) if none present
         ensure_static_bins   # pinned, checksum-verified static binaries → ~/.local/bin
+        ensure_neovim        # pinned neovim AppImage, extracted (no FUSE) → ~/.local/bin
         echo ""
         echo "✅ Bootstrap done. Tools live in $LOCAL_BIN (added to PATH by the shell configs)."
         echo ""
         echo "   ℹ️  Not bootstrapped here — install via your package manager if needed:"
-        echo "      git zsh tmux neovim npm  (plus optional: thefuck htop uv)"
+        echo "      git zsh tmux npm  (plus optional: thefuck htop uv)"
         echo ""
     fi
 }
