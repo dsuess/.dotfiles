@@ -47,30 +47,3 @@
 #       gpgsign = false
 [include]
     path = ~/.gitconfig.local
-[maintenance]
-	repo = /Users/danielsuess/work/pytorch
-	repo = /Users/danielsuess/work/leo-benchmark
-	repo = /Users/danielsuess/work/transformers
-	repo = /Users/danielsuess/work/diffusers
-	repo = /Users/danielsuess/work/leoframework
-	repo = /Users/danielsuess/work/cosmos-curate
-	repo = /Users/danielsuess/work/pytorch-lightning
-	repo = /Users/danielsuess/work/infinigen
-	repo = /Users/danielsuess/work/nunchaku
-	repo = /Users/danielsuess/work/Liger-Kernel
-	repo = /Users/danielsuess/work/k8s
-	repo = /Users/danielsuess/work/leo-train-template
-	repo = /Users/danielsuess/work/agent
-	repo = /Users/danielsuess/work/leonardo-terraform
-	repo = /Users/danielsuess/work/report
-	repo = /Users/danielsuess/work/canva
-	repo = /Users/danielsuess/work/obs-transcriber
-	repo = /Users/danielsuess/work/diffusion-pipe
-	repo = /Users/danielsuess/work/botocore
-	repo = /Users/danielsuess/work/canva-deps
-	repo = /Users/danielsuess/work/claudian
-	repo = /Users/danielsuess/work/torchtitan
-	repo = /Users/danielsuess/work/s3transfer
-[trace2]
-	eventtarget = af_unix:dgram:/tmp/olly-git-trace2.sock
-	configparams = remote.origin.url
