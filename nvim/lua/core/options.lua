@@ -35,7 +35,9 @@ opt.undofile = true
 opt.swapfile = false
 
 -- Misc
-opt.clipboard = "unnamedplus"
+-- Keep the unnamed register separate from the system clipboard so yanks/deletes
+-- don't clobber it. Use "+y / "+p (or the leader maps below) for the clipboard.
+opt.clipboard = ""
 opt.mouse = "a"
 opt.updatetime = 250
 opt.timeoutlen = 300

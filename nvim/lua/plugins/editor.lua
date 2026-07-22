@@ -130,6 +130,18 @@ return {
     end,
   },
 
+  -- Matching bracket/paren highlight (lightweight matchparen replacement)
+  {
+    "utilyre/sentiment.nvim",
+    version = "*",
+    event = "VeryLazy",
+    opts = {},
+    init = function()
+      -- Disable the built-in matchparen so it doesn't fight sentiment
+      vim.g.loaded_matchparen = 1
+    end,
+  },
+
   -- Surround (old: tpope/vim-surround with nmap S ys / nmap SS yss)
   {
     "kylechui/nvim-surround",
