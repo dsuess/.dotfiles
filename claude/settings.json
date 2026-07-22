@@ -1,79 +1,87 @@
 {
+  "editorMode": "vim",
+  "effortLevel": "high",
+  "enabledPlugins": {
+    "claude-powerline@claude-powerline": true,
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
   "env": {
     "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
     "DISABLE_AUTOUPDATER": "1",
     "DISABLE_INSTALLATION_CHECKS": "1"
   },
-  "permissions": {
-    "allow": ["Bash(cd *)", "Bash(bazel *)"]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rtk hook claude"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash '~/.claude/hooks/herdr-agent-state.sh' session",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "~/.claude/statusline.sh"
-  },
-  "enabledPlugins": {
-    "claude-powerline@claude-powerline": true,
-    "rust-analyzer-lsp@claude-plugins-official": true
-  },
   "extraKnownMarketplaces": {
     "claude-powerline": {
       "source": {
-        "source": "github",
-        "repo": "Owloops/claude-powerline"
+        "repo": "Owloops/claude-powerline",
+        "source": "github"
       }
     },
     "zircote-lsp": {
       "source": {
-        "source": "github",
-        "repo": "zircote/lsp-marketplace"
+        "repo": "zircote/lsp-marketplace",
+        "source": "github"
       }
     }
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "rtk hook claude",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bash '/Users/dsuess/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ]
+  },
+  "permissions": {
+    "allow": ["Bash(cd *)", "Bash(bazel *)"]
+  },
   "sandbox": {
     "enabled": true,
-    "network": {},
+    "excludedCommands": ["bazel"],
     "filesystem": {
-      "allowWrite": [".", "~/.claude", "~/.uv/cache"],
-      "denyRead": ["~/"],
       "allowRead": [
         ".",
         "~/src",
         "~/.gitconfig",
         "~/.gitconfig.local",
-        "~/.dotfiles"
-      ]
+        "~/.dotfiles",
+        "~/.cache/uv",
+        "~/.local/share/uv"
+      ],
+      "allowWrite": [
+        ".",
+        "~/.claude",
+        "~/.uv/cache",
+        "~/.cache/uv",
+        "~/.local/share/uv"
+      ],
+      "denyRead": ["~/"]
     },
-    "excludedCommands": ["bazel"]
+    "network": {}
   },
-  "effortLevel": "high",
-  "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
+  "statusLine": {
+    "command": "~/.claude/statusline.sh",
+    "type": "command"
+  },
   "theme": "dark",
-  "editorMode": "vim",
+  "tui": "fullscreen",
   "voiceEnabled": true
 }
