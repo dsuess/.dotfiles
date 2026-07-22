@@ -135,9 +135,18 @@ NVIM_SHA_ARM="3b819841c975b9c206eff5676b5827921cc09867059452615e2e02d9c0a665af"
 
 ensure_neovim() {
     [[ "$PLATFORM" == "Darwin" ]] && return 0
+    # Keep an existing nvim only if it's recent enough (our config needs >= 0.12);
+    # an older or unparseable one falls through to the pinned AppImage. `nvim --version`
+    # prints "NVIM v0.12.4" on line 1; empty fields compare as 0 inside [[ -ge ]].
     if command -v nvim >/dev/null 2>&1; then
-        echo "✓ nvim already available ($(command -v nvim))"
-        return 0
+        local cur major minor
+        cur="$(nvim --version 2>/dev/null | sed -n '1s/^NVIM v//p')"
+        major="${cur%%.*}"; minor="${cur#*.}"; minor="${minor%%.*}"
+        if [[ "$major" -gt 0 || ( "$major" -eq 0 && "$minor" -ge 12 ) ]]; then
+            echo "✓ nvim ${cur:-?} already available ($(command -v nvim))"
+            return 0
+        fi
+        echo "↻ nvim ${cur:-<unknown>} is older than 0.12 — installing pinned AppImage"
     fi
 
     local url sha
