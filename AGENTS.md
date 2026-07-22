@@ -25,6 +25,44 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 ./install.sh software
 ```
 
+## Linux Bootstrap (no package manager / no root)
+
+On macOS the toolchain comes from Homebrew and **none of this runs** — every bootstrap
+function returns early on `Darwin`, so the macOS install path is unchanged. On Linux, where
+there may be no package manager or root, `install.sh` provisions the tools it needs itself,
+into `~/.local/bin` (already on `PATH` via `vars.sh`). Prerequisites the bootstrap does *not*
+provide and that must exist first: `perl`, `curl`, `tar`, and a sha256 tool (`sha256sum` or
+`shasum`). `git`/`zsh`/`tmux`/`neovim` are also out of scope — install those via the distro.
+
+Two mechanisms, both in `install.sh`:
+
+- **`stow` — vendored, not downloaded.** GNU Stow is a Perl program, so there is no static
+  binary. The unmodified GNU Stow 2.4.1 Perl files live in `vendor/stow/` and run under the
+  system `perl`. `ensure_stow()` (called by `cmd_config`) symlinks `vendor/stow/bin/stow` into
+  `~/.local/bin` only when no `stow` is already on `PATH`. The one upstream machine-specific
+  line (`use lib "/opt/homebrew/…"`) was replaced with a relocatable `FindBin`-based lookup so
+  the copy works through the symlink.
+
+- **Other tools — downloaded, pinned, checksum-verified.** `ensure_static_bins()` fetches
+  prebuilt static binaries for `herdr`, `fzf`, `ripgrep`, `fd`, `bat`, `direnv` from pinned
+  GitHub releases. Each asset is verified against a **hardcoded SHA256 before install** (a
+  mismatch aborts — an unverified binary is never installed). Tools already on `PATH` are
+  skipped. Arch is auto-detected (`x86_64` / `aarch64`).
+
+### Refreshing / bumping versions
+
+- **Vendored stow:** re-copy the three files from an upstream install
+  (`bin/stow` → `vendor/stow/bin/stow`; `Stow.pm` and `Stow/Util.pm` →
+  `vendor/stow/lib/perl5/…`), re-apply the `use lib` → `FindBin` edit, and update
+  `vendor/stow/VERSION`.
+- **Downloaded tools:** edit the `TOOLS` table inside `ensure_static_bins()`. Each row is
+  `name|type|member|url_x86|sha_x86|url_arm|sha_arm`. To bump a version, replace **both** the
+  URL and the SHA256 for each arch. Authoritative checksums are the per-asset `digest` field
+  from the GitHub API, e.g.
+  `curl -s https://api.github.com/repos/<owner>/<repo>/releases/tags/<tag>` → each asset's
+  `"digest": "sha256:…"`. `type` is `raw` (bare binary) or `targz` (tarball; `member` is the
+  binary's basename inside it).
+
 ## Stow Package Layout
 
 Each package mirrors the target directory tree. Running `stow <pkg> -t ~` creates symlinks from `~` into the package. Key packages:
