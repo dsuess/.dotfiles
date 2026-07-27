@@ -1,7 +1,7 @@
 {
   "onboardingTips": {
     "welcomeTipRead": true,
-    "strokeLimitTipRead": false,
+    "strokeLimitTipRead": true,
     "lastVersionTipRead": "0.3.4"
   },
   "customAttachmentFolders": false,
