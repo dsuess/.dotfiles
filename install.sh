@@ -117,6 +117,7 @@ fd|targz|fd|https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x
 bat|targz|bat|https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz|0dcd8ac79732c0d5b136f11f4ee00e581440e16a44eab5b3105b611bbf2cf191|https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-aarch64-unknown-linux-musl.tar.gz|6369242c584065f195fb20cb36fbd7cb63ae690605bbe89868a7596b596c2c23
 fzf|targz|fzf|https://github.com/junegunn/fzf/releases/download/v0.74.1/fzf-0.74.1-linux_amd64.tar.gz|df53438be5f51e151bb4044d78fda72bdfe209e3ecd2baecae48e8dea370c81b|https://github.com/junegunn/fzf/releases/download/v0.74.1/fzf-0.74.1-linux_arm64.tar.gz|f22204dd1a091d43e102268d062fd53b47133c8d8581671ee5eb225b75e31183
 direnv|raw||https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.linux-amd64|1f1b93dd6f38523fde26dfac96151ef9d31a374e3005cd3345fb93555ae0c9b5|https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.linux-arm64|2a9cef8d73521d6a3ec3f2871c4b747b8c4cc038628c1b57a7efa42b393a2d82
+rtk|targz|rtk|https://github.com/rtk-ai/rtk/releases/download/v0.44.0/rtk-x86_64-unknown-linux-musl.tar.gz|3c3316cfc068e372432b415faeab73d46f8047750d488dd94d01d8d9f016a2a1|https://github.com/rtk-ai/rtk/releases/download/v0.44.0/rtk-aarch64-unknown-linux-gnu.tar.gz|48be2ebe6332ceb67301909125ea20a3f557b07a7c6614defed29f9bf8e1d074
 TOOLS
 }
 
