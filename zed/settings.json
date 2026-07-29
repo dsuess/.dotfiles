@@ -86,6 +86,8 @@
     "model_parameters": []
   },
   "git_panel": {
+    "group_by": "none",
+    "tree_view": true,
     "dock": "right"
   },
   "use_system_path_prompts": false,

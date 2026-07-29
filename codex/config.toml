@@ -1,9 +1,10 @@
 approval_policy = "never"
 default_permissions = "cwd-only"
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 plan_mode_reasoning_effort = "xhigh"
 hide_agent_reasoning = true
+service_tier = "fast"
 
 [permissions.cwd-only]
 description = "Allow edits only in the active workspace root; allow installed CLI tools and RTK state."

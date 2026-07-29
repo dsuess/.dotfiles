@@ -18,10 +18,10 @@
       "space d n": "debugger::StepOver",
       "space d i": "debugger::StepInto",
       "space d o": "debugger::StepOut",
-      "space d u": "editor::RunToCursor",
+      "space d u": "debugger::RunToCursor",
       "space d b": "editor::ToggleBreakpoint",
       "space d l": "editor::EditLogBreakpoint",
-      "space d e": "editor::EvaluateSelectedText",
+      "space d e": "debugger::EvaluateSelectedText",
       "space d t": "debug_panel::ToggleFocus",
       // Reclaim ctrl-r for redo in normal mode (VSCode base keymap
       // otherwise steals it for projects::OpenRecent, which stays

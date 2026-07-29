@@ -4,7 +4,8 @@ set -e
 PLATFORM="$(uname -s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-OBSIDIAN_VAULT="work"   # canonical vault for the drift check; match the real folder name
+OBSIDIAN_VAULT="notes"   # canonical vault for the drift check; match the real folder name
+OBSIDIAN_DOCS="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
 
 LOCAL_BIN="$HOME/.local/bin"   # where the Linux bootstrap drops vendored/downloaded tools
 
@@ -196,7 +197,8 @@ cmd_software() {
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
-            brew install --cask "$TGT"
+            # Repair stale cask receipts when an app was removed outside Homebrew.
+            brew install --cask --force "$TGT"
         done
 
         # herdr plugins (Ctrl+h/j/k/l nav across herdr panes ↔ Neovim splits).
@@ -270,7 +272,6 @@ cmd_config() {
         stow zed -t ~/.config/zed
         stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
 
-        OBSIDIAN_DOCS="$HOME/Documents"
         [[ -d "$OBSIDIAN_DOCS" ]] && sync_obsidian "$OBSIDIAN_DOCS"
     fi
 }
