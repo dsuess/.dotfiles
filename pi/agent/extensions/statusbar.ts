@@ -190,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 						totalTokens > 0 ? P.lavender :
 						P.overlay2;
 
-					line += cf(P.overlay0, `${I.clock} `) +
+					line += cf(P.overlay0, I.clock) + "  " +
 						cf(costColor, fmtTokens(totalTokens)) +
 						cf(P.overlay1, ` (${fmtCost(totalCost)}) `) +
 						R;

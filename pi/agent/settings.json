@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "0.78.0",
-  "defaultProvider": "zai",
-  "defaultModel": "glm-5.1",
-  "defaultThinkingLevel": "high",
+  "lastChangelogVersion": "0.82.1",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "xhigh",
   "editorPaddingX": 1,
   "skills": [
     "~/.agents/skills"
@@ -13,8 +13,8 @@
     "npm:@complexthings/pi-dynamic-context-pruning",
     "npm:pi-context-usage",
     "npm:pi-subagents",
-    "extensions/statusbar.ts",
-    "extensions/sandbox"
+    "extensions/statusbar.ts"
   ],
-  "hideThinkingBlock": true
+  "hideThinkingBlock": true,
+  "theme": "dark"
 }

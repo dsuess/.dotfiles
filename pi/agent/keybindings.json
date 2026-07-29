@@ -1,4 +1,5 @@
 {
+  "app.clipboard.pasteImage": ["ctrl+v"],
   "app.model.cycleForward": ["ctrl+."],
   "app.model.cycleBackward": ["ctrl+shift+."],
   "app.models.toggleProvider": ["ctrl+shift+p"],
