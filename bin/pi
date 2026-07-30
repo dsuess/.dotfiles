@@ -1,0 +1,134 @@
+#!/bin/bash -p
+set -euo pipefail
+
+readonly SANDBOX_DIR="$HOME/.pi/sandbox"
+readonly SRT_BIN="$SANDBOX_DIR/node_modules/.bin/srt"
+readonly SRT_SETTINGS="$SANDBOX_DIR/settings.json"
+
+die() {
+    echo "pi: sandbox initialization failed: $*" >&2
+    exit 1
+}
+
+readonly WORKSPACE_ROOT="$(builtin pwd -P)"
+
+# Resolve bootstrap tools only from absolute PATH directories outside the
+# writable workspace. SRT has not applied the OS sandbox yet, so executing a
+# workspace-local node, rg, bwrap, or socat here would bypass the boundary.
+safe_path_entries() {
+    local entry resolved_dir
+    local entries=()
+
+    IFS=: read -r -a entries <<<"${PATH-}"
+    for entry in "${entries[@]}"; do
+        [[ "$entry" == /* ]] || continue
+        resolved_dir="$(
+            if ! builtin cd -- "$entry" 2>/dev/null; then
+                exit 1
+            fi
+            builtin pwd -P
+        )" || continue
+        case "$resolved_dir" in
+            "$WORKSPACE_ROOT"|"$WORKSPACE_ROOT"/*) continue ;;
+        esac
+        printf '%s\n' "$resolved_dir"
+    done
+}
+
+find_host_executable() {
+    local name="$1"
+    local entry candidate
+
+    while IFS= read -r entry; do
+        candidate="$entry/$name"
+        [[ -x "$candidate" && ! -d "$candidate" ]] || continue
+        printf '%s\n' "$candidate"
+        return 0
+    done < <(safe_path_entries)
+
+    return 1
+}
+
+find_real_pi() {
+    local candidate entry
+
+    while IFS= read -r entry; do
+        candidate="$entry/pi"
+        [[ -x "$candidate" ]] || continue
+        [[ "$candidate" -ef "${BASH_SOURCE[0]}" ]] && continue
+        printf '%s\n' "$candidate"
+        return 0
+    done < <(safe_path_entries)
+
+    return 1
+}
+
+case "$OSTYPE" in
+    darwin*)
+        [[ -x /usr/bin/sandbox-exec ]] || die "macOS sandbox-exec is unavailable"
+        ;;
+    linux*)
+        host_bwrap="$(find_host_executable bwrap)" ||
+            die "bubblewrap (bwrap) is required on Linux"
+        readonly HOST_BWRAP="$host_bwrap"
+        host_socat="$(find_host_executable socat)" ||
+            die "socat is required on Linux"
+        readonly HOST_SOCAT="$host_socat"
+        ;;
+    *)
+        die "only macOS and Linux are supported"
+        ;;
+esac
+
+host_node="$(find_host_executable node)" || die "Node.js is required"
+readonly HOST_NODE="$host_node"
+"$HOST_NODE" -e '
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    process.exit(major > 20 || (major === 20 && minor >= 11) ? 0 : 1);
+' || die "Node.js 20.11 or newer is required"
+host_rg="$(find_host_executable rg)" || die "ripgrep (rg) is required"
+readonly HOST_RG="$host_rg"
+[[ -x "$SRT_BIN" ]] || die "sandbox runtime is not installed; run ./install.sh config"
+[[ -r "$SRT_SETTINGS" ]] || die "sandbox policy is missing or unreadable: $SRT_SETTINGS"
+
+real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
+readonly REAL_PI="$real_pi"
+readonly REAL_PI_DIR="${REAL_PI%/*}"
+
+# Put the package binary ahead of ~/bin inside the sandbox. Nested Pi processes
+# (including pi-subagents) then inherit the current OS sandbox without trying to
+# initialize a weaker nested sandbox. Trusted bootstrap directories also stay
+# ahead of workspace-local shims while SRT initializes.
+inner_path="$REAL_PI_DIR:${HOST_NODE%/*}:${HOST_RG%/*}:/usr/bin:/bin"
+if [[ "$OSTYPE" == linux* ]]; then
+    inner_path="$inner_path:${HOST_BWRAP%/*}:${HOST_SOCAT%/*}"
+fi
+inner_path="$inner_path:$PATH"
+readonly inner_path
+
+# Do not leak ambient cloud, package-manager, SSH, or application credentials
+# into model-invoked subprocesses. Pi's explicitly accepted credentials remain
+# available through ~/.pi/agent/auth.json.
+safe_env=(
+    "HOME=$HOME"
+    "PATH=$inner_path"
+    "TMPDIR=/tmp"
+    "XDG_CACHE_HOME=$HOME/.cache/pi-sandbox"
+    "NPM_CONFIG_CACHE=$HOME/.cache/pi-sandbox/npm"
+    "PIP_CACHE_DIR=$HOME/.cache/pi-sandbox/pip"
+    "CONDA_PKGS_DIRS=$HOME/.cache/pi-sandbox/conda"
+    "UV_CACHE_DIR=$HOME/.cache/uv"
+    "HF_HOME=$HOME/.cache/huggingface"
+    "CARGO_HOME=$HOME/.cargo"
+)
+
+for name in \
+    USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \
+    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR
+do
+    value="${!name-}"
+    [[ -n "$value" ]] && safe_env+=("$name=$value")
+done
+
+exec /usr/bin/env -i "${safe_env[@]}" \
+    "$SRT_BIN" --settings "$SRT_SETTINGS" -- "$REAL_PI" "$@"

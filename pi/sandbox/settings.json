@@ -1,0 +1,194 @@
+{
+  "network": {
+    "allowedDomains": [
+      "chatgpt.com",
+      "auth.openai.com",
+      "api.openai.com",
+      "pi.dev",
+      "api.z.ai",
+
+      "github.com",
+      "*.github.com",
+      "*.githubusercontent.com",
+      "ghcr.io",
+
+      "registry.npmjs.org",
+      "*.npmjs.org",
+
+      "pypi.org",
+      "*.pypi.org",
+      "files.pythonhosted.org",
+      "*.pythonhosted.org",
+
+      "repo.anaconda.com",
+      "conda.anaconda.org",
+      "*.anaconda.org",
+      "prefix.dev",
+      "*.prefix.dev",
+
+      "crates.io",
+      "*.crates.io",
+
+      "proxy.golang.org",
+      "sum.golang.org",
+      "storage.googleapis.com",
+
+      "huggingface.co",
+      "*.huggingface.co",
+      "*.hf.co",
+
+      "formulae.brew.sh",
+
+      "localhost"
+    ],
+    "deniedDomains": [],
+    "strictAllowlist": true,
+    "allowUnixSockets": [],
+    "allowAllUnixSockets": false,
+    "allowLocalBinding": true,
+    "allowMachLookup": [
+      "com.apple.pasteboard.1"
+    ]
+  },
+  "filesystem": {
+    "denyRead": [
+      "~"
+    ],
+    "allowRead": [
+      ".",
+
+      "~/.pi/agent",
+      "~/.pi/sandbox",
+      "~/.agents/skills",
+      "~/.dotfiles/pi/agent",
+      "~/.dotfiles/agents/skills",
+
+      "~/bin",
+      "~/.local/bin",
+      "~/.gitconfig",
+      "~/.gitconfig.local",
+      "~/.config/git",
+      "~/.config/uv",
+      "~/.config/rtk",
+      "~/.config/ketch",
+
+      "~/.cargo/bin",
+      "~/.cargo/config",
+      "~/.cargo/config.toml",
+      "~/.cargo/git",
+      "~/.cargo/registry",
+      "~/.rustup",
+
+      "~/.cache/pi-sandbox",
+      "~/.cache/uv",
+      "~/.uv/cache",
+      "~/.local/share/uv",
+      "~/.cache/huggingface",
+
+      "~/.config/nvim",
+      "~/.dotfiles/nvim",
+      "~/.local/share/nvim",
+      "~/.local/state/nvim",
+      "~/.cache/nvim",
+
+      "~/.local/share/rtk",
+      "~/Library/Application Support/rtk"
+    ],
+    "allowWrite": [
+      ".",
+      "/tmp",
+
+      "~/.pi/agent",
+
+      "~/.cache/pi-sandbox",
+      "~/.cache/uv",
+      "~/.uv/cache",
+      "~/.local/share/uv",
+      "~/.cache/huggingface",
+
+      "~/.cargo/git",
+      "~/.cargo/registry",
+
+      "~/.local/state/nvim",
+      "~/.cache/nvim",
+
+      "~/.config/rtk",
+      "~/.local/share/rtk",
+      "~/Library/Application Support/rtk"
+    ],
+    "denyWrite": [
+      "~/bin/pi",
+      "~/.pi/sandbox",
+      "~/.pi/agent/extensions/plan-mode",
+      "~/.dotfiles/bin/pi",
+      "~/.dotfiles/pi/sandbox",
+      "~/.dotfiles/pi/agent/extensions/plan-mode"
+    ],
+    "allowGitConfig": false
+  },
+  "credentials": {
+    "files": [
+      {
+        "path": "~/.ssh",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.gnupg",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.aws",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.azure",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.kube",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.docker/config.json",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.config/gcloud",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.config/gh",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.config/op",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.netrc",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.npmrc",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.pypirc",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.cargo/credentials",
+        "mode": "deny"
+      },
+      {
+        "path": "~/.cargo/credentials.toml",
+        "mode": "deny"
+      }
+    ],
+    "envVars": []
+  },
+  "enableWeakerNestedSandbox": false,
+  "enableWeakerNetworkIsolation": false,
+  "allowAppleEvents": false,
+  "allowPty": true
+}

@@ -37,6 +37,7 @@ import {
 	createModeEditorFactory,
 	type PhaseRef,
 } from "./mode-indicator.ts";
+import { textToolResult } from "./tool-result.js";
 
 // ─── Tool allowlists ────────────────────────────────────────────────────────
 
@@ -225,16 +226,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		promptSnippet: "Submit the plan for review",
-		promptGuidelines:
+		promptGuidelines: [
 			"Call submit_plan when you have a complete, structured plan. " +
 			"Include numbered steps, file paths, and acceptance criteria. " +
 			"The user will review it in their editor and may leave comments.",
+		],
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			if (state.phase !== "explore" && state.phase !== "draft" && state.phase !== "review") {
-				return {
-					type: "text" as const,
-					text: "Error: Cannot submit plan outside of explore/draft/review phase.",
-				};
+				return textToolResult(
+					"Error: Cannot submit plan outside of explore/draft/review phase.",
+				);
 			}
 
 			// Write plan to temp file
@@ -254,10 +255,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				});
 			}
 
-			return {
-				type: "text" as const,
-				text: `Plan saved to ${state.planPath}. Phase is now review.${ctx.hasUI ? " Opening in editor..." : " Use /plan-review to open in editor."}`,
-			};
+			return textToolResult(
+				`Plan saved to ${state.planPath}. Phase is now review.${ctx.hasUI ? " Opening in editor..." : " Use /plan-review to open in editor."}`,
+			);
 		},
 	});
 

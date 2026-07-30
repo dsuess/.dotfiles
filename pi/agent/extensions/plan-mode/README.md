@@ -103,7 +103,8 @@ Phase and plan state persist via `appendEntry`. They survive:
 
 ## Security Note
 
-Extensions run with full system permissions. The mutation gate restricts the
-*agent's* tool access, but the extension itself can write files (it writes
-the plan on `submit_plan` and on approval). This is by design — the extension
-is the trusted boundary between the read-only agent and the filesystem.
+The mutation gate is a workflow guard: it restricts the agent's active tools,
+while the trusted extension can still write the submitted plan. The
+whole-process Pi wrapper in `~/.pi/sandbox/` is the actual OS security
+boundary. It confines Pi, this extension, and every child process even if the
+gate has a bug.

@@ -1,0 +1,14 @@
+{
+  "name": "pi-sandbox-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned whole-process sandbox runtime for Pi",
+  "scripts": {
+    "test": "npm run test:wrapper && npm run test:containment",
+    "test:wrapper": "bash test-wrapper.sh",
+    "test:containment": "bash test-containment.sh"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.67"
+  }
+}

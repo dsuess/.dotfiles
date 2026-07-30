@@ -4,17 +4,16 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "xhigh",
   "editorPaddingX": 1,
-  "skills": [
-    "~/.agents/skills"
-  ],
+  "quietStartup": true,
+  "skills": ["~/.agents/skills"],
   "packages": [
     "npm:pi-vim",
     "npm:pi-ketch",
     "npm:@juicesharp/rpiv-ask-user-question",
-    "npm:@complexthings/pi-dynamic-context-pruning",
     "npm:pi-context-usage",
-    "npm:pi-subagents",
-    "extensions/statusbar.ts"
+    "extensions/statusbar.ts",
+    "npm:pi-rtk-optimizer",
+    "npm:pi-tuicr"
   ],
   "hideThinkingBlock": true,
   "theme": "dark"

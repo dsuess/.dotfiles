@@ -193,7 +193,7 @@ cmd_software() {
         brew update
 
         echo "🔧 Installing CLI tools..."
-        brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop findutils imagemagick 1broseidon/tap/ketch
+        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick 1broseidon/tap/ketch tuicr herdr
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
@@ -266,6 +266,21 @@ cmd_config() {
     else
         echo "⚠️  npm not found — skipping pi extension npm deps."
     fi
+
+    # Install the pinned whole-process sandbox runtime. Keep its npm cache
+    # separate from the user's normal cache (which may contain credentials or
+    # machine-specific ownership problems).
+    if command -v npm >/dev/null 2>&1 && [[ -f ~/.pi/sandbox/package-lock.json ]]; then
+        echo "📦 Installing Pi sandbox runtime"
+        mkdir -p ~/.cache/pi-sandbox/npm
+        (
+            cd ~/.pi/sandbox
+            npm_config_cache=~/.cache/pi-sandbox/npm npm ci --omit=dev --ignore-scripts
+        )
+    else
+        echo "⚠️  npm or the Pi sandbox lockfile is missing — sandboxed pi will fail closed."
+    fi
+
     if [[ "$PLATFORM" == "Darwin" ]]; then
         configure_macos_keyboard
 
