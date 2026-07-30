@@ -193,7 +193,7 @@ cmd_software() {
         brew update
 
         echo "🔧 Installing CLI tools..."
-        brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop findutils imagemagick
+        brew install git zsh neovim uv fzf thefuck just php htop gnupg direnv tmux openssl the_silver_searcher fd stow ripgrep npm bat asitop findutils imagemagick 1broseidon/tap/ketch
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
@@ -233,7 +233,7 @@ cmd_config() {
     [[ -L ~/.claude/skills ]] && rm -f ~/.claude/skills
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.pi
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.pi
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
@@ -252,6 +252,7 @@ cmd_config() {
     stow pi -t ~/.pi/
     stow uv -t ~/.config/uv
     stow herdr -t ~/.config/herdr
+    stow ketch -t ~/.config/ketch
 
     # Install npm dependencies for pi extensions that need them (skip if no npm)
     if command -v node >/dev/null 2>&1; then

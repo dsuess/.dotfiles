@@ -9,6 +9,7 @@
   ],
   "packages": [
     "npm:pi-vim",
+    "npm:pi-ketch",
     "npm:@juicesharp/rpiv-ask-user-question",
     "npm:@complexthings/pi-dynamic-context-pruning",
     "npm:pi-context-usage",
