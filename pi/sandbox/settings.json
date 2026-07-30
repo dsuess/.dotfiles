@@ -39,6 +39,19 @@
 
       "formulae.brew.sh",
 
+      "api.search.brave.com",
+      "html.duckduckgo.com",
+      "mcp.exa.ai",
+      "api.firecrawl.dev",
+      "api.keenable.ai",
+      "mcp.grep.app",
+      "sourcegraph.com",
+      "context7.com",
+      "registry.npmmirror.com",
+      "cdn.npmmirror.com",
+      "playwright.azureedge.net",
+      "playwright.download.prss.microsoft.com",
+
       "localhost"
     ],
     "deniedDomains": [],
@@ -46,14 +59,10 @@
     "allowUnixSockets": [],
     "allowAllUnixSockets": false,
     "allowLocalBinding": true,
-    "allowMachLookup": [
-      "com.apple.pasteboard.1"
-    ]
+    "allowMachLookup": ["com.apple.pasteboard.1"]
   },
   "filesystem": {
-    "denyRead": [
-      "~"
-    ],
+    "denyRead": ["~"],
     "allowRead": [
       ".",
 

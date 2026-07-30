@@ -2,18 +2,20 @@
   "lastChangelogVersion": "0.82.1",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "xhigh",
+  "defaultThinkingLevel": "max",
   "editorPaddingX": 1,
   "quietStartup": true,
-  "skills": ["~/.agents/skills"],
+  "skills": [
+    "~/.agents/skills"
+  ],
   "packages": [
+    "extensions/statusbar.ts",
     "npm:pi-vim",
     "npm:pi-ketch",
-    "npm:@juicesharp/rpiv-ask-user-question",
     "npm:pi-context-usage",
-    "extensions/statusbar.ts",
     "npm:pi-rtk-optimizer",
-    "npm:pi-tuicr"
+    "npm:pi-tuicr",
+    "npm:@juicesharp/rpiv-ask-user-question"
   ],
   "hideThinkingBlock": true,
   "theme": "dark"
