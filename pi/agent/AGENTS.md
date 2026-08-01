@@ -24,6 +24,22 @@
 - Zero context switching required from the user
 - Go fix failing CI tests without being told how
 
+### 5. Question Batching
+
+- Before asking, complete all useful, safe repository inspection,
+  documentation review, and independent reasoning. A question is ready only
+  when further useful progress is blocked by a genuinely user-owned decision.
+- Accumulate all currently known blockers and ask them in one
+  `ask_user_question` call (up to its four-question limit), with a recommended
+  answer for each decision. If more than four are known, ask the
+  highest-dependency decisions first. If the tool is unavailable, use one
+  concise, numbered plain-text list instead; if no blockers remain, ask nothing.
+- Ask a later question batch only if earlier answers reveal dependent decisions
+  or a tool-limited batch leaves blockers, and only after completing another
+  investigation pass; never issue questionnaires back-to-back.
+- Override this batching cadence only when the user explicitly requests a
+  one-question-at-a-time interview.
+
 ## Task Management
 
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
