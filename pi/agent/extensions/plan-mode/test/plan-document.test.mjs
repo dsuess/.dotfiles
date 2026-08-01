@@ -7,55 +7,93 @@ import {
 	renderPlanDocument,
 	validatePlanDocument,
 } from "../plan-document.js";
-import { LEGACY_PLAN, VALID_PLAN } from "./fixtures.mjs";
+import { LEGACY_PLAN, SMALL_PLAN, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
 
 function errorCodes(markdown) {
 	return validatePlanDocument(markdown).map((item) => item.code);
 }
 
-test("parses why/what steps independently from their stage mapping", () => {
+test("parses high-level changes independently from their optional stage mapping", () => {
 	const result = parsePlanDocument(VALID_PLAN);
 	assert.equal(result.ok, true, JSON.stringify(result.errors));
-	assert.equal(result.document.version, 2);
+	assert.equal(result.document.version, 3);
 	assert.equal(result.document.title, "Add Reliable Cache Invalidation");
+	assert.match(result.document.background, /within the repository/);
+	assert.match(result.document.testingPlan, /successful and failed writes/);
+	assert.match(result.document.assumptionsDecisions, /user decided/);
+	assert.equal(result.document.breakingChanges, undefined);
+	assert.equal(result.document.explicitStages, true);
 	assert.deepEqual(result.document.steps.map((step) => step.id), ["1", "2", "3"]);
 	assert.deepEqual(result.document.steps.map((step) => step.status), ["pending", "in_progress", "blocked"]);
 	assert.deepEqual(result.document.stages.map((stage) => stage.stepIds), [["1"], ["2", "3"]]);
-	assert.equal(result.document.stages[1].description, "Implement invalidation and verify edge cases.");
+});
+
+test("parses an applicable breaking-changes section", () => {
+	const markdown = VALID_PLAN.replace(
+		"## Testing Plan",
+		"## Breaking Changes\n\nExisting consumers must migrate to the new cache lifecycle.\n\n## Testing Plan",
+	);
+	const result = parsePlanDocument(markdown);
+	assert.equal(result.ok, true, JSON.stringify(result.errors));
+	assert.match(result.document.breakingChanges, /must migrate/);
+});
+
+test("accepts a small plan without optional sections or an explicit stages section", () => {
+	const result = parsePlanDocument(SMALL_PLAN);
+	assert.equal(result.ok, true, JSON.stringify(result.errors));
+	assert.equal(result.document.explicitStages, false);
+	assert.equal(result.document.testingPlan, undefined);
+	assert.equal(result.document.assumptionsDecisions, undefined);
+	assert.deepEqual(result.document.stages.map((stage) => stage.stepIds), [["1"]]);
+	assert.equal(result.document.stages[0].description, "Complete the planned changes.");
+	assert.doesNotMatch(renderPlanDocument(result.document), /## Stages/);
 });
 
 test("parse/render round-trip preserves the execution contract", () => {
-	const first = parsePlanDocument(VALID_PLAN);
-	assert.equal(first.ok, true);
-	const rendered = renderPlanDocument(first.document);
-	const second = parsePlanDocument(rendered);
-	assert.equal(second.ok, true, JSON.stringify(second.errors));
-	assert.deepEqual(second.document, first.document);
+	for (const markdown of [VALID_PLAN, SMALL_PLAN]) {
+		const first = parsePlanDocument(markdown);
+		assert.equal(first.ok, true);
+		const rendered = renderPlanDocument(first.document);
+		const second = parsePlanDocument(rendered);
+		assert.equal(second.ok, true, JSON.stringify(second.errors));
+		assert.deepEqual(second.document, first.document);
+	}
 });
 
-test("accepts legacy stage-grouped plans for active-session compatibility", () => {
-	const result = parsePlanDocument(LEGACY_PLAN);
-	assert.equal(result.ok, true, JSON.stringify(result.errors));
-	assert.equal(result.document.version, 1);
-	assert.deepEqual(result.document.stages.map((stage) => stage.id), ["1", "2"]);
-	assert.deepEqual(result.document.stages[1].tasks.map((task) => task.id), ["2.1", "2.2"]);
+test("accepts version 2 and legacy plans for active-session compatibility", () => {
+	const version2 = parsePlanDocument(VERSION_2_PLAN);
+	assert.equal(version2.ok, true, JSON.stringify(version2.errors));
+	assert.equal(version2.document.version, 2);
+	assert.match(renderPlanDocument(version2.document), /## Why/);
+
+	const legacy = parsePlanDocument(LEGACY_PLAN);
+	assert.equal(legacy.ok, true, JSON.stringify(legacy.errors));
+	assert.equal(legacy.document.version, 1);
+	assert.deepEqual(legacy.document.stages.map((stage) => stage.id), ["1", "2"]);
+	assert.deepEqual(legacy.document.stages[1].tasks.map((task) => task.id), ["2.1", "2.2"]);
 });
 
-test("requires exactly the Why, What, and Stages sections in order", () => {
-	const missing = VALID_PLAN.replace("## Why", "## Motivation");
-	assert.ok(errorCodes(missing).includes("invalid_section_order"));
+test("requires Background and Changes and keeps optional sections in canonical order", () => {
+	const missing = VALID_PLAN.replace("## Background", "## Motivation");
+	assert.ok(errorCodes(missing).includes("missing_section"));
 
 	const reordered = VALID_PLAN
-		.replace("## Why", "## TEMP")
-		.replace("## What", "## Why")
-		.replace("## TEMP", "## What");
+		.replace("## Testing Plan", "## TEMP")
+		.replace("## Assumptions / Decisions", "## Testing Plan")
+		.replace("## TEMP", "## Assumptions / Decisions");
 	assert.ok(errorCodes(reordered).includes("invalid_section_order"));
+
+	const empty = VALID_PLAN.replace(
+		/## Assumptions \/ Decisions\n\n[\s\S]*?(?=\n## Stages)/,
+		"## Assumptions / Decisions\n",
+	);
+	assert.ok(errorCodes(empty).includes("empty_section"));
 });
 
 test("rejects malformed stage ordering, mappings, and duplicate assignments", () => {
 	assert.ok(errorCodes(VALID_PLAN.replace("| 2 | Implement", "| 3 | Implement")).includes("stage_order"));
-	assert.ok(errorCodes(VALID_PLAN.replace("| 2 | Implement invalidation and verify edge cases. | 2, 3 |", "| 2 | Implement invalidation and verify edge cases. | 2, 4 |")).includes("unknown_step"));
-	assert.ok(errorCodes(VALID_PLAN.replace("| 1 | Freeze the cache behavior and executable contract. | 1 |", "| 1 | Freeze the cache behavior and executable contract. | 1, 2 |")).includes("duplicate_step_assignment"));
+	assert.ok(errorCodes(VALID_PLAN.replace("| 2 | Implement and verify the behavior; the two changes may proceed together once Stage 1 is settled. | 2, 3 |", "| 2 | Implement and verify the behavior; the two changes may proceed together once Stage 1 is settled. | 2, 4 |")).includes("unknown_step"));
+	assert.ok(errorCodes(VALID_PLAN.replace("| 1 | Establish expected behavior before implementation. | 1 |", "| 1 | Establish expected behavior before implementation. | 1, 2 |")).includes("duplicate_step_assignment"));
 });
 
 test("rejects duplicate, missing, and invalid step IDs/statuses", () => {
@@ -64,18 +102,40 @@ test("rejects duplicate, missing, and invalid step IDs/statuses", () => {
 	assert.ok(errorCodes(VALID_PLAN.replace("### Step 1 [pending]", "### Step 1 [done]")).includes("invalid_status"));
 });
 
-test("rejects steps without explicit target or tool metadata", () => {
-	const noTargets = VALID_PLAN.replace("- **Targets:** `src/cache.ts`, `test/cache.test.ts`", "- Files are not known yet.");
-	assert.ok(errorCodes(noTargets).includes("missing_targets"));
+test("rejects target-file and tool/API metadata in version 3", () => {
+	const withTargets = VALID_PLAN.replace(
+		"Clarify ownership, expiry, and invalidation behavior",
+		"- **Targets:** `src/cache.ts`\n\nClarify ownership, expiry, and invalidation behavior",
+	);
+	assert.ok(errorCodes(withTargets).includes("disallowed_metadata"));
 
-	const noTools = VALID_PLAN.replace("- **Tools / APIs:** read, edit, Node test runner", "- Use normal tools.");
-	assert.ok(errorCodes(noTools).includes("missing_tools"));
+	const withTools = VALID_PLAN.replace(
+		"Clarify ownership, expiry, and invalidation behavior",
+		"- **Tools / APIs:** edit, cache API\n\nClarify ownership, expiry, and invalidation behavior",
+	);
+	assert.ok(errorCodes(withTools).includes("disallowed_metadata"));
+});
+
+test("requires a high-level Changes summary before its steps", () => {
+	const withoutSummary = SMALL_PLAN.replace(
+		"Clarify the lifecycle at a repository-facing level without prescribing implementation details.\n\n",
+		"",
+	);
+	assert.ok(errorCodes(withoutSummary).includes("empty_section"));
+});
+
+test("rejects a stages table that exists only inside a fenced code block", () => {
+	const fenced = VALID_PLAN.replace(
+		"| Stage | Description | Steps |\n|---|---|---|\n| 1 | Establish expected behavior before implementation. | 1 |\n| 2 | Implement and verify the behavior; the two changes may proceed together once Stage 1 is settled. | 2, 3 |",
+		"```md\n| Stage | Description | Steps |\n|---|---|---|\n| 1 | Fake stage. | 1, 2, 3 |\n```",
+	);
+	assert.ok(errorCodes(fenced).includes("invalid_stages"));
 });
 
 test("ignores heading-like text inside fenced code blocks", () => {
 	const withFence = VALID_PLAN.replace(
-		"Document key ownership and expected expiry behavior.",
-		"Document key ownership and expected expiry behavior.\n\n```md\n### Step 99 [completed] Example only\n## Not a real section\n```",
+		"Clarify ownership, expiry, and invalidation behavior at the cache boundary, including the expected outcome of successful and failed writes.",
+		"Clarify ownership and expiry behavior.\n\n```md\n### Step 99 [completed] Example only\n## Not a real section\n```",
 	);
 	const result = parsePlanDocument(withFence);
 	assert.equal(result.ok, true, JSON.stringify(result.errors));
@@ -83,7 +143,7 @@ test("ignores heading-like text inside fenced code blocks", () => {
 
 test("rejects empty plans, plans with no steps, and oversized plans", () => {
 	assert.deepEqual(errorCodes(""), ["empty_plan"]);
-	const noSteps = VALID_PLAN.replace(/\n### Step[\s\S]*?(?=\n## Stages)/, "");
+	const noSteps = SMALL_PLAN.replace(/\n### Step[\s\S]*$/, "");
 	assert.ok(errorCodes(noSteps).includes("no_steps"));
 
 	const oversized = `${VALID_PLAN}${"x".repeat(MAX_PLAN_BYTES)}`;

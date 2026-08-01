@@ -22,6 +22,7 @@ const queued = [];
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
 const pi = {
+	events: { on() { return () => {}; }, emit() {} },
 	registerFlag() {}, getFlag() { return false; }, registerShortcut() {}, registerEntryRenderer() {},
 	registerCommand(name, definition) { commands.set(name, definition); },
 	registerTool(definition) { tools.set(definition.name, definition); allTools.add(definition.name); activeTools.push(definition.name); },
@@ -74,9 +75,12 @@ try {
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
 	assert.match(planningPrompt.systemPrompt, /ask all currently known blockers together in one ask_user_question call/i);
 	assert.doesNotMatch(planningPrompt.systemPrompt, /Ask unresolved design questions one at a time/i);
-	assert.match(planningPrompt.systemPrompt, /H2 "Why"/);
-	assert.match(planningPrompt.systemPrompt, /H2 "What"/);
-	assert.match(planningPrompt.systemPrompt, /H2 "Stages" is the final and only stage-oriented section/);
+	assert.match(planningPrompt.systemPrompt, /"Background" is required/);
+	assert.match(planningPrompt.systemPrompt, /"Changes" is required/);
+	assert.match(planningPrompt.systemPrompt, /Add "Testing Plan" when verification is applicable/);
+	assert.match(planningPrompt.systemPrompt, /Add "Assumptions \/ Decisions" only for material assumptions or decisions the user made/);
+	assert.match(planningPrompt.systemPrompt, /Add "Stages" only for a larger change/);
+	assert.match(planningPrompt.systemPrompt, /Do not list target files, internal symbol names, tools, or API call details/);
 	assert.doesNotMatch(planningPrompt.systemPrompt, /Stages Overview/);
 	const blocked = await handlers.get("tool_call")[0]({ toolName: "edit", input: {}, toolCallId: "edit-1" }, ctx);
 	assert.equal(blocked.block, true);
@@ -107,6 +111,7 @@ try {
 	let executionActive = ["read", "bash", "edit", "write", "custom_tool"];
 	const executionAll = new Set(executionActive);
 	const pi2 = {
+		events: { on() { return () => {}; }, emit() {} },
 		registerFlag() {}, getFlag() { return false; }, registerShortcut() {}, registerEntryRenderer() {}, registerCommand() {},
 		registerTool(definition) { executionTools.set(definition.name, definition); executionAll.add(definition.name); executionActive.push(definition.name); },
 		on(name, handler) { if (!executionHandlers.has(name)) executionHandlers.set(name, []); executionHandlers.get(name).push(handler); },
@@ -121,8 +126,8 @@ try {
 	assert.ok(executionActive.includes("complete_plan"));
 	assert.equal(executionActive.includes("complete_stage"), false);
 	assert.deepEqual(ledgerWidget, [
-		"⏳ Stage 1 — Freeze the cache behavior and executable contract.",
-		"⛔ Stage 2 — Implement invalidation and verify edge cases.",
+		"☐ Stage 1 — Establish expected behavior before implementation.",
+		"⛔ Stage 2 — Implement and verify the behavior; the two changes may proceed together once Stage 1 is settled.",
 	]);
 
 	const progress = executionTools.get("plan_progress");

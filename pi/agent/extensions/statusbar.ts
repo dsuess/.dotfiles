@@ -2,17 +2,21 @@
  * Rich Statusbar Extension — Catppuccin Mocha Powerline
  *
  * Matches the @owloops/claude-powerline color scheme:
- *   Segment 1: CWD              — mauve bg (#cba6f7), dark text (#1e1e2e)
+ *   Segment 1: CWD              — mauve/plan-peach bg, dark text (#1e1e2e)
  *   Segment 2: Model + thinking — surface0 bg (#313244), text fg
  *   Segment 3: Context usage    — surface0 bg (#313244), blue accent (#89b4fa)
  *   Segment 4: Token spend      — surface0 bg (#313244), lavender accent
  *
- *   separator transitions:  ▸ mauve→surface0  ▸ surface0→term
+ *   separator transitions:  ▸ CWD→surface0  ▸ surface0→term
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	PLAN_MODE_WORKFLOW_STATE_EVENT,
+	type PlanModeWorkflowStateEvent,
+} from "./plan-mode/events.ts";
 
 // ── Catppuccin Mocha RGB ───────────────────────────────────────────
 
@@ -96,6 +100,19 @@ function fmtCost(dollars: number): string {
 	return `$${dollars.toFixed(2)}`;
 }
 
+function composeWithRightMarker(left: string, marker: string, width: number): string {
+	const safeWidth = Math.max(0, width);
+	if (safeWidth === 0) return "";
+
+	const markerWidth = visibleWidth(marker);
+	if (safeWidth <= markerWidth) return truncateToWidth(marker, safeWidth, "");
+
+	const leftWidth = safeWidth - markerWidth - 1;
+	const clippedLeft = truncateToWidth(left, leftWidth, "");
+	const gap = " ".repeat(safeWidth - visibleWidth(clippedLeft) - markerWidth);
+	return clippedLeft + R + gap + marker;
+}
+
 // ── Nerd Font icons ────────────────────────────────────────────────
 
 // Gauge icons that dynamically change with context fill level
@@ -125,11 +142,19 @@ const I = {
 // ── Extension ──────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	let thinkingLevel: string | undefined;
 	let currentModelId: string | undefined;
+	let workflowMode: PlanModeWorkflowStateEvent["mode"] = "off";
+	let requestFooterRender: (() => void) | undefined;
 
-	pi.on("thinking_level_select", (event) => {
-		thinkingLevel = event.level;
+	pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data) => {
+		const { mode } = data as PlanModeWorkflowStateEvent;
+		if (workflowMode === mode) return;
+		workflowMode = mode;
+		requestFooterRender?.();
+	});
+
+	pi.on("thinking_level_select", () => {
+		requestFooterRender?.();
 	});
 
 	pi.on("model_select", (event) => {
@@ -137,21 +162,28 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		ctx.ui.setFooter((_tui, _theme, footerData) => {
-			const unsub = footerData.onBranchChange(() => { /* re-render */ });
+		ctx.ui.setFooter((tui, _theme, footerData) => {
+			const renderFooter = () => tui.requestRender();
+			requestFooterRender = renderFooter;
+			const unsub = footerData.onBranchChange(renderFooter);
 
 			return {
-				dispose: () => { unsub?.(); },
+				dispose: () => {
+					unsub?.();
+					if (requestFooterRender === renderFooter) requestFooterRender = undefined;
+				},
 				invalidate() {},
 				render(width: number): string[] {
 					let line = "";
+					const planningActive = workflowMode === "planning" || workflowMode === "approval";
+					const cwdColor = planningActive ? P.peach : P.mauve;
 
-					// ── Segment 1: CWD — mauve bg, dark text ──
+					// ── Segment 1: CWD — mode color bg, dark text ──
 					const cwd = fishShorten(ctx.cwd);
-					line += bg(...P.mauve) + cf(P.base, ` ${I.dir} ${cwd} `) + R;
+					line += bg(...cwdColor) + cf(P.base, ` ${I.dir} ${cwd} `) + R;
 
-					// ──  separator: mauve → surface0 ──
-					line += sep(P.mauve, P.surface0);
+					// ──  separator: CWD → surface0 ──
+					line += sep(cwdColor, P.surface0);
 
 					// ── Segments 2–4: all on surface0 bg ──
 					// Set bg ONCE. Use cf() (fg-only) inside so bg is never cleared.
@@ -160,7 +192,8 @@ export default function (pi: ExtensionAPI) {
 
 					// Segment 2: Model + thinking
 					const modelId = currentModelId ?? ctx.model?.id ?? "unknown";
-					const thinkStr = thinkingLevel ? cf(P.overlay1, ` [${thinkingLevel}]`) : "";
+					const thinkingLevel = pi.getThinkingLevel();
+					const thinkStr = cf(P.overlay1, ` [${thinkingLevel}]`);
 					line += cf(P.text, ` ${I.model} ${modelId}`) + thinkStr + cf(P.text, " ");
 
 					// Segment 3: Context usage — blue accent
@@ -198,7 +231,9 @@ export default function (pi: ExtensionAPI) {
 					// ── Final  separator: surface0 → crust ──
 					line += sep(P.surface0, P.crust) + R;
 
-					return [truncateToWidth(line, width)];
+					if (!planningActive) return [truncateToWidth(line, width)];
+					const marker = R + cf(P.overlay0, "[PLANNING]") + R;
+					return [composeWithRightMarker(line, marker, width)];
 				},
 			};
 		});

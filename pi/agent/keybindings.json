@@ -4,5 +4,7 @@
   "app.model.cycleBackward": ["ctrl+shift+."],
   "app.models.toggleProvider": ["ctrl+shift+p"],
   "app.message.steer": ["enter"],
-  "app.session.togglePath": []
+  "app.session.togglePath": [],
+  "app.thinking.cycle": [],
+  "tui.editor.undo": []
 }

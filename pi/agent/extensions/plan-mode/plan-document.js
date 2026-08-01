@@ -1,9 +1,18 @@
-export const PLAN_DOCUMENT_VERSION = 2;
+export const PLAN_DOCUMENT_VERSION = 3;
 export const MAX_PLAN_BYTES = 256 * 1024;
 export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed", "blocked"]);
 
 const STATUS_SET = new Set(PLAN_STATUSES);
-const REQUIRED_H2 = ["Why", "What", "Stages"];
+const VERSION_2_REQUIRED_H2 = ["Why", "What", "Stages"];
+const VERSION_3_H2 = [
+	"Background",
+	"Changes",
+	"Breaking Changes",
+	"Testing Plan",
+	"Assumptions / Decisions",
+	"Stages",
+];
+const VERSION_3_REQUIRED_H2 = ["Background", "Changes"];
 const LEGACY_REQUIRED_H2 = [
 	"Objective / Goal Statement",
 	"Stages Overview",
@@ -38,6 +47,38 @@ function scanHeadings(lines) {
 		if (match) headings.push({ level: match[1].length, text: match[2], index, line: index + 1 });
 	}
 	return headings;
+}
+
+function unfencedLineRows(content, startLine = 1) {
+	const rows = content.split("\n").map((line, offset) => ({ line, number: startLine + offset }));
+	const result = [];
+	let fence = null;
+	for (const row of rows) {
+		const fenceMatch = row.line.match(/^\s*(`{3,}|~{3,})/);
+		if (fenceMatch) {
+			const marker = fenceMatch[1][0];
+			if (fence === null) fence = marker;
+			else if (fence === marker) fence = null;
+			continue;
+		}
+		if (fence === null) result.push(row);
+	}
+	return result;
+}
+
+function unfencedTableBlocks(content, startLine) {
+	const blocks = [];
+	let current = [];
+	for (const row of unfencedLineRows(content, startLine)) {
+		if (row.line.trim().startsWith("|") && (current.length === 0 || row.number === current.at(-1).number + 1)) {
+			current.push(row);
+			continue;
+		}
+		if (current.length > 0) blocks.push(current);
+		current = row.line.trim().startsWith("|") ? [row] : [];
+	}
+	if (current.length > 0) blocks.push(current);
+	return blocks;
 }
 
 function splitTableRow(line) {
@@ -103,12 +144,12 @@ function validateSectionOrder(h2, required, errors) {
 }
 
 function parseStagesTable(content, startLine, steps, errors) {
-	const rows = content.split("\n").map((line, offset) => ({ line, number: startLine + offset }));
-	const tableRows = rows.filter((row) => row.line.trim().startsWith("|"));
-	if (tableRows.length < 3) {
-		errors.push(error("invalid_stages", "Stages must contain a Markdown table", startLine));
+	const tableBlocks = unfencedTableBlocks(content, startLine);
+	if (tableBlocks.length !== 1 || tableBlocks[0].length < 3) {
+		errors.push(error("invalid_stages", "Stages must contain exactly one contiguous, unfenced Markdown table", startLine));
 		return [];
 	}
+	const tableRows = tableBlocks[0];
 	const header = splitTableRow(tableRows[0].line);
 	if (!header || header.map((cell) => cell.toLowerCase()).join("|") !== "stage|description|steps") {
 		errors.push(error("invalid_stages", "Stages table header must be Stage, Description, Steps", tableRows[0].number));
@@ -148,9 +189,9 @@ function parseStagesTable(content, startLine, steps, errors) {
 	return stages;
 }
 
-function parseCurrentDocument(lines, headings, titleHeading, errors) {
+function parseVersion2Document(lines, headings, titleHeading, errors) {
 	const h2 = headings.filter((heading) => heading.level === 2);
-	const sectionByName = validateSectionOrder(h2, REQUIRED_H2, errors);
+	const sectionByName = validateSectionOrder(h2, VERSION_2_REQUIRED_H2, errors);
 	if (errors.some((item) => item.code === "invalid_section_order" || item.code === "missing_section")) {
 		return { ok: false, errors };
 	}
@@ -213,7 +254,7 @@ function parseCurrentDocument(lines, headings, titleHeading, errors) {
 	return {
 		ok: true,
 		document: {
-			version: PLAN_DOCUMENT_VERSION,
+			version: 2,
 			title: titleHeading.text.trim(),
 			why,
 			what,
@@ -226,13 +267,147 @@ function parseCurrentDocument(lines, headings, titleHeading, errors) {
 	};
 }
 
+function validateVersion3SectionOrder(h2, errors) {
+	const sectionByName = new Map();
+	let lastOrder = -1;
+	for (const heading of h2) {
+		const order = VERSION_3_H2.indexOf(heading.text);
+		if (order < 0) {
+			errors.push(error("invalid_section_order", `Unexpected H2 section: ${heading.text}`, heading.line));
+			continue;
+		}
+		if (sectionByName.has(heading.text)) {
+			errors.push(error("invalid_section_order", `Duplicate H2 section: ${heading.text}`, heading.line));
+			continue;
+		}
+		if (order <= lastOrder) {
+			errors.push(error(
+				"invalid_section_order",
+				`H2 sections must follow this order when present: ${VERSION_3_H2.join("; ")}`,
+				heading.line,
+			));
+		}
+		lastOrder = Math.max(lastOrder, order);
+		sectionByName.set(heading.text, heading);
+	}
+	for (const name of VERSION_3_REQUIRED_H2) {
+		if (!sectionByName.has(name)) errors.push(error("missing_section", `Missing section: ${name}`));
+	}
+	return sectionByName;
+}
+
+function parseVersion3Document(lines, headings, titleHeading, errors) {
+	const h2 = headings.filter((heading) => heading.level === 2);
+	const sectionByName = validateVersion3SectionOrder(h2, errors);
+	if (errors.some((item) => item.code === "invalid_section_order" || item.code === "missing_section")) {
+		return { ok: false, errors };
+	}
+
+	const sectionEnd = (heading) => h2.find((candidate) => candidate.index > heading.index)?.index ?? lines.length;
+	const sectionContent = (name) => {
+		const heading = sectionByName.get(name);
+		return heading ? contentBetween(lines, heading.index + 1, sectionEnd(heading)) : undefined;
+	};
+	const backgroundHeading = sectionByName.get("Background");
+	const changesHeading = sectionByName.get("Changes");
+	const changesEnd = sectionEnd(changesHeading);
+	const background = sectionContent("Background");
+	if (!background) errors.push(error("empty_section", "Section cannot be empty: Background", backgroundHeading.line));
+
+	const stepHeadings = headings.filter(
+		(heading) => heading.level === 3 && heading.index > changesHeading.index && heading.index < changesEnd,
+	);
+	const changes = contentBetween(lines, changesHeading.index + 1, stepHeadings[0]?.index ?? changesEnd);
+	if (!changes) errors.push(error("empty_section", "Changes must summarize the proposal before its steps", changesHeading.line));
+	if (stepHeadings.length === 0) errors.push(error("no_steps", "Changes must contain at least one high-level step"));
+
+	const unexpected = headings.filter((heading) => {
+		if (heading.level === 4) return true;
+		if (heading.level !== 3) return false;
+		return !stepHeadings.includes(heading);
+	});
+	for (const heading of unexpected) errors.push(error("unexpected_heading", `Unexpected heading: ${heading.text}`, heading.line));
+
+	const steps = [];
+	const stepIds = new Set();
+	for (const [index, heading] of stepHeadings.entries()) {
+		const match = heading.text.match(/^Step (\d+) \[([^\]]+)\] (.+)$/);
+		if (!match) {
+			errors.push(error("malformed_step_heading", "Step headings must use '### Step N [status] Title'", heading.line));
+			continue;
+		}
+		const [, id, status, title] = match;
+		if (id !== String(index + 1)) errors.push(error("step_order", `Expected Step ${index + 1}, found Step ${id}`, heading.line));
+		if (stepIds.has(id)) errors.push(error("duplicate_step", `Duplicate Step ${id}`, heading.line));
+		stepIds.add(id);
+		if (!STATUS_SET.has(status)) errors.push(error("invalid_status", `Step ${id} has invalid status '${status}'`, heading.line));
+		const end = stepHeadings[index + 1]?.index ?? changesEnd;
+		const step = {
+			id,
+			status,
+			title: title.trim(),
+			body: contentBetween(lines, heading.index + 1, end),
+			line: heading.line,
+		};
+		if (!step.body) errors.push(error("empty_step", `Step ${id} must have a body`, heading.line));
+		if (unfencedLineRows(step.body).some((row) => /^- \*\*(?:Targets|Tools \/ APIs):\*\*/.test(row.line))) {
+			errors.push(error("disallowed_metadata", `Step ${id} must not list target files or tools/APIs`, heading.line));
+		}
+		steps.push(step);
+	}
+
+	const optionalContent = {};
+	for (const [name, property] of [
+		["Breaking Changes", "breakingChanges"],
+		["Testing Plan", "testingPlan"],
+		["Assumptions / Decisions", "assumptionsDecisions"],
+	]) {
+		if (!sectionByName.has(name)) continue;
+		const value = sectionContent(name);
+		if (!value) errors.push(error("empty_section", `Section cannot be empty: ${name}`, sectionByName.get(name).line));
+		else optionalContent[property] = value;
+	}
+
+	const stagesHeading = sectionByName.get("Stages");
+	const explicitStages = stagesHeading !== undefined;
+	let stages;
+	if (explicitStages) {
+		const stagesContent = sectionContent("Stages");
+		if (!stagesContent) errors.push(error("empty_section", "Section cannot be empty: Stages", stagesHeading.line));
+		stages = parseStagesTable(stagesContent ?? "", stagesHeading.index + 2, steps, errors);
+		if (stages.length === 0) errors.push(error("no_stages", "An explicit Stages section must contain at least one stage"));
+	} else {
+		stages = [{ id: "1", description: "Complete the planned changes.", stepIds: steps.map((step) => step.id) }];
+	}
+	if (errors.length > 0) return { ok: false, errors };
+
+	const normalizedSteps = steps.map(({ line: _line, ...step }) => step);
+	const stepById = new Map(normalizedSteps.map((step) => [step.id, step]));
+	return {
+		ok: true,
+		document: {
+			version: PLAN_DOCUMENT_VERSION,
+			title: titleHeading.text.trim(),
+			background,
+			changes,
+			...optionalContent,
+			steps: normalizedSteps,
+			explicitStages,
+			stages: stages.map((stage) => ({
+				...stage,
+				tasks: stage.stepIds.map((stepId) => stepById.get(stepId)),
+			})),
+		},
+	};
+}
+
 function parseLegacyOverview(content, startLine, errors) {
-	const rows = content.split("\n").map((line, offset) => ({ line, number: startLine + offset }));
-	const tableRows = rows.filter((row) => row.line.trim().startsWith("|"));
-	if (tableRows.length < 3) {
-		errors.push(error("invalid_overview", "Stages Overview must contain a Markdown table", startLine));
+	const tableBlocks = unfencedTableBlocks(content, startLine);
+	if (tableBlocks.length !== 1 || tableBlocks[0].length < 3) {
+		errors.push(error("invalid_overview", "Stages Overview must contain exactly one contiguous, unfenced Markdown table", startLine));
 		return [];
 	}
+	const tableRows = tableBlocks[0];
 	const header = splitTableRow(tableRows[0].line);
 	if (!header || header.map((cell) => cell.toLowerCase()).join("|") !== "stage|name|purpose") {
 		errors.push(error("invalid_overview", "Stages Overview table header must be Stage, Name, Purpose", tableRows[0].number));
@@ -362,14 +537,18 @@ export function parsePlanDocument(markdown, options = {}) {
 	const headings = scanHeadings(lines);
 	const errors = [];
 	const titleHeading = validateTitle(headings, errors);
+	if (!titleHeading) return { ok: false, errors };
 	const h2Texts = headings.filter((heading) => heading.level === 2).map((heading) => heading.text);
-	const legacy = h2Texts.some((text) => LEGACY_REQUIRED_H2.includes(text));
-	return legacy
-		? parseLegacyDocument(lines, headings, titleHeading, errors)
-		: parseCurrentDocument(lines, headings, titleHeading, errors);
+	if (h2Texts.some((text) => LEGACY_REQUIRED_H2.includes(text))) {
+		return parseLegacyDocument(lines, headings, titleHeading, errors);
+	}
+	if (h2Texts.includes("Why") || h2Texts.includes("What")) {
+		return parseVersion2Document(lines, headings, titleHeading, errors);
+	}
+	return parseVersion3Document(lines, headings, titleHeading, errors);
 }
 
-function renderCurrentDocument(document) {
+function renderVersion2Document(document) {
 	const lines = [
 		`# ${document.title.trim()}`,
 		"",
@@ -387,6 +566,37 @@ function renderCurrentDocument(document) {
 	lines.push("", "## Stages", "", "| Stage | Description | Steps |", "|---|---|---|");
 	for (const stage of document.stages) {
 		lines.push(`| ${stage.id} | ${escapeTableCell(stage.description)} | ${stage.stepIds.join(", ")} |`);
+	}
+	lines.push("");
+	return lines.join("\n");
+}
+
+function renderVersion3Document(document) {
+	const lines = [
+		`# ${document.title.trim()}`,
+		"",
+		"## Background",
+		"",
+		document.background.trim(),
+		"",
+		"## Changes",
+	];
+	if (document.changes?.trim()) lines.push("", document.changes.trim());
+	for (const step of document.steps) {
+		lines.push("", `### Step ${step.id} [${step.status}] ${step.title}`, "", step.body.trim());
+	}
+	for (const [heading, property] of [
+		["Breaking Changes", "breakingChanges"],
+		["Testing Plan", "testingPlan"],
+		["Assumptions / Decisions", "assumptionsDecisions"],
+	]) {
+		if (document[property]?.trim()) lines.push("", `## ${heading}`, "", document[property].trim());
+	}
+	if (document.explicitStages) {
+		lines.push("", "## Stages", "", "| Stage | Description | Steps |", "|---|---|---|");
+		for (const stage of document.stages) {
+			lines.push(`| ${stage.id} | ${escapeTableCell(stage.description)} | ${stage.stepIds.join(", ")} |`);
+		}
 	}
 	lines.push("");
 	return lines.join("\n");
@@ -420,7 +630,9 @@ function renderLegacyDocument(document) {
 }
 
 export function renderPlanDocument(document) {
-	return document.version === 1 ? renderLegacyDocument(document) : renderCurrentDocument(document);
+	if (document.version === 1) return renderLegacyDocument(document);
+	if (document.version === 2) return renderVersion2Document(document);
+	return renderVersion3Document(document);
 }
 
 export function validatePlanDocument(markdown, options) {

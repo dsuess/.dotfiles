@@ -22,11 +22,11 @@ const base = {
 	},
 };
 
-test("shows one described stage row with an emoji status", () => {
+test("shows one described stage row with a status icon", () => {
 	assert.deepEqual(buildStageProgressRows(base), [
-		"⏳ Stage 1 — Not started.",
-		"🚧 Stage 2 — Work underway.",
-		"✅ Stage 3 — Verified.",
+		"☐ Stage 1 — Not started.",
+		"▶ Stage 2 — Work underway.",
+		"☑ Stage 3 — Verified.",
 		"⛔ Stage 4 — Waiting on access.",
 	]);
 });
@@ -35,5 +35,5 @@ test("falls back safely for restored legacy state", () => {
 	assert.deepEqual(buildStageProgressRows({
 		plan: { stageIds: ["1"], taskIds: ["1.1"] },
 		ledger: { "1.1": { status: "pending" } },
-	}), ["⏳ Stage 1 — Stage 1"]);
+	}), ["☐ Stage 1 — Stage 1"]);
 });

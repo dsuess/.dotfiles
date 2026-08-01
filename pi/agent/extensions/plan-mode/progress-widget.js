@@ -1,7 +1,7 @@
-const STATUS_EMOJI = Object.freeze({
-	pending: "⏳",
-	in_progress: "🚧",
-	completed: "✅",
+const STATUS_ICON = Object.freeze({
+	pending: "☐",
+	in_progress: "▶",
+	completed: "☑",
 	blocked: "⛔",
 });
 
@@ -25,6 +25,6 @@ export function getStageStatus(stage, ledger) {
 export function buildStageProgressRows(state) {
 	return restoredStages(state.plan).map((stage) => {
 		const status = getStageStatus(stage, state.ledger);
-		return `${STATUS_EMOJI[status]} Stage ${stage.id} — ${stage.description}`;
+		return `${STATUS_ICON[status]} Stage ${stage.id} — ${stage.description}`;
 	});
 }

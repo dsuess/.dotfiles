@@ -1,0 +1,8 @@
+import type { WorkflowMode } from "./state.ts";
+
+export const PLAN_MODE_DIRECT_TOGGLE_EVENT = "plan-mode:direct-toggle";
+export const PLAN_MODE_WORKFLOW_STATE_EVENT = "plan-mode:workflow-state";
+
+export interface PlanModeWorkflowStateEvent {
+	mode: WorkflowMode;
+}

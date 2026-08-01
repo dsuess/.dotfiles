@@ -7,7 +7,8 @@ A global Pi extension for read-oriented planning, explicit approval, clean imple
 - `/plan [goal]` — enter planning mode and optionally start a planning turn.
 - `/plan off` — leave planning/approval and restore the exact pre-planning tool snapshot (minus tools no longer registered).
 - `--plan` — start a session in planning mode.
-- `Ctrl+Alt+P` — toggle planning mode.
+- `Shift+Tab` — toggle planning mode.
+- Command palette **Plan** row — toggle planning mode directly without enqueueing `/plan` or starting an agent turn.
 - `/plan-actions` — reopen actions for the pending plan.
 - `/plan-stage-actions` — reopen the active staged checkpoint.
 - `/plan-resume` — resume a paused implementation session.
@@ -32,15 +33,15 @@ Validated plans are saved under:
 
 The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
 
-Required Markdown is organized around intent and work, not execution phases:
+Current Markdown is high-level and outcome-oriented:
 
 1. One H1 title.
-2. `## Why` for the problem, evidence, motivation, and outcome.
-3. `## What` for the solution summary and globally numbered `### Step N [status] Title` entries.
-4. Each step has `Targets` and `Tools / APIs` metadata plus its concrete changes, dependencies, verification, edge cases, and guardrails.
-5. A final `## Stages` table with `Stage | Description | Steps`, mapping every step to exactly one stage.
+2. Required `## Background` explains the request, motivation, and place in the wider repository.
+3. Required `## Changes` summarizes the proposal and contains globally numbered `### Step N [status] Title` work items.
+4. Optional `## Breaking Changes`, `## Testing Plan`, and `## Assumptions / Decisions` sections are included only when applicable and non-empty.
+5. Optional `## Stages` uses a `Stage | Description | Steps` table for larger changes, grouping every step exactly once and identifying ordering or parallel work.
 
-There are no per-stage detail sections or other H2 sections. Statuses are `pending`, `in_progress`, `completed`, and `blocked`. Legacy stage-grouped plans remain readable so active older execution sessions can finish.
+Plans deliberately omit target-file and tool/API inventories. Step bodies retain enough behavioral detail, constraints, dependencies, outcomes, edge cases, and guardrails to execute without becoming implementation recipes. Small plans omit `Stages`; the runtime gives them one implicit execution group so the ledger and approval flow remain consistent. Statuses are `pending`, `in_progress`, `completed`, and `blocked`. Version 1 stage-grouped and version 2 `Why`/`What` plans remain readable so active older execution sessions can finish.
 
 ## Approval actions
 
@@ -73,7 +74,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 
 - Reload, resume, and tree navigation restore state from the latest custom entry on the active branch.
 - Pending dialogs are queued at most once; cancelled dialogs remain manually reopenable.
-- TUI mode uses full renderers and structured dialogs.
+- TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
 - RPC uses host select/editor primitives.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
 - Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing.

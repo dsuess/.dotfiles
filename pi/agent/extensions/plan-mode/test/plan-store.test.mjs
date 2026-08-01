@@ -64,7 +64,7 @@ test("persists validated plans atomically and allocates collision suffixes", asy
 test("replaces only the validated active revision and preserves it on I/O failure", async () => {
 	await withProject(async (project) => {
 		const first = await persistPlan({ cwd: project, ...baseOptions });
-		const revisedMarkdown = VALID_PLAN.replace("Failed writes must preserve", "Rejected writes must preserve");
+		const revisedMarkdown = VALID_PLAN.replace("failed writes", "rejected writes");
 		await assert.rejects(
 			persistPlan({
 				cwd: project,

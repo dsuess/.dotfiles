@@ -6,10 +6,10 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Key } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { showPlanActionDialog } from "./action-dialog.ts";
 import { analyzeBashMutation } from "./bash-policy.js";
+import { PLAN_MODE_DIRECT_TOGGLE_EVENT, PLAN_MODE_WORKFLOW_STATE_EVENT } from "./events.ts";
 import { editPlanForReview } from "./external-editor.ts";
 import {
 	EXECUTION_ENTRY,
@@ -137,6 +137,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		lastContext = ctx;
+		pi.events.emit(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: state.mode });
 		if (!ctx.hasUI) return;
 		if (state.mode === "planning") {
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "plan:planning"));
@@ -206,6 +207,15 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 		if (ctx.hasUI) ctx.ui.notify("Planning mode disabled. Original tools restored.", "info");
 	}
+
+	function togglePlanning(ctx: ExtensionContext): void {
+		if (isGated(state)) stopPlanning(ctx);
+		else startPlanning(ctx, "");
+	}
+
+	pi.events.on(PLAN_MODE_DIRECT_TOGGLE_EVENT, () => {
+		if (lastContext) togglePlanning(lastContext);
+	});
 
 	pi.registerCommand("plan", {
 		description: "Enter planning mode with an optional goal; use /plan off to exit",
@@ -478,11 +488,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerShortcut(Key.ctrlAlt("p"), {
+	pi.registerShortcut("shift+tab", {
 		description: "Toggle planning mode",
 		handler: async (ctx) => {
-			if (isGated(state)) stopPlanning(ctx);
-			else startPlanning(ctx, "");
+			togglePlanning(ctx);
 		},
 	});
 
