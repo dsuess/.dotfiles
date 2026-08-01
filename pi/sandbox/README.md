@@ -50,10 +50,21 @@ sandbox when invoked from an already-sandboxed agent session.
 
 ## Plan mode
 
-The existing plan-mode extension remains a separate workflow guard. It hides
-mutation tools and rejects mutating shell commands before plan approval. The
-whole-process wrapper is the security boundary; the extension only adds the
-temporary promise that the allowed workspace will not change during planning.
+The plan-mode extension is a separate model-facing workflow guard. During
+planning it hides mutation and unknown custom tools, and it rejects shell
+commands that match a known-mutator denylist. The detector is intentionally
+**fail-open**: unclassified commands are allowed, so plan mode cannot promise
+that the workspace is absolutely read-only.
+
+Trusted extension code may atomically write the active plan/ledger under the
+project's `.pi/plans/`, and the user's configured editor may edit that plan for
+review. These trusted plan writes are distinct from model-facing mutation tools.
+
+The whole-process wrapper is the OS security boundary. It confines Pi and its
+process tree to policy-approved locations, but the current workspace is one of
+those writable locations. Therefore the sandbox does not turn arbitrary
+planning-mode shell programs into read-only operations; the denylist remains a
+workflow convenience rather than a complete mutation boundary.
 
 ## Accepted credential risk
 

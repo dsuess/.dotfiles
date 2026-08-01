@@ -1,0 +1,16 @@
+{
+  "name": "pi-plan-mode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke-load.mjs",
+    "integration": "node test/integration-rpc.mjs && node test/mock-extension.mjs",
+    "tui-smoke": "node test/tui-smoke.mjs",
+    "check": "npm test && npm run smoke && npm run integration && npm run tui-smoke"
+  }
+}
