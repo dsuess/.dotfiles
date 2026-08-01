@@ -4,6 +4,23 @@ set -euo pipefail
 readonly SANDBOX_DIR="$HOME/.pi/sandbox"
 readonly SRT_BIN="$SANDBOX_DIR/node_modules/.bin/srt"
 readonly SRT_SETTINGS="$SANDBOX_DIR/settings.json"
+readonly HERDR_STATUS_BROKER="$SANDBOX_DIR/herdr-status-broker.mjs"
+
+HERDR_BROKER_PID=""
+HERDR_BROKER_DIR=""
+
+cleanup_herdr_broker() {
+    [[ -n "$HERDR_BROKER_PID" ]] || return 0
+
+    kill -TERM "$HERDR_BROKER_PID" 2>/dev/null || true
+    for _ in {1..100}; do
+        kill -0 "$HERDR_BROKER_PID" 2>/dev/null || break
+        /bin/sleep 0.01
+    done
+    kill -KILL "$HERDR_BROKER_PID" 2>/dev/null || true
+    wait "$HERDR_BROKER_PID" 2>/dev/null || true
+    [[ -z "$HERDR_BROKER_DIR" ]] || /bin/rm -rf -- "$HERDR_BROKER_DIR"
+}
 
 die() {
     echo "pi: sandbox initialization failed: $*" >&2
@@ -63,6 +80,22 @@ find_real_pi() {
     return 1
 }
 
+yolo=false
+pi_args=()
+for arg in "$@"; do
+    if [[ "$arg" == --yolo ]]; then
+        yolo=true
+    else
+        pi_args+=("$arg")
+    fi
+done
+
+if [[ "$yolo" == true ]]; then
+    real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
+    echo "pi: warning: sandbox disabled by --yolo" >&2
+    exec "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
+fi
+
 case "$OSTYPE" in
     darwin*)
         [[ -x /usr/bin/sandbox-exec ]] || die "macOS sandbox-exec is unavailable"
@@ -88,6 +121,8 @@ readonly HOST_NODE="$host_node"
 ' || die "Node.js 20.11 or newer is required"
 host_rg="$(find_host_executable rg)" || die "ripgrep (rg) is required"
 readonly HOST_RG="$host_rg"
+host_mktemp="$(find_host_executable mktemp)" || die "mktemp is required"
+readonly HOST_MKTEMP="$host_mktemp"
 [[ -x "$SRT_BIN" ]] || die "sandbox runtime is not installed; run ./install.sh config"
 [[ -r "$SRT_SETTINGS" ]] || die "sandbox policy is missing or unreadable: $SRT_SETTINGS"
 
@@ -124,12 +159,62 @@ safe_env=(
 
 for name in \
     USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \
-    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR \
-    HERDR_ENV HERDR_SOCKET_PATH HERDR_PANE_ID
+    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR
 do
     value="${!name-}"
     [[ -n "$value" ]] && safe_env+=("$name=$value")
 done
+
+start_herdr_broker() {
+    [[ "${HERDR_ENV-}" == "1" ]] || return 0
+    [[ -n "${HERDR_SOCKET_PATH-}" && -n "${HERDR_PANE_ID-}" ]] || return 0
+    [[ -r "$HERDR_STATUS_BROKER" ]] || die "Herdr status broker is missing: $HERDR_STATUS_BROKER"
+    [[ -d "$HOME/.pi/agent/sessions" ]] || die "Pi session directory is missing"
+
+    HERDR_BROKER_DIR="$($HOST_MKTEMP -d "${TMPDIR:-/tmp}/pi-herdr-status.XXXXXX")" ||
+        die "cannot create the Herdr status broker directory"
+    local ready_file="$HERDR_BROKER_DIR/ready"
+    local error_file="$HERDR_BROKER_DIR/error.log"
+
+    /usr/bin/env -i \
+        HERDR_PI_BROKER_READY_FILE="$ready_file" \
+        HERDR_PI_BROKER_DIR="$HERDR_BROKER_DIR" \
+        HERDR_PI_BROKER_PARENT_PID="$$" \
+        HERDR_PI_SESSION_ROOT="$HOME/.pi/agent/sessions" \
+        HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" \
+        HERDR_PANE_ID="$HERDR_PANE_ID" \
+        "$HOST_NODE" "$HERDR_STATUS_BROKER" </dev/null > /dev/null 2>"$error_file" &
+    HERDR_BROKER_PID=$!
+    trap cleanup_herdr_broker EXIT
+
+    for _ in {1..200}; do
+        [[ -s "$ready_file" ]] && break
+        if ! kill -0 "$HERDR_BROKER_PID" 2>/dev/null; then
+            die "Herdr status broker failed to start: $(<"$error_file")"
+        fi
+        /bin/sleep 0.01
+    done
+    [[ -s "$ready_file" ]] || die "timed out starting the Herdr status broker"
+
+    local status_port status_token extra
+    IFS=' ' read -r status_port status_token extra <"$ready_file"
+    [[ "$status_port" =~ ^[0-9]+$ && "$status_port" -ge 1 && "$status_port" -le 65535 ]] ||
+        die "Herdr status broker returned an invalid port"
+    [[ "$status_token" =~ ^[0-9a-f]{64}$ && -z "$extra" ]] ||
+        die "Herdr status broker returned an invalid token"
+
+    # Pi receives only the narrow broker capability. The real Herdr socket path
+    # remains outside the sandbox and the broker ignores caller-supplied pane,
+    # source, agent, and sequence values.
+    safe_env+=(
+        "HERDR_ENV=1"
+        "HERDR_PANE_ID=$HERDR_PANE_ID"
+        "HERDR_PI_STATUS_PORT=$status_port"
+        "HERDR_PI_STATUS_TOKEN=$status_token"
+    )
+}
+
+start_herdr_broker
 
 exec /usr/bin/env -i "${safe_env[@]}" \
     "$SRT_BIN" --settings "$SRT_SETTINGS" -- "$REAL_PI" "$@"

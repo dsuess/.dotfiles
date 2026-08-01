@@ -19,10 +19,13 @@ readonly TOOL_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 mkdir -p \
     "$TEST_HOME/.pi/sandbox/node_modules/.bin" \
+    "$TEST_HOME/.pi/agent/sessions" \
     "$REAL_BIN" \
     "$PREREQ_BIN" \
-    "$SHIM_BIN"
+    "$SHIM_BIN" \
+    "$TEST_ROOT/tmp"
 printf '{}\n' >"$TEST_HOME/.pi/sandbox/settings.json"
+cp "$HERE/herdr-status-broker.mjs" "$TEST_HOME/.pi/sandbox/herdr-status-broker.mjs"
 
 cat >"$TEST_HOME/.pi/sandbox/node_modules/.bin/srt" <<'EOF'
 #!/usr/bin/env bash
@@ -47,6 +50,8 @@ printf 'path=%s\n' "$PATH"
 printf 'herdr_env=%s\n' "${HERDR_ENV-unset}"
 printf 'herdr_socket=%s\n' "${HERDR_SOCKET_PATH-unset}"
 printf 'herdr_pane=%s\n' "${HERDR_PANE_ID-unset}"
+printf 'herdr_status_port=%s\n' "${HERDR_PI_STATUS_PORT-unset}"
+printf 'herdr_status_token=%s\n' "${HERDR_PI_STATUS_TOKEN-unset}"
 EOF
 
 cat >"$SHIM_BIN/node" <<'EOF'
@@ -93,21 +98,48 @@ grep -F "path=$RESOLVED_REAL_BIN:" <<<"$output" >/dev/null
 grep -F 'herdr_env=unset' <<<"$output" >/dev/null
 grep -F 'herdr_socket=unset' <<<"$output" >/dev/null
 grep -F 'herdr_pane=unset' <<<"$output" >/dev/null
+grep -F 'herdr_status_port=unset' <<<"$output" >/dev/null
+grep -F 'herdr_status_token=unset' <<<"$output" >/dev/null
 
 herdr_output="$(
     cd "$SHIM_BIN"
     HOME="$TEST_HOME" \
     PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
+    TMPDIR="$TEST_ROOT/tmp" \
     HERDR_ENV=1 \
     HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" \
     HERDR_PANE_ID="pane-7" \
     "$WRAPPER"
 )"
 grep -F 'herdr_env=1' <<<"$herdr_output" >/dev/null
-grep -F "herdr_socket=$TEST_ROOT/herdr.sock" <<<"$herdr_output" >/dev/null
+grep -F 'herdr_socket=unset' <<<"$herdr_output" >/dev/null
 grep -F 'herdr_pane=pane-7' <<<"$herdr_output" >/dev/null
+grep -E '^herdr_status_port=[0-9]+$' <<<"$herdr_output" >/dev/null
+grep -E '^herdr_status_token=[0-9a-f]{64}$' <<<"$herdr_output" >/dev/null
+for _ in {1..100}; do
+    compgen -G "$TEST_ROOT/tmp/pi-herdr-status.*" >/dev/null || break
+    sleep 0.01
+done
+if compgen -G "$TEST_ROOT/tmp/pi-herdr-status.*" >/dev/null; then
+    echo "Herdr status broker did not exit with its wrapper parent" >&2
+    exit 1
+fi
 
 rm "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt"
+yolo_output="$(
+    cd "$SHIM_BIN"
+    HOME="$TEST_HOME" \
+    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
+    TMPDIR="$TEST_ROOT/host-tmp" \
+    SECRET_SHOULD_NOT_LEAK="host-secret" \
+    "$WRAPPER" --yolo --flag "two words"
+)"
+grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$yolo_output" >/dev/null
+grep -F 'args=<--flag><two words>' <<<"$yolo_output" >/dev/null
+grep -F 'secret=host-secret' <<<"$yolo_output" >/dev/null
+grep -F "tmpdir=$TEST_ROOT/host-tmp" <<<"$yolo_output" >/dev/null
+grep -F "path=$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" <<<"$yolo_output" >/dev/null
+
 if HOME="$TEST_HOME" \
     PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
     "$WRAPPER" --version >"$TEST_ROOT/fail.out" 2>&1

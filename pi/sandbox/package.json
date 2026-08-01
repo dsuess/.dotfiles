@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Pinned whole-process sandbox runtime for Pi",
   "scripts": {
-    "test": "npm run test:wrapper && npm run test:containment",
+    "test": "npm run test:broker && npm run test:wrapper && npm run test:containment",
+    "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs",
     "test:wrapper": "bash test-wrapper.sh",
     "test:containment": "bash test-containment.sh"
   },

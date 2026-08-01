@@ -4,6 +4,7 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import {
 	buildUsageSummary,
+	createUsageTheme,
 	renderUsage,
 	scanUsage,
 	skippedRecordCount,
@@ -11,7 +12,7 @@ import {
 
 export default function usageExtension(pi: ExtensionAPI) {
 	pi.registerCommand("usage", {
-		description: "Show token activity across the last 30 days",
+		description: "Show token activity across the last year",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				ctx.ui.notify("Usage: /usage", "warning");
@@ -19,11 +20,11 @@ export default function usageExtension(pi: ExtensionAPI) {
 			}
 			if (!ctx.hasUI) return;
 
-			ctx.ui.notify("Scanning 30-day token activity…", "info");
+			ctx.ui.notify("Scanning one year of token activity…", "info");
 
 			const result = await scanUsage(join(getAgentDir(), "sessions"));
 			const summary = buildUsageSummary(result.events);
-			const lines = renderUsage(summary, ctx.ui.theme);
+			const lines = renderUsage(summary, createUsageTheme(ctx.ui.theme));
 			const skipped = skippedRecordCount(result.diagnostics);
 
 			if (skipped > 0) {

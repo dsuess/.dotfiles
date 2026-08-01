@@ -2,8 +2,8 @@
  * Read-only aggregation and rendering for the global /usage command.
  *
  * "Usage" matches Pi's session-total accounting: assistant, nested-tool,
- * compaction, and branch-summary input/output/cache tokens. The window is 30
- * local calendar days (today plus 29), and copied fork entries are counted once.
+ * compaction, and branch-summary input/output/cache tokens. The window is 365
+ * local calendar days (today plus 364), and copied fork entries are counted once.
  */
 
 import { createReadStream } from "node:fs";
@@ -11,19 +11,58 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-export const WINDOW_DAYS = 30;
+export const WINDOW_DAYS = 365;
 
 const TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
-const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
-const CELL_ROLES = ["dim", "muted", "text", "accent", "warning"] as const;
+const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] as const;
+const ACTIVITY_COLORS = ["#4a4a4a", "#6f4e37", "#965f36", "#c47735", "#f28c28"] as const;
+const OVERVIEW_COLOR = ACTIVITY_COLORS[4];
 
-type CellRole = (typeof CELL_ROLES)[number];
+type ThemeRole = "accent" | "dim" | "muted" | "warning";
+type ColorMode = "truecolor" | "256color";
 
 type JsonRecord = Record<string, unknown>;
 
 export interface UsageTheme {
-	fg(role: CellRole, text: string): string;
+	fg(role: ThemeRole, text: string): string;
 	bold(text: string): string;
+	color(hex: string, text: string): string;
+}
+
+interface UsageThemeSource {
+	fg(role: ThemeRole, text: string): string;
+	bold(text: string): string;
+	getColorMode(): ColorMode;
+}
+
+function parseHexColor(hex: string): [number, number, number] {
+	return [
+		Number.parseInt(hex.slice(1, 3), 16),
+		Number.parseInt(hex.slice(3, 5), 16),
+		Number.parseInt(hex.slice(5, 7), 16),
+	];
+}
+
+function rgbToAnsi256(red: number, green: number, blue: number): number {
+	if (red === green && green === blue) {
+		return Math.max(232, Math.min(255, 232 + Math.round((red - 8) / 10)));
+	}
+	const channel = (value: number) => Math.round((value / 255) * 5);
+	return 16 + 36 * channel(red) + 6 * channel(green) + channel(blue);
+}
+
+export function createUsageTheme(theme: UsageThemeSource): UsageTheme {
+	return {
+		fg: (role, text) => theme.fg(role, text),
+		bold: (text) => theme.bold(text),
+		color: (hex, text) => {
+			const [red, green, blue] = parseHexColor(hex);
+			const ansi = theme.getColorMode() === "truecolor"
+				? `\x1b[38;2;${red};${green};${blue}m`
+				: `\x1b[38;5;${rgbToAnsi256(red, green, blue)}m`;
+			return `${ansi}${text}\x1b[39m`;
+		},
+	};
 }
 
 export interface UsageEvent {
@@ -297,10 +336,14 @@ function intensityLevel(tokens: number, peakTokens: number): 0 | 1 | 2 | 3 | 4 {
 	return Math.min(4, Math.max(1, Math.ceil((tokens / peakTokens) * 4))) as 1 | 2 | 3 | 4;
 }
 
+function mondayWeekday(date: Date): number {
+	return (date.getDay() + 6) % 7;
+}
+
 export function buildCalendar(summary: UsageSummary): UsageCalendar {
 	const byDate = new Map(summary.days.map((day) => [day.dateKey, day]));
-	const gridStart = addLocalDays(summary.startDate, -summary.startDate.getDay());
-	const gridEnd = addLocalDays(summary.endDate, 6 - summary.endDate.getDay());
+	const gridStart = addLocalDays(summary.startDate, -mondayWeekday(summary.startDate));
+	const gridEnd = addLocalDays(summary.endDate, 6 - mondayWeekday(summary.endDate));
 	const weeks: CalendarWeek[] = [];
 	const weekByDate = new Map<string, number>();
 
@@ -360,44 +403,51 @@ export function formatTokens(tokens: number): string {
 }
 
 function metric(theme: UsageTheme, label: string, value: string): string {
-	return `${theme.fg("muted", label)} ${theme.fg("warning", value)}`;
+	return `${theme.fg("muted", label)} ${theme.color(OVERVIEW_COLOR, theme.bold(value))}`;
 }
 
 function renderCell(theme: UsageTheme, cell: CalendarCell): string {
 	if (!cell.inRange) return " ";
-	return theme.fg(CELL_ROLES[cell.level], "■");
+	return theme.color(ACTIVITY_COLORS[cell.level], "■");
+}
+
+function renderMonthLabels(calendar: UsageCalendar, theme: UsageTheme): string {
+	let line = " ".repeat(3);
+	let calendarColumn = 0;
+	for (const month of calendar.monthLabels) {
+		const targetColumn = month.weekIndex * 2;
+		line += " ".repeat(Math.max(0, targetColumn - calendarColumn));
+		line += theme.fg("muted", month.label);
+		calendarColumn = targetColumn + month.label.length;
+	}
+	return line.trimEnd();
 }
 
 export function renderUsage(summary: UsageSummary, theme: UsageTheme): string[] {
 	const calendar = buildCalendar(summary);
-	const monthSlots = Array.from({ length: calendar.weeks.length }, () => "   ");
-	for (const month of calendar.monthLabels) {
-		monthSlots[month.weekIndex] = theme.fg("muted", month.label.padEnd(3).slice(0, 3));
-	}
-
 	const lines = [
 		theme.fg("accent", "/usage"),
 		"",
-		`${theme.bold("Token activity")}  ${theme.fg("muted", "last 30 days")}`,
+		`${theme.bold("Token activity")}  ${theme.fg("muted", "last 365 days")}`,
 		[
-			metric(theme, "30d", formatTokens(summary.totalTokens)),
+			metric(theme, "1y", formatTokens(summary.totalTokens)),
 			metric(theme, "Peak", formatTokens(summary.peakTokens)),
 			metric(theme, "Streak", `${summary.streak}d`),
 			metric(theme, "Active", `${summary.activeDays}d`),
 		].join(theme.fg("dim", " · ")),
 		"",
-		`${" ".repeat(3)}${monthSlots.join("")}`.trimEnd(),
+		renderMonthLabels(calendar, theme),
 	];
 
 	for (let weekday = 0; weekday < WEEKDAYS.length; weekday++) {
 		let row = `${theme.fg("muted", WEEKDAYS[weekday])} `;
-		for (const week of calendar.weeks) row += ` ${renderCell(theme, week.cells[weekday]!)} `;
+		for (const week of calendar.weeks) row += `${renderCell(theme, week.cells[weekday]!)} `;
 		lines.push(row.trimEnd());
 	}
 
 	lines.push("");
 	lines.push(
-		`${theme.fg("muted", "Less")} ${CELL_ROLES.map((role) => theme.fg(role, "■")).join(" ")} ${theme.fg("muted", "More")}`,
+		`${theme.fg("muted", "Less")} ${ACTIVITY_COLORS.map((color) => theme.color(color, "■")).join(" ")} ${theme.fg("muted", "More")}`,
 	);
 	return lines;
 }

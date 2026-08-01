@@ -5,12 +5,15 @@ readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SRT="$HERE/node_modules/.bin/srt"
 readonly SETTINGS="$HERE/settings.json"
 readonly TEST_BIN="$HERE/test-bin"
-readonly REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 readonly TEST_ROOT="$(mktemp -d)"
-readonly OUTSIDE_READ="$REPO_ROOT/.pi-sandbox-read-test.$$"
-readonly OUTSIDE_WRITE="$REPO_ROOT/.pi-sandbox-write-test.$$"
+readonly OUTSIDE_READ="$HOME/.pi-sandbox-read-test.$$"
+readonly OUTSIDE_WRITE="$HOME/.pi-sandbox-write-test.$$"
+readonly BLOCKED_UNIX_SOCKET="$TEST_ROOT/blocked.sock"
+SOCKET_SERVER_PID=""
 
 cleanup() {
+    [[ -z "$SOCKET_SERVER_PID" ]] || kill "$SOCKET_SERVER_PID" 2>/dev/null || true
+    [[ -z "$SOCKET_SERVER_PID" ]] || wait "$SOCKET_SERVER_PID" 2>/dev/null || true
     rm -rf "$TEST_ROOT"
     rm -f "$OUTSIDE_READ" "$OUTSIDE_WRITE"
 }
@@ -22,6 +25,25 @@ trap cleanup EXIT
 }
 
 printf 'must remain unreadable\n' >"$OUTSIDE_READ"
+
+node -e '
+    const { createServer } = require("node:net");
+    const server = createServer((socket) => socket.end());
+    server.listen(process.argv[1]);
+' "$BLOCKED_UNIX_SOCKET" &
+SOCKET_SERVER_PID=$!
+for _ in {1..100}; do
+    [[ -S "$BLOCKED_UNIX_SOCKET" ]] && break
+    kill -0 "$SOCKET_SERVER_PID" 2>/dev/null || {
+        echo "failed to start Unix-socket containment fixture" >&2
+        exit 1
+    }
+    sleep 0.01
+done
+[[ -S "$BLOCKED_UNIX_SOCKET" ]] || {
+    echo "timed out starting Unix-socket containment fixture" >&2
+    exit 1
+}
 
 (
     cd "$TEST_ROOT"
@@ -43,6 +65,19 @@ printf 'must remain unreadable\n' >"$OUTSIDE_READ"
         bash -c 'printf denied >"$1"' _ "$OUTSIDE_WRITE"
     then
         echo "sandbox unexpectedly wrote outside the workspace" >&2
+        exit 1
+    fi
+
+    if PATH="$TEST_BIN:$PATH" "$SRT" --settings "$SETTINGS" -- \
+        node -e '
+            const { createConnection } = require("node:net");
+            const socket = createConnection(process.argv[1]);
+            socket.on("connect", () => process.exit(0));
+            socket.on("error", () => process.exit(1));
+            setTimeout(() => process.exit(2), 1000);
+        ' "$BLOCKED_UNIX_SOCKET" >/dev/null 2>&1
+    then
+        echo "sandbox unexpectedly connected to a host Unix socket" >&2
         exit 1
     fi
 

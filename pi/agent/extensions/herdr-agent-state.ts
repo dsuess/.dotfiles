@@ -4,21 +4,90 @@
 // HERDR_INTEGRATION_ID=pi
 // HERDR_INTEGRATION_VERSION=3
 // @ts-nocheck
+// Local hardening: sandboxed Pi uses the status-only HTTP broker transport below.
+// Reinstalling this generated integration must preserve that transport.
 
+import { request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
 const paneId = process.env.HERDR_PANE_ID;
+const statusPort = parseStatusPort(process.env.HERDR_PI_STATUS_PORT);
+const statusToken = process.env.HERDR_PI_STATUS_TOKEN;
 const source = "herdr:pi";
 
+function parseStatusPort(raw: string | undefined): number | undefined {
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const port = Number(raw);
+  return port >= 1 && port <= 65535 ? port : undefined;
+}
+
+function usesStatusBroker() {
+  return statusPort !== undefined && !!statusToken;
+}
+
 function enabled() {
-  return HERDR_ENV === "1" && !!socketPath && !!paneId;
+  return HERDR_ENV === "1" && !!paneId && (usesStatusBroker() || !!socketPath);
+}
+
+function statusProxy(): URL | undefined {
+  const raw = process.env.HTTP_PROXY ?? process.env.http_proxy;
+  if (!raw) return undefined;
+  try {
+    const proxy = new URL(raw);
+    return proxy.protocol === "http:" ? proxy : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sendBrokerRequest(request: unknown): Promise<void> {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ token: statusToken, request });
+    const proxy = statusProxy();
+    const headers: Record<string, string | number> = {
+      Host: `localhost:${statusPort}`,
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      Connection: "close",
+    };
+    if (proxy?.username || proxy?.password) {
+      const username = decodeURIComponent(proxy.username);
+      const password = decodeURIComponent(proxy.password);
+      headers["Proxy-Authorization"] = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+    }
+
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      client.destroy();
+      resolve();
+    };
+    const client = httpRequest({
+      hostname: proxy?.hostname ?? "127.0.0.1",
+      port: proxy ? Number(proxy.port || 80) : statusPort,
+      method: "POST",
+      path: proxy ? `http://localhost:${statusPort}/` : "/",
+      headers,
+    });
+    client.on("error", finish);
+    client.on("response", (response) => {
+      response.resume();
+      finish();
+    });
+    client.setTimeout(750, finish);
+    client.end(body);
+  });
 }
 
 function sendRequest(request: unknown): Promise<void> {
   if (!enabled()) {
     return Promise.resolve();
+  }
+  if (usesStatusBroker()) {
+    return sendBrokerRequest(request);
   }
 
   return new Promise((resolve) => {

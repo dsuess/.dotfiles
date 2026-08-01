@@ -56,7 +56,7 @@
     ],
     "deniedDomains": [],
     "strictAllowlist": true,
-    "allowUnixSockets": ["~/.config/herdr"],
+    "allowUnixSockets": [],
     "allowAllUnixSockets": false,
     "allowLocalBinding": true,
     "allowMachLookup": ["com.apple.pasteboard.1"]
@@ -67,8 +67,7 @@
       ".",
       "~/src",
 
-      "~/.pi/agent",
-      "~/.pi/sandbox",
+      "~/.pi/",
       "~/.agents/skills",
       "~/.dotfiles",
 
