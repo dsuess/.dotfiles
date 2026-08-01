@@ -10,6 +10,12 @@ export type WorkflowMode =
 export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type ExecutionMode = "all" | "staged";
 
+export interface PlanStageV1 {
+	id: string;
+	description: string;
+	taskIds: string[];
+}
+
 export interface PlanReferenceV1 {
 	path: string;
 	slug: string;
@@ -19,6 +25,7 @@ export interface PlanReferenceV1 {
 	revision: number;
 	stageIds: string[];
 	taskIds: string[];
+	stages: PlanStageV1[];
 }
 
 export interface ApprovalTokenV1 {
@@ -102,7 +109,7 @@ export interface PlanSubmission {
 	title: string;
 	intent: string;
 	approvalNonce: string;
-	stages: Array<{ id: string }>;
+	stages: Array<{ id: string; description: string; taskIds: string[] }>;
 	tasks: Array<{ id: string; status: TaskStatus }>;
 }
 
@@ -120,6 +127,7 @@ export {
 	createInitialState,
 	enterPlanning,
 	exitPlanning,
+	getStageTaskIds,
 	isPlanModeState,
 	migrateState,
 	recordInvalidSubmission,

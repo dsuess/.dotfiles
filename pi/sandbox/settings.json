@@ -134,10 +134,8 @@
     "denyWrite": [
       "~/bin/pi",
       "~/.pi/sandbox",
-      "~/.pi/agent/extensions/plan-mode",
       "~/.dotfiles/bin/pi",
-      "~/.dotfiles/pi/sandbox",
-      "~/.dotfiles/pi/agent/extensions/plan-mode"
+      "~/.dotfiles/pi/sandbox"
     ],
     "allowGitConfig": false
   },

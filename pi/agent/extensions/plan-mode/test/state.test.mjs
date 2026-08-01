@@ -29,10 +29,13 @@ function submission(overrides = {}) {
 		title: "Cache plan",
 		intent: "Fix cache",
 		approvalNonce: "nonce-1",
-		stages: [{ id: "1" }, { id: "2" }],
+		stages: [
+			{ id: "1", description: "Establish the contract.", taskIds: ["1"] },
+			{ id: "2", description: "Implement and verify.", taskIds: ["2"] },
+		],
 		tasks: [
-			{ id: "1.1", status: "pending" },
-			{ id: "2.1", status: "pending" },
+			{ id: "1", status: "pending" },
+			{ id: "2", status: "pending" },
 		],
 		...overrides,
 	};
@@ -74,7 +77,8 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 	assert.equal(approved.ok, true);
 	assert.equal(approved.state.mode, "approval");
 	assert.equal(approved.state.plan.revision, 1);
-	assert.deepEqual(Object.keys(approved.state.ledger), ["1.1", "2.1"]);
+	assert.deepEqual(Object.keys(approved.state.ledger), ["1", "2"]);
+	assert.equal(approved.state.plan.stages[1].description, "Implement and verify.");
 
 	const executing = approveExecution(approved.state, "nonce-1", "staged");
 	assert.equal(executing.ok, true);
@@ -147,20 +151,20 @@ test("new user input resets consecutive invalid-submission counting", () => {
 
 test("ledger enforces legal transitions, evidence, stage scope, and explicit reopening", () => {
 	let execution = approveExecution(approvalState(), "nonce-1", "staged").state;
-	assert.equal(recordTaskProgress(execution, { taskId: "1.1", status: "completed", evidence: "test" }).error.code, "invalid_task_transition");
-	execution = recordTaskProgress(execution, { taskId: "1.1", status: "in_progress" }).state;
-	assert.equal(recordTaskProgress(execution, { taskId: "1.1", status: "completed", evidence: "" }).error.code, "missing_evidence");
-	execution = recordTaskProgress(execution, { taskId: "1.1", status: "completed", evidence: "unit test passed" }).state;
-	assert.equal(recordTaskProgress(execution, { taskId: "1.1", status: "in_progress" }).error.code, "missing_reopen_reason");
-	execution = recordTaskProgress(execution, { taskId: "1.1", status: "in_progress", reopenReason: "user requested fix" }).state;
-	assert.equal(execution.ledger["1.1"].note, "user requested fix");
-	assert.equal(recordTaskProgress(execution, { taskId: "2.1", status: "in_progress" }).error.code, "future_stage");
+	assert.equal(recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "test" }).error.code, "invalid_task_transition");
+	execution = recordTaskProgress(execution, { taskId: "1", status: "in_progress" }).state;
+	assert.equal(recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "" }).error.code, "missing_evidence");
+	execution = recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "unit test passed" }).state;
+	assert.equal(recordTaskProgress(execution, { taskId: "1", status: "in_progress" }).error.code, "missing_reopen_reason");
+	execution = recordTaskProgress(execution, { taskId: "1", status: "in_progress", reopenReason: "user requested fix" }).state;
+	assert.equal(execution.ledger["1"].note, "user requested fix");
+	assert.equal(recordTaskProgress(execution, { taskId: "2", status: "in_progress" }).error.code, "future_stage");
 });
 
 test("staged checkpoints are nonce-guarded, ordered, pausable, and resumable", () => {
 	let execution = approveExecution(approvalState(), "nonce-1", "staged").state;
-	execution = recordTaskProgress(execution, { taskId: "1.1", status: "in_progress" }).state;
-	execution = recordTaskProgress(execution, { taskId: "1.1", status: "completed", evidence: "done" }).state;
+	execution = recordTaskProgress(execution, { taskId: "1", status: "in_progress" }).state;
+	execution = recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "done" }).state;
 	const checkpoint = recordStageCheckpoint(execution, {
 		stageId: "1", nonce: "stage-nonce", summary: "done", changedFiles: [], tests: ["npm test"], blockers: [],
 	});
@@ -214,6 +218,22 @@ test("restore uses only the latest valid state on the supplied active branch", (
 
 	const abandonedBranch = [branch[0], { type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: abandoned }];
 	assert.equal(restoreLatestState(abandonedBranch).mode, "completed");
+});
+
+test("restore migrates stage metadata for legacy persisted plans", () => {
+	const legacy = approvalState({
+		stages: [{ id: "1" }, { id: "2" }],
+		tasks: [
+			{ id: "1.1", status: "pending" },
+			{ id: "2.1", status: "pending" },
+		],
+	});
+	delete legacy.plan.stages;
+	const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: legacy }]);
+	assert.deepEqual(restored.plan.stages, [
+		{ id: "1", description: "Stage 1", taskIds: ["1.1"] },
+		{ id: "2", description: "Stage 2", taskIds: ["2.1"] },
+	]);
 });
 
 test("restore ignores malformed or unsupported state entries", () => {

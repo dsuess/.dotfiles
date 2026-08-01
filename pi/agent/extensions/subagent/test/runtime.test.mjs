@@ -166,6 +166,15 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	const proc = new FakeProcess();
 	let spawnCall;
 	let promptSnapshot;
+	const parentEnv = {
+		PATH: "/bin",
+		PI_SANDBOX_PROFILE: "inherited-profile",
+		PI_SESSION_ID: "parent-id",
+		PI_SESSION_FILE: "/parent/session.jsonl",
+		PI_PROVIDER: "parent-provider",
+		PI_MODEL: "parent-model",
+		PI_REASONING_LEVEL: "xhigh",
+	};
 	try {
 		const result = await runSubagent(baseOptions({
 			activeTools: ["read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage"],
@@ -173,14 +182,7 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		}), {
 			piCommand: "/fake/pi",
 			tmpRoot,
-			baseEnv: {
-				PATH: "/bin",
-				PI_SESSION_ID: "parent-id",
-				PI_SESSION_FILE: "/parent/session.jsonl",
-				PI_PROVIDER: "parent-provider",
-				PI_MODEL: "parent-model",
-				PI_REASONING_LEVEL: "xhigh",
-			},
+			baseEnv: parentEnv,
 			spawnImpl(command, args, options) {
 				spawnCall = { command, args, options };
 				const promptPath = args[args.indexOf("--system-prompt") + 1];
@@ -213,13 +215,16 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		assert.equal(proc.stdinText, `${baseOptions().prompt}\n`);
 		assert.equal(promptSnapshot.mode, 0o600);
 		assert.match(promptSnapshot.text, /^PARENT EFFECTIVE SYSTEM PROMPT/);
+		assert.doesNotMatch(promptSnapshot.text, /Inspect the repository/, "delegated task remains solely on stdin");
 		assert.match(promptSnapshot.text, /report back/i);
 		assert.match(promptSnapshot.text, /cannot invoke nested/i);
 		assert.match(promptSnapshot.text, /parent-session workflow tools/i);
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_CHILD, "1");
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_PLANNING, "1");
+		assert.equal(spawnCall.options.env.PI_SANDBOX_PROFILE, "inherited-profile");
 		for (const name of ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) {
 			assert.equal(spawnCall.options.env[name], undefined, `${name} must not leak from parent`);
+			assert.ok(name in parentEnv, `${name} removal must not mutate the parent environment object`);
 		}
 		assert.equal(result.output, "final report");
 		await assert.rejects(stat(promptSnapshot.path), /ENOENT/);

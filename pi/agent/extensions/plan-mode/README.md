@@ -22,7 +22,7 @@ Planning and approval expose only registered inspection/research/question tools 
 
 Bash and user `!`/`!!` commands use a **known-mutator denylist**. Redirects and recognized filesystem, Git, package-manager, process/service, archive, download, and editor mutations are rejected, including common wrappers, chains, substitutions, and nested `sh -c` forms. Unclassified commands are deliberately allowed. This is fail-open and is not a security boundary.
 
-The per-turn planner prompt adapts `grill-with-docs` to read-only planning: terminology and ADR/CONTEXT decisions become plan tasks rather than inline writes.
+The per-turn planner prompt adapts `grill-with-docs` to read-only planning: terminology and ADR/CONTEXT decisions become plan tasks rather than inline writes. It also overrides the skill's one-question-at-a-time cadence unless explicitly requested, collecting blockers while useful investigation remains and then asking them together in one batch.
 
 ## Plan files and schema
 
@@ -32,26 +32,22 @@ Validated plans are saved under:
 
 The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
 
-Required Markdown:
+Required Markdown is organized around intent and work, not execution phases:
 
 1. One H1 title.
-2. `## Objective / Goal Statement`.
-3. `## Stages Overview` with `Stage | Name | Purpose`.
-4. Ordered `### Stage N — Name` sections.
-5. Stable `#### N.M [status] Title` tasks with `Targets` and `Tools / APIs` metadata.
-6. `## Conditional Logic and Edge Cases`.
-7. `## Parallel Subagent Recommendations`.
-8. `## Testing Requirements and Edge Cases`.
-9. `## Stopping Criteria / Guardrails`.
+2. `## Why` for the problem, evidence, motivation, and outcome.
+3. `## What` for the solution summary and globally numbered `### Step N [status] Title` entries.
+4. Each step has `Targets` and `Tools / APIs` metadata plus its concrete changes, dependencies, verification, edge cases, and guardrails.
+5. A final `## Stages` table with `Stage | Description | Steps`, mapping every step to exactly one stage.
 
-Statuses are `pending`, `in_progress`, `completed`, and `blocked`.
+There are no per-stage detail sections or other H2 sections. Statuses are `pending`, `in_progress`, `completed`, and `blocked`. Legacy stage-grouped plans remain readable so active older execution sessions can finish.
 
 ## Approval actions
 
-The complete saved plan is rendered as a durable transcript block. The action dialog offers:
+The complete saved plan is rendered as a durable transcript block, then the action dialog opens directly after the planning turn settles without injecting a `/plan-actions` user message. The dialog offers:
 
-- **Run** — execute all stages without ordinary stage pauses.
-- **Run in stages** — hard pause after every stage.
+- **Implement plan** — execute all stages without ordinary stage pauses.
+- **Implement in stages** — hard pause after every stage.
 - **Change** — send exact free-form revision feedback while remaining gated.
 - **Review** — edit the actual plan in the configured external editor (or Pi editor fallback).
 
@@ -69,7 +65,7 @@ The original active tools are restored by registered-name intersection, with exe
 - `complete_plan` — terminal whole-plan validation.
 - `complete_stage` — current-stage validation and mandatory checkpoint.
 
-Ledger writes are serialized through Pi's file mutation queue and atomically update only a task status plus its `Ledger` line. Any other plan-content drift stops the update. Parallel workers report to the parent implementation agent; the parent is the only ledger writer.
+Ledger writes are serialized through Pi's file mutation queue and atomically update only a step status plus its `Ledger` line. Any other plan-content drift stops the update. The progress widget groups those steps into described stage rows and uses emoji status indicators. Parallel workers report to the parent implementation agent; the parent is the only ledger writer.
 
 Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Feedback explicitly reopens affected tasks. Stop remains resumable in the same implementation session. Worker run/session IDs are retained in state for dependent later work.
 
@@ -80,6 +76,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 - TUI mode uses full renderers and structured dialogs.
 - RPC uses host select/editor primitives.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
+- Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing.
 - Plan files are durable and are never deleted on shutdown.
 - `.pi/plans/` is not automatically ignored or committed; each project owns that policy.
 

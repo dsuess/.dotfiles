@@ -7,13 +7,17 @@ export function stripLedgerMutations(markdown) {
 		.replaceAll("\r", "\n")
 		.split("\n")
 		.filter((line) => !/^- \*\*Ledger:\*\*/.test(line))
-		.map((line) => line.replace(/^(#### \d+\.\d+) \[[^\]]+\]/, "$1 [status]"))
+		.map((line) => line.replace(/^(### Step \d+|#### \d+\.\d+) \[[^\]]+\]/, "$1 [status]"))
 		.join("\n")
 		.trimEnd();
 }
 
 export function immutablePlanHash(markdown) {
 	return createHash("sha256").update(stripLedgerMutations(markdown), "utf8").digest("hex");
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, ledgerItem) {
@@ -25,14 +29,21 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 	if (!parsed.document.stages.flatMap((stage) => stage.tasks).some((task) => task.id === taskId)) {
 		throw new Error(`Unknown task ID ${taskId}`);
 	}
+
+	const escapedId = escapeRegExp(taskId);
+	const headingPatterns = [
+		new RegExp(`^(### Step ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
+		new RegExp(`^(#### ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
+	];
 	const lines = currentMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-	const headingPattern = new RegExp(`^#### ${taskId.replace(".", "\\.")} \\[([^\\]]+)\\] (.+)$`);
-	const headingIndex = lines.findIndex((line) => headingPattern.test(line));
+	const headingIndex = lines.findIndex((line) => headingPatterns.some((pattern) => pattern.test(line)));
 	if (headingIndex < 0) throw new Error(`Task heading not found for ${taskId}`);
-	lines[headingIndex] = lines[headingIndex].replace(headingPattern, `#### ${taskId} [${ledgerItem.status}] $2`);
+	const headingPattern = headingPatterns.find((pattern) => pattern.test(lines[headingIndex]));
+	lines[headingIndex] = lines[headingIndex].replace(headingPattern, `$1 [${ledgerItem.status}] $3`);
+
 	let taskEnd = lines.length;
 	for (let index = headingIndex + 1; index < lines.length; index += 1) {
-		if (/^#### \d+\.\d+ \[/.test(lines[index]) || /^### Stage /.test(lines[index]) || /^## /.test(lines[index])) {
+		if (/^### Step \d+ \[/.test(lines[index]) || /^#### \d+\.\d+ \[/.test(lines[index]) || /^### Stage /.test(lines[index]) || /^## /.test(lines[index])) {
 			taskEnd = index;
 			break;
 		}

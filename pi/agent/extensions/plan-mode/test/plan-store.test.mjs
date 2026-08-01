@@ -9,6 +9,7 @@ import {
 	MAX_SLUG_LENGTH,
 	PlanStoreError,
 	persistPlan,
+	restorePlanFile,
 	sanitizeIntentSlug,
 } from "../plan-store.js";
 import { VALID_PLAN } from "./fixtures.mjs";
@@ -63,7 +64,7 @@ test("persists validated plans atomically and allocates collision suffixes", asy
 test("replaces only the validated active revision and preserves it on I/O failure", async () => {
 	await withProject(async (project) => {
 		const first = await persistPlan({ cwd: project, ...baseOptions });
-		const revisedMarkdown = VALID_PLAN.replace("Failed writes do not invalidate", "Rejected writes do not invalidate");
+		const revisedMarkdown = VALID_PLAN.replace("Failed writes must preserve", "Rejected writes must preserve");
 		await assert.rejects(
 			persistPlan({
 				cwd: project,
@@ -84,6 +85,31 @@ test("replaces only the validated active revision and preserves it on I/O failur
 		});
 		assert.equal(revised.path, first.path);
 		assert.notEqual(revised.hash, first.hash);
+	});
+});
+
+test("restores a missing validated plan from its durable transcript copy", async () => {
+	await withProject(async (project) => {
+		const first = await persistPlan({ cwd: project, ...baseOptions });
+		await rm(first.path);
+		const restored = await restorePlanFile({
+			cwd: project,
+			path: first.path,
+			markdown: VALID_PLAN,
+			expectedHash: first.hash,
+			title: baseOptions.title,
+		});
+		assert.equal(restored.restored, true);
+		assert.equal(await readFile(first.path, "utf8"), VALID_PLAN);
+
+		const existing = await restorePlanFile({
+			cwd: project,
+			path: first.path,
+			markdown: VALID_PLAN,
+			expectedHash: first.hash,
+			title: baseOptions.title,
+		});
+		assert.equal(existing.restored, false);
 	});
 });
 

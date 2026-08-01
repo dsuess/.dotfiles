@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	buildCalendar,
 	buildUsageSummary,
+	createUsageTheme,
 	formatTokens,
 	renderUsage,
 	scanUsage,
@@ -244,6 +245,20 @@ test("token formatter is compact and trims insignificant zeroes", () => {
 	assert.equal(formatTokens(1_250_000_000), "1.3B");
 });
 
+test("usage theme renders the orange palette in truecolor and 256-color terminals", () => {
+	for (const [mode, ansi] of [
+		["truecolor", "\x1b[38;2;242;140;40m"],
+		["256color", "\x1b[38;5;208m"],
+	] as const) {
+		const theme = createUsageTheme({
+			fg: (role, text) => `<${role}>${text}</${role}>`,
+			bold: (text) => `<bold>${text}</bold>`,
+			getColorMode: () => mode,
+		});
+		assert.equal(theme.color("#f28c28", theme.bold("42")), `${ansi}<bold>42</bold>\x1b[39m`);
+	}
+});
+
 test("zero-activity render remains valid and avoids intensity division errors", () => {
 	const summary = buildUsageSummary([], new Date(2026, 7, 1, 18));
 	const theme = {
@@ -258,7 +273,7 @@ test("zero-activity render remains valid and avoids intensity division errors", 
 	assert.equal(gridLines.join("").split("■").length - 1, 365);
 });
 
-test("renderer preserves reference hierarchy, calendar alignment, and semantic intensity order", () => {
+test("renderer preserves hierarchy, alignment, and the gray-to-orange intensity order", () => {
 	const now = new Date(2026, 7, 1, 18);
 	const summary = buildUsageSummary([event(now, 0, 40), event(now, -1, 30), event(now, -2, 20), event(now, -3, 10)], now);
 	const identityTheme = {

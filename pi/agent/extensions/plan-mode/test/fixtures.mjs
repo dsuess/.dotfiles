@@ -1,5 +1,44 @@
 export const VALID_PLAN = `# Add Reliable Cache Invalidation
 
+## Why
+
+Stale cache entries survive successful writes and return outdated data. Invalidation must restore consistency without changing the public cache API.
+
+## What
+
+Add explicit invalidation after successful writes, preserve valid entries after failed writes, and prove idempotent behavior at the cache boundary.
+
+### Step 1 [pending] Define the cache contract
+
+- **Targets:** \`src/cache.ts\`, \`test/cache.test.ts\`
+- **Tools / APIs:** read, edit, Node test runner
+
+Document key ownership and expected expiry behavior. Acceptance requires executable contract tests for successful and failed writes.
+
+### Step 2 [in_progress] Implement invalidation
+
+- **Targets:** \`src/cache.ts\`
+- **Tools / APIs:** edit, \`Map.delete\`
+
+Delete matching entries after successful writes. Failed writes must preserve the last valid cached value.
+
+### Step 3 [blocked] Verify edge cases
+
+- **Targets:** \`test/cache.test.ts\`
+- **Tools / APIs:** bash, Node test runner
+
+Cover misses, repeated invalidation, expiry races, and the stopping condition when the public API would need to change.
+
+## Stages
+
+| Stage | Description | Steps |
+|---|---|---|
+| 1 | Freeze the cache behavior and executable contract. | 1 |
+| 2 | Implement invalidation and verify edge cases. | 2, 3 |
+`;
+
+export const LEGACY_PLAN = `# Add Reliable Cache Invalidation
+
 ## Objective / Goal Statement
 
 Invalidate stale cache entries without changing public API behavior.

@@ -161,24 +161,45 @@ export function submitPlan(state, submission) {
 	if (!Array.isArray(submission.stages) || submission.stages.length === 0) {
 		return rejection(state, "invalid_plan_metadata", "stages must contain at least one stage");
 	}
-	const stageIds = new Set();
-	for (const stage of submission.stages) {
-		if (!stage || typeof stage.id !== "string" || !stage.id || stageIds.has(stage.id)) {
-			return rejection(state, "invalid_plan_metadata", "stages must have unique, non-empty IDs");
-		}
-		stageIds.add(stage.id);
-	}
 	if (!Array.isArray(submission.tasks) || submission.tasks.length === 0) {
 		return rejection(state, "invalid_plan_metadata", "tasks must contain at least one task");
 	}
 	const taskIds = new Set();
 	const ledger = {};
 	for (const task of submission.tasks) {
-		if (!task || typeof task.id !== "string" || taskIds.has(task.id) || !STATUS_SET.has(task.status)) {
+		if (!task || typeof task.id !== "string" || !task.id || taskIds.has(task.id) || !STATUS_SET.has(task.status)) {
 			return rejection(state, "invalid_plan_metadata", "tasks must have unique IDs and valid statuses");
 		}
 		taskIds.add(task.id);
 		ledger[task.id] = { status: task.status, note: null, evidence: null };
+	}
+	const stageIds = new Set();
+	const assignedTaskIds = new Set();
+	const stages = [];
+	for (const stage of submission.stages) {
+		if (!stage || typeof stage.id !== "string" || !stage.id || stageIds.has(stage.id)) {
+			return rejection(state, "invalid_plan_metadata", "stages must have unique, non-empty IDs");
+		}
+		stageIds.add(stage.id);
+		const description = typeof stage.description === "string" && stage.description.trim()
+			? stage.description.trim()
+			: `Stage ${stage.id}`;
+		const mappedTaskIds = Array.isArray(stage.taskIds)
+			? [...stage.taskIds]
+			: [...taskIds].filter((taskId) => taskId.startsWith(`${stage.id}.`));
+		if (mappedTaskIds.length === 0) {
+			return rejection(state, "invalid_plan_metadata", `Stage ${stage.id} must contain at least one task`);
+		}
+		for (const taskId of mappedTaskIds) {
+			if (!taskIds.has(taskId) || assignedTaskIds.has(taskId)) {
+				return rejection(state, "invalid_plan_metadata", "Every task must belong to exactly one valid stage");
+			}
+			assignedTaskIds.add(taskId);
+		}
+		stages.push({ id: stage.id, description, taskIds: mappedTaskIds });
+	}
+	if (assignedTaskIds.size !== taskIds.size) {
+		return rejection(state, "invalid_plan_metadata", "Every task must belong to exactly one stage");
 	}
 	const priorRevision = state.plan?.path === submission.path ? state.plan.revision : 0;
 	const revision = priorRevision + 1;
@@ -193,6 +214,7 @@ export function submitPlan(state, submission) {
 			revision,
 			stageIds: [...stageIds],
 			taskIds: [...taskIds],
+			stages,
 		};
 		next.approval = {
 			nonce: submission.approvalNonce,
@@ -248,13 +270,19 @@ export function approveExecution(state, nonce, executionMode) {
 	});
 }
 
+export function getStageTaskIds(state, stageId) {
+	const stage = state.plan?.stages?.find((item) => item.id === stageId);
+	if (stage && Array.isArray(stage.taskIds)) return [...stage.taskIds];
+	return (state.plan?.taskIds ?? []).filter((taskId) => taskId.startsWith(`${stageId}.`));
+}
+
 export function recordTaskProgress(state, update) {
 	const invalidMode = requireMode(state, ["executing_all", "executing_staged"], "recordTaskProgress");
 	if (invalidMode) return invalidMode;
 	const current = state.ledger[update?.taskId];
 	if (!current) return rejection(state, "unknown_task", `Unknown plan task: ${update?.taskId ?? ""}`);
 	if (!STATUS_SET.has(update?.status)) return rejection(state, "invalid_status", "Task status is invalid");
-	if (state.mode === "executing_staged" && !update.taskId.startsWith(`${state.currentStageId}.`)) {
+	if (state.mode === "executing_staged" && !getStageTaskIds(state, state.currentStageId).includes(update.taskId)) {
 		return rejection(state, "future_stage", `Task ${update.taskId} is outside current stage ${state.currentStageId}`);
 	}
 	const allowed = {
@@ -290,7 +318,7 @@ export function recordStageCheckpoint(state, payload) {
 	if (state.checkpoint && !state.checkpoint.consumed) return rejection(state, "checkpoint_pending", "A stage checkpoint is already pending");
 	if (payload?.stageId !== state.currentStageId) return rejection(state, "stage_order", `Expected current stage ${state.currentStageId}`);
 	if (typeof payload.nonce !== "string" || !payload.nonce) return rejection(state, "invalid_checkpoint", "Checkpoint nonce is required");
-	const taskIds = state.plan.taskIds.filter((id) => id.startsWith(`${payload.stageId}.`));
+	const taskIds = getStageTaskIds(state, payload.stageId);
 	const nonterminal = taskIds.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
 	if (nonterminal.length > 0) return rejection(state, "nonterminal_stage", `Stage tasks are nonterminal: ${nonterminal.join(", ")}`);
 	return apply(state, `complete_stage_${payload.stageId}`, (next) => {
@@ -389,6 +417,13 @@ export function migrateState(value) {
 	if (migrated.execution) migrated.execution = { paused: false, ...migrated.execution };
 	if (migrated.approval) migrated.approval = { presented: false, ...migrated.approval };
 	if (migrated.checkpoint) migrated.checkpoint = { presented: false, ...migrated.checkpoint };
+	if (migrated.plan && !Array.isArray(migrated.plan.stages)) {
+		migrated.plan.stages = (migrated.plan.stageIds ?? []).map((id) => ({
+			id,
+			description: `Stage ${id}`,
+			taskIds: (migrated.plan.taskIds ?? []).filter((taskId) => taskId.startsWith(`${id}.`)),
+		}));
+	}
 	return migrated;
 }
 

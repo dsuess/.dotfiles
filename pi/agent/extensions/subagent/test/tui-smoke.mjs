@@ -22,36 +22,67 @@ const theme = {
 	strikethrough: (text) => text,
 };
 
+const roleCases = [
+	["VALIDATE the design, then implement it", "reviewer", "🧪"],
+	["Architect a roadmap, then build it", "planner", "🗺️"],
+	["Create a patch after you research the cause", "worker", "🔨"],
+	["Please investigate the failing test", "scout", "🔎"],
+	["Summarize the supplied notes", "general", "🤖"],
+	["Preview the supplied notes", "general", "🤖"],
+];
+for (const [prompt, name, emoji] of roleCases) {
+	assert.deepEqual(uiModule.inferRole(prompt), { name, emoji });
+}
+assert.equal(uiModule.normalizeTaskSummary("  Inspect\n source\t carefully  "), "Inspect source carefully");
+
 const widgetCalls = [];
 const fakeUi = { setWidget(...args) { widgetCalls.push(args); } };
 const manager = uiModule.createRunUiManager(fakeUi);
-manager.start("call-a", { ordinal: 1, model: "openai-codex/gpt-5.6-sol", prompt: "Inspect source" });
-manager.start("call-b", { ordinal: 2, model: "anthropic/claude-sonnet", prompt: "Search tests" });
+manager.start("call-a", {
+	ordinal: 1,
+	model: "openai-codex/gpt-5.6-sol",
+	prompt: "  Inspect\n source carefully without changing it  ",
+});
+manager.start("call-b", {
+	ordinal: 2,
+	model: "anthropic/claude-sonnet",
+	prompt: "Implement the intentionally long requested test fixture and report the result",
+});
+
+const [, initialWidgetFactory, placement] = widgetCalls.at(-1);
+assert.equal(placement.placement, "belowEditor");
+const initialWidget = initialWidgetFactory({ requestRender() {} }, theme);
+const beforeActivityRows = initialWidget.render(120).join("\n");
 manager.update("call-a", { kind: "reading", emoji: "📖", label: "reading", action: "/very/long/path/to/a/source/file.ts" });
 manager.update("call-b", { kind: "shell", emoji: "💻", label: "shell", action: "git status --short and then an intentionally long preview" });
-
-const [, widgetFactory, placement] = widgetCalls.at(-1);
-assert.equal(placement.placement, "belowEditor");
-const widget = widgetFactory({ requestRender() {} }, theme);
+const activeWidgetFactory = widgetCalls.at(-1)[1];
+const widget = activeWidgetFactory({ requestRender() {} }, theme);
 for (const width of [24, 40, 80]) {
 	const lines = widget.render(width);
-	assert.equal(lines.length, 2, "exactly one widget row per concurrent child");
+	assert.equal(lines.length, 3, "one row per child plus a trailing spacer before the footer");
+	assert.equal(lines.at(-1), "");
 	assert.ok(lines.every((line) => tuiPackage.visibleWidth(line) <= width), `widget exceeded width ${width}`);
 }
 const rows = widget.render(120).join("\n");
-assert.match(rows, /📖/);
-assert.match(rows, /💻/);
+assert.equal(rows, beforeActivityRows, "activity must not change fixed role/task rows");
+assert.match(rows, /🔎.*scout/);
+assert.match(rows, /🔨.*worker/);
 assert.match(rows, /subagent #1/);
 assert.match(rows, /subagent #2/);
+assert.match(rows, /Inspect source carefully without changing it/);
 assert.match(rows, /gpt-5\.6-sol/);
-assert.match(rows, /git status --short/);
+assert.doesNotMatch(rows, /📖|💻|git status --short|very\/long\/path/);
 widget.invalidate();
 assert.ok(widget.render(32).every((line) => tuiPackage.visibleWidth(line) <= 32));
 
-manager.remove("call-a");
-const oneRunFactory = widgetCalls.at(-1)[1];
-assert.equal(oneRunFactory({ requestRender() {} }, theme).render(80).length, 1);
 manager.remove("call-b");
+const oneRunFactory = widgetCalls.at(-1)[1];
+const oneRunRows = oneRunFactory({ requestRender() {} }, theme).render(80);
+assert.equal(oneRunRows.length, 2, "one child row plus a trailing spacer before the footer");
+assert.equal(oneRunRows.at(-1), "");
+assert.match(oneRunRows[0], /subagent #1/);
+assert.doesNotMatch(oneRunRows[0], /subagent #2/);
+manager.remove("call-a");
 assert.equal(widgetCalls.at(-1)[1], undefined, "shared widget clears when no runs remain");
 manager.clear();
 assert.equal(widgetCalls.at(-1)[1], undefined);

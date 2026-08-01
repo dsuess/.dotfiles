@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { VALID_PLAN } from "./fixtures.mjs";
@@ -38,12 +38,13 @@ const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-mock-"));
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 let replacementSetup = [];
 let replacementKickoff = [];
+let ledgerWidget;
 const ctx = {
 	cwd: project, mode: "tui", hasUI: true, model: undefined, thinkingLevel: "high",
 	isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
 	sessionManager: { getBranch: () => appended, getSessionFile: () => "/sessions/planning.jsonl" },
 	ui: {
-		theme, notify() {}, setStatus() {}, setWidget() {},
+		theme, notify() {}, setStatus() {}, setWidget(name, value) { if (name === "plan-mode-ledger") ledgerWidget = value; },
 		async custom(factory) {
 			return new Promise((resolve) => {
 				const component = factory({ requestRender() {} }, theme, {}, resolve);
@@ -69,6 +70,14 @@ try {
 	assert.deepEqual(appended.at(-1).data.originalActiveTools, ["read", "bash", "edit", "write", "custom_tool"]);
 	assert.equal(appended.at(-1).data.mode, "planning");
 	assert.equal(activeTools.includes("edit"), false);
+	const planningPrompt = await handlers.get("before_agent_start")[0]({ systemPrompt: "base" }, ctx);
+	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
+	assert.match(planningPrompt.systemPrompt, /ask all currently known blockers together in one ask_user_question call/i);
+	assert.doesNotMatch(planningPrompt.systemPrompt, /Ask unresolved design questions one at a time/i);
+	assert.match(planningPrompt.systemPrompt, /H2 "Why"/);
+	assert.match(planningPrompt.systemPrompt, /H2 "What"/);
+	assert.match(planningPrompt.systemPrompt, /H2 "Stages" is the final and only stage-oriented section/);
+	assert.doesNotMatch(planningPrompt.systemPrompt, /Stages Overview/);
 	const blocked = await handlers.get("tool_call")[0]({ toolName: "edit", input: {}, toolCallId: "edit-1" }, ctx);
 	assert.equal(blocked.block, true);
 
@@ -80,7 +89,9 @@ try {
 	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-plan-display").length, 1);
 	assert.equal(queued.length, 0, "approval commands are not sent to the model");
 
+	await rm(submitted.details.path);
 	await handlers.get("agent_settled")[0]({}, ctx);
+	assert.equal(await readFile(submitted.details.path, "utf8"), VALID_PLAN, "approval recovers a missing plan from the durable display entry");
 	const executionState = replacementSetup.find((entry) => entry.customType === "plan-mode-state").data;
 	assert.equal(executionState.mode, "executing_all");
 	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.approval.consumed, true);
@@ -109,13 +120,17 @@ try {
 	assert.ok(executionActive.includes("plan_progress"));
 	assert.ok(executionActive.includes("complete_plan"));
 	assert.equal(executionActive.includes("complete_stage"), false);
+	assert.deepEqual(ledgerWidget, [
+		"⏳ Stage 1 — Freeze the cache behavior and executable contract.",
+		"⛔ Stage 2 — Implement invalidation and verify edge cases.",
+	]);
 
 	const progress = executionTools.get("plan_progress");
-	await progress.execute("p1", { taskId: "1.1", status: "in_progress" }, undefined, undefined, executionCtx);
-	await progress.execute("p2", { taskId: "1.1", status: "completed", evidence: "contract tests passed" }, undefined, undefined, executionCtx);
-	await progress.execute("p3", { taskId: "2.1", status: "completed", evidence: "implementation test passed" }, undefined, undefined, executionCtx);
-	await progress.execute("p4", { taskId: "2.2", status: "in_progress", note: "retrying blocker" }, undefined, undefined, executionCtx);
-	await progress.execute("p5", { taskId: "2.2", status: "completed", evidence: "edge tests passed" }, undefined, undefined, executionCtx);
+	await progress.execute("p1", { taskId: "1", status: "in_progress" }, undefined, undefined, executionCtx);
+	await progress.execute("p2", { taskId: "1", status: "completed", evidence: "contract tests passed" }, undefined, undefined, executionCtx);
+	await progress.execute("p3", { taskId: "2", status: "completed", evidence: "implementation test passed" }, undefined, undefined, executionCtx);
+	await progress.execute("p4", { taskId: "3", status: "in_progress", note: "retrying blocker" }, undefined, undefined, executionCtx);
+	await progress.execute("p5", { taskId: "3", status: "completed", evidence: "edge tests passed" }, undefined, undefined, executionCtx);
 	const completed = await executionTools.get("complete_plan").execute("done", {
 		summary: "all stages complete", tests: ["node --test"], allowBlockedStoppingCriterion: false,
 	}, undefined, undefined, executionCtx);

@@ -84,14 +84,19 @@ function hashContent(content) {
 	return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-async function verifyRevisionTarget(path, plansRoot, expectedHash) {
+function resolvePlanTarget(path, plansRoot) {
 	if (typeof path !== "string" || !isAbsolute(path)) {
-		throw new PlanStoreError("path_escape", "The existing plan path must be absolute");
+		throw new PlanStoreError("path_escape", "The plan path must be absolute");
 	}
 	const target = resolve(path);
 	if (!isWithin(plansRoot, target) || dirname(target) !== plansRoot || !target.endsWith(".md")) {
-		throw new PlanStoreError("path_escape", "The existing plan path is outside the project plans directory");
+		throw new PlanStoreError("path_escape", "The plan path is outside the project plans directory");
 	}
+	return target;
+}
+
+async function verifyRevisionTarget(path, plansRoot, expectedHash) {
+	const target = resolvePlanTarget(path, plansRoot);
 	const stats = await lstat(target);
 	if (stats.isSymbolicLink() || !stats.isFile()) {
 		throw new PlanStoreError("unsafe_revision_target", "The existing plan must be a regular, non-symlink file");
@@ -137,8 +142,59 @@ async function atomicWrite(target, content, options = {}) {
 	}
 }
 
+async function verifyWrittenPlan(target, expectedHash) {
+	let content;
+	try {
+		content = await readFile(target, "utf8");
+	} catch (error) {
+		throw new PlanStoreError("write_verification_failed", `The saved plan could not be read back: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (hashContent(content) !== expectedHash) {
+		throw new PlanStoreError("write_verification_failed", "The saved plan did not match the submitted content");
+	}
+	return content;
+}
+
 export async function atomicReplaceFile(target, content, options = {}) {
 	await atomicWrite(target, content, { renameFile: options.renameFile, targetReserved: false });
+}
+
+export async function restorePlanFile(options) {
+	const {
+		cwd,
+		path,
+		markdown,
+		expectedHash,
+		title,
+		configDirName = ".pi",
+	} = options ?? {};
+	if (typeof cwd !== "string" || !cwd) throw new PlanStoreError("invalid_cwd", "A project working directory is required");
+	const parsed = parsePlanDocument(markdown);
+	if (!parsed.ok) throw new PlanStoreError("validation_failed", "Durable plan copy is not valid canonical Markdown", parsed.errors);
+	if (typeof title !== "string" || parsed.document.title !== title.trim()) {
+		throw new PlanStoreError("title_mismatch", "The durable plan title does not match the active plan");
+	}
+	if (typeof expectedHash !== "string" || hashContent(markdown) !== expectedHash) {
+		throw new PlanStoreError("hash_mismatch", "The durable plan copy does not match the active plan hash");
+	}
+	const plansRoot = await ensureSafePlansRoot(cwd, configDirName);
+	const target = resolvePlanTarget(path, plansRoot);
+	try {
+		const stats = await lstat(target);
+		if (stats.isSymbolicLink() || !stats.isFile()) {
+			throw new PlanStoreError("unsafe_revision_target", "The plan must be a regular, non-symlink file");
+		}
+		const current = await readFile(target, "utf8");
+		if (hashContent(current) !== expectedHash) {
+			throw new PlanStoreError("revision_drift", "The saved plan changed since its validated revision");
+		}
+		return { path: target, restored: false };
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	await atomicWrite(target, markdown);
+	await verifyWrittenPlan(target, expectedHash);
+	return { path: target, restored: true };
 }
 
 export async function persistPlan(options) {
@@ -176,11 +232,13 @@ export async function persistPlan(options) {
 		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, baseSlug, maxCollisionProbes));
 	}
 
+	const hash = hashContent(markdown);
 	await atomicWrite(target, markdown, { renameFile, targetReserved });
+	await verifyWrittenPlan(target, hash);
 	return {
 		path: target,
 		slug,
-		hash: hashContent(markdown),
+		hash,
 		document: parsed.document,
 	};
 }

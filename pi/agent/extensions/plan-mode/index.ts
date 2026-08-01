@@ -27,8 +27,9 @@ import {
 	snapshotActiveTools,
 	WORKFLOW_TOOLS,
 } from "./planning-gate.js";
-import { atomicReplaceFile, persistPlan, PlanStoreError } from "./plan-store.js";
+import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
+import { buildStageProgressRows } from "./progress-widget.js";
 import { buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
 import { parseReviewAnnotations } from "./review-annotations.js";
 import { showStageDialog } from "./stage-dialog.ts";
@@ -39,6 +40,7 @@ import {
 	createInitialState,
 	enterPlanning,
 	exitPlanning,
+	getStageTaskIds,
 	recordInvalidSubmission,
 	requestRevision,
 	resetInvalidSubmissions,
@@ -77,6 +79,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let lastContext: ExtensionContext | undefined;
 	let approvalCommandContext: ExtensionCommandContext | undefined;
 	let pendingApprovalNonce: string | null = null;
+	let approvedPlanMarkdown: string | null = null;
 	let presentingApproval = false;
 	registerPlanRenderer(pi);
 
@@ -144,10 +147,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const total = Object.keys(state.ledger).length;
 			const paused = state.execution?.paused ? ":paused" : "";
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `plan:${completed}/${total}${paused}`));
-			ctx.ui.setWidget("plan-mode-ledger", Object.entries(state.ledger).map(([id, item]) => {
-				const icon = item.status === "completed" ? "✓" : item.status === "blocked" ? "!" : item.status === "in_progress" ? "▶" : "○";
-				return `${icon} ${id} ${item.status}`;
-			}));
+			ctx.ui.setWidget("plan-mode-ledger", buildStageProgressRows(state));
 			return;
 		} else {
 			ctx.ui.setStatus("plan-mode", undefined);
@@ -229,12 +229,35 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	async function readApprovedPlan(ctx: ExtensionContext): Promise<string> {
+		if (!state.plan) throw new Error("No approved plan is active");
+		try {
+			const markdown = await readFile(state.plan.path, "utf8");
+			const hash = createHash("sha256").update(markdown, "utf8").digest("hex");
+			if (hash !== state.plan.hash) throw new PlanStoreError("revision_drift", "The saved plan changed since its validated revision");
+			return markdown;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code !== "ENOENT" || !approvedPlanMarkdown) throw error;
+			const restored = await restorePlanFile({
+				cwd: ctx.cwd,
+				configDirName: CONFIG_DIR_NAME,
+				path: state.plan.path,
+				markdown: approvedPlanMarkdown,
+				expectedHash: state.plan.hash,
+				title: state.plan.title,
+			});
+			if (restored.restored && ctx.hasUI) ctx.ui.notify("Recovered the missing plan file from the validated transcript copy.", "warning");
+			return approvedPlanMarkdown;
+		}
+	}
+
 	async function handoffExecution(ctx: ExtensionCommandContext, nonce: string, mode: "all" | "staged"): Promise<void> {
 		if (!state.plan) return;
-		const approvedMarkdown = await readFile(state.plan.path, "utf8");
-		const hash = createHash("sha256").update(approvedMarkdown, "utf8").digest("hex");
-		if (hash !== state.plan.hash) {
-			ctx.ui.notify("The approved plan changed on disk. Review or resubmit it before execution.", "error");
+		let approvedMarkdown: string;
+		try {
+			approvedMarkdown = await readApprovedPlan(ctx);
+		} catch (error) {
+			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
 			return;
 		}
 		const approvalState = structuredClone(state);
@@ -284,6 +307,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	async function requestPlanChange(ctx: ExtensionCommandContext, nonce: string, text: string): Promise<void> {
+		try {
+			await readApprovedPlan(ctx);
+		} catch (error) {
+			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			return;
+		}
 		if (state.counters.reviewRounds >= 10 && ctx.hasUI) {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
 			if (!confirmed) return;
@@ -302,10 +331,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
 			if (!confirmed) return false;
 		}
-		const original = await readFile(state.plan.path, "utf8");
-		const originalHash = createHash("sha256").update(original, "utf8").digest("hex");
-		if (originalHash !== state.plan.hash) {
-			ctx.ui.notify("The plan already differs from its validated revision; resubmit or restore it before Review.", "error");
+		let original: string;
+		try {
+			original = await readApprovedPlan(ctx);
+		} catch (error) {
+			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
 			return false;
 		}
 		const edited = await editPlanForReview(ctx, state.plan.path, original);
@@ -388,7 +418,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				if (choice.action === "cancel") return;
 				if (choice.action === "review") {
 					const summary = state.completedStages.find((item) => item.stageId === stageId);
-					const ledger = Object.entries(state.ledger).filter(([id]) => id.startsWith(`${stageId}.`));
+					const stageTaskIds = new Set(getStageTaskIds(state, stageId));
+					const ledger = Object.entries(state.ledger).filter(([id]) => stageTaskIds.has(id));
 					pi.appendEntry(STAGE_SUMMARY_ENTRY, {
 						markdown: `# Stage ${stageId} checkpoint\n\n${summary?.summary ?? "No summary"}\n\n## Changed files\n${summary?.changedFiles.map((file) => `- ${file}`).join("\n") || "- None"}\n\n## Tests\n${summary?.tests.map((test) => `- ${test}`).join("\n") || "- None"}\n\n## Ledger\n${ledger.map(([id, item]) => `- **${id}** — ${item.status}: ${item.note ?? item.evidence ?? ""}`).join("\n")}`,
 					});
@@ -493,10 +524,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					existingPlan: state.plan ? { path: state.plan.path, hash: state.plan.hash } : null,
 				});
 				const nonce = randomBytes(18).toString("base64url");
-				const stages = stored.document.stages.map((stage) => ({ id: stage.id }));
-				const tasks = stored.document.stages.flatMap((stage) =>
-					stage.tasks.map((task) => ({ id: task.id, status: task.status })),
-				);
+				const stages = stored.document.stages.map((stage) => ({
+					id: stage.id,
+					description: stage.description,
+					taskIds: stage.stepIds,
+				}));
+				const tasks = (stored.document.steps ?? stored.document.stages.flatMap((stage) => stage.tasks))
+					.map((task) => ({ id: task.id, status: task.status }));
 				const result = submitPlan(state, {
 					path: stored.path,
 					slug: stored.slug,
@@ -510,6 +544,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
 				commitTransition(result);
+				approvedPlanMarkdown = params.markdown;
 				applyPlanningGate();
 				updateStatus(ctx);
 				pi.appendEntry(PLAN_DISPLAY_ENTRY, {
@@ -605,7 +640,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 		if (handlingEarlyIdle || (state.mode !== "executing_all" && state.mode !== "executing_staged") || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
 		const relevant = state.mode === "executing_staged"
-			? Object.entries(state.ledger).filter(([id]) => id.startsWith(`${state.currentStageId}.`))
+			? Object.entries(state.ledger).filter(([id]) => getStageTaskIds(state, state.currentStageId).includes(id))
 			: Object.entries(state.ledger);
 		if (relevant.length > 0 && relevant.every(([, item]) => item.status === "completed" || item.status === "blocked")) {
 			// Terminal tasks still require complete_stage/complete_plan; treat idle as early.
@@ -647,6 +682,18 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 		state = restoreLatestState(branch) as PlanModeState;
 		executionContract = restoreExecutionContract(branch);
+		approvedPlanMarkdown = null;
+		if (state.plan) {
+			for (let index = branch.length - 1; index >= 0; index -= 1) {
+				const entry = branch[index];
+				if (entry.type !== "custom" || entry.customType !== PLAN_DISPLAY_ENTRY) continue;
+				const data = entry.data as { markdown?: string; path?: string; hash?: string };
+				if (data.path === state.plan.path && data.hash === state.plan.hash && typeof data.markdown === "string") {
+					approvedPlanMarkdown = data.markdown;
+					break;
+				}
+			}
+		}
 		if (honorFlag && !hasPersistedWorkflow && pi.getFlag("plan") === true && state.mode === "off") {
 			const result = enterPlanning(state, snapshotOriginalTools()) as TransitionResult;
 			if (result.ok) commitTransition(result);
@@ -658,10 +705,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		else hideWorkflowTools();
 		updateStatus(ctx);
 		if (ctx.hasUI && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented) {
-			const next = structuredClone(state);
-			next.approval!.presented = true;
-			commitState(next);
-			queueMicrotask(() => pi.sendUserMessage(`/plan-actions ${next.approval!.nonce}`));
+			ctx.ui.notify("A validated plan is awaiting approval. Use /plan-actions to reopen its actions.", "info");
 		} else if (ctx.hasUI && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.presented) {
 			const next = structuredClone(state);
 			next.checkpoint!.presented = true;

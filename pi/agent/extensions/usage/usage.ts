@@ -47,7 +47,12 @@ function rgbToAnsi256(red: number, green: number, blue: number): number {
 	if (red === green && green === blue) {
 		return Math.max(232, Math.min(255, 232 + Math.round((red - 8) / 10)));
 	}
-	const channel = (value: number) => Math.round((value / 255) * 5);
+	const cube = [0, 95, 135, 175, 215, 255];
+	const channel = (value: number) => cube.reduce(
+		(closest, candidate, index) =>
+			Math.abs(candidate - value) < Math.abs(cube[closest]! - value) ? index : closest,
+		0,
+	);
 	return 16 + 36 * channel(red) + 6 * channel(green) + channel(blue);
 }
 

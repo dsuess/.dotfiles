@@ -1,9 +1,10 @@
-export const PLAN_DOCUMENT_VERSION = 1;
+export const PLAN_DOCUMENT_VERSION = 2;
 export const MAX_PLAN_BYTES = 256 * 1024;
 export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed", "blocked"]);
 
 const STATUS_SET = new Set(PLAN_STATUSES);
-const REQUIRED_H2 = [
+const REQUIRED_H2 = ["Why", "What", "Stages"];
+const LEGACY_REQUIRED_H2 = [
 	"Objective / Goal Statement",
 	"Stages Overview",
 	"Conditional Logic and Edge Cases",
@@ -63,7 +64,169 @@ function splitTableRow(line) {
 	return cells;
 }
 
-function parseOverview(content, startLine, errors) {
+function escapeTableCell(value) {
+	return value.replaceAll("\\", "\\\\").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function validateBodyMetadata(task, errors) {
+	const targets = task.body.match(/^- \*\*Targets:\*\*\s*(.+)$/m);
+	const tools = task.body.match(/^- \*\*Tools \/ APIs:\*\*\s*(.+)$/m);
+	if (!targets?.[1]?.trim()) {
+		errors.push(error("missing_targets", `Step ${task.id} must include '- **Targets:** ...'`, task.line));
+	}
+	if (!tools?.[1]?.trim()) {
+		errors.push(error("missing_tools", `Step ${task.id} must include '- **Tools / APIs:** ...'`, task.line));
+	}
+}
+
+function validateTitle(headings, errors) {
+	const titleHeadings = headings.filter((heading) => heading.level === 1);
+	if (titleHeadings.length !== 1 || titleHeadings[0].index !== 0 || !titleHeadings[0].text.trim()) {
+		errors.push(error("invalid_title", "Plan must start with exactly one non-empty H1 title", titleHeadings[0]?.line));
+	}
+	return titleHeadings[0];
+}
+
+function validateSectionOrder(h2, required, errors) {
+	if (h2.length !== required.length || h2.some((heading, index) => heading.text !== required[index])) {
+		errors.push(error(
+			"invalid_section_order",
+			`Required H2 sections, in order: ${required.join("; ")}`,
+			h2.find((heading, index) => heading.text !== required[index])?.line,
+		));
+	}
+	const sectionByName = new Map(h2.map((heading) => [heading.text, heading]));
+	for (const name of required) {
+		if (!sectionByName.has(name)) errors.push(error("missing_section", `Missing section: ${name}`));
+	}
+	return sectionByName;
+}
+
+function parseStagesTable(content, startLine, steps, errors) {
+	const rows = content.split("\n").map((line, offset) => ({ line, number: startLine + offset }));
+	const tableRows = rows.filter((row) => row.line.trim().startsWith("|"));
+	if (tableRows.length < 3) {
+		errors.push(error("invalid_stages", "Stages must contain a Markdown table", startLine));
+		return [];
+	}
+	const header = splitTableRow(tableRows[0].line);
+	if (!header || header.map((cell) => cell.toLowerCase()).join("|") !== "stage|description|steps") {
+		errors.push(error("invalid_stages", "Stages table header must be Stage, Description, Steps", tableRows[0].number));
+	}
+	const separator = splitTableRow(tableRows[1].line);
+	if (!separator || separator.length !== 3 || separator.some((cell) => !/^:?-{3,}:?$/.test(cell))) {
+		errors.push(error("invalid_stages", "Stages table separator is malformed", tableRows[1].number));
+	}
+
+	const knownSteps = new Set(steps.map((step) => step.id));
+	const assignedSteps = new Set();
+	const stages = [];
+	for (const [index, row] of tableRows.slice(2).entries()) {
+		const cells = splitTableRow(row.line);
+		if (!cells || cells.length !== 3 || !/^\d+$/.test(cells[0]) || !cells[1] || !cells[2]) {
+			errors.push(error("invalid_stage_row", "Each stage row needs a numeric ID, description, and step list", row.number));
+			continue;
+		}
+		const [id, description, rawSteps] = cells;
+		if (id !== String(index + 1)) {
+			errors.push(error("stage_order", `Expected Stage ${index + 1}, found Stage ${id}`, row.number));
+		}
+		const stepIds = rawSteps.split(",").map((value) => value.trim()).filter(Boolean);
+		if (stepIds.length === 0 || stepIds.some((stepId) => !/^\d+$/.test(stepId))) {
+			errors.push(error("invalid_stage_steps", `Stage ${id} must list numeric step IDs separated by commas`, row.number));
+		}
+		for (const stepId of stepIds) {
+			if (!knownSteps.has(stepId)) errors.push(error("unknown_step", `Stage ${id} references unknown Step ${stepId}`, row.number));
+			if (assignedSteps.has(stepId)) errors.push(error("duplicate_step_assignment", `Step ${stepId} belongs to more than one stage`, row.number));
+			assignedSteps.add(stepId);
+		}
+		stages.push({ id, description, stepIds });
+	}
+	for (const step of steps) {
+		if (!assignedSteps.has(step.id)) errors.push(error("unassigned_step", `Step ${step.id} is not assigned to a stage`, step.line));
+	}
+	return stages;
+}
+
+function parseCurrentDocument(lines, headings, titleHeading, errors) {
+	const h2 = headings.filter((heading) => heading.level === 2);
+	const sectionByName = validateSectionOrder(h2, REQUIRED_H2, errors);
+	if (errors.some((item) => item.code === "invalid_section_order" || item.code === "missing_section")) {
+		return { ok: false, errors };
+	}
+
+	const whyHeading = sectionByName.get("Why");
+	const whatHeading = sectionByName.get("What");
+	const stagesHeading = sectionByName.get("Stages");
+	const why = contentBetween(lines, whyHeading.index + 1, whatHeading.index);
+	if (!why) errors.push(error("empty_section", "Section cannot be empty: Why", whyHeading.line));
+
+	const stepHeadings = headings.filter(
+		(heading) => heading.level === 3 && heading.index > whatHeading.index && heading.index < stagesHeading.index,
+	);
+	const what = contentBetween(lines, whatHeading.index + 1, stepHeadings[0]?.index ?? stagesHeading.index);
+	if (!what) errors.push(error("empty_section", "What must summarize the solution before its steps", whatHeading.line));
+	if (stepHeadings.length === 0) errors.push(error("no_steps", "What must contain at least one executable step"));
+
+	const unexpected = headings.filter((heading) => {
+		if (heading.level === 4) return true;
+		if (heading.level !== 3) return false;
+		return !stepHeadings.includes(heading);
+	});
+	for (const heading of unexpected) {
+		errors.push(error("unexpected_heading", `Unexpected heading: ${heading.text}`, heading.line));
+	}
+
+	const steps = [];
+	const stepIds = new Set();
+	for (const [index, heading] of stepHeadings.entries()) {
+		const match = heading.text.match(/^Step (\d+) \[([^\]]+)\] (.+)$/);
+		if (!match) {
+			errors.push(error("malformed_step_heading", "Step headings must use '### Step N [status] Title'", heading.line));
+			continue;
+		}
+		const [, id, status, title] = match;
+		if (id !== String(index + 1)) errors.push(error("step_order", `Expected Step ${index + 1}, found Step ${id}`, heading.line));
+		if (stepIds.has(id)) errors.push(error("duplicate_step", `Duplicate Step ${id}`, heading.line));
+		stepIds.add(id);
+		if (!STATUS_SET.has(status)) errors.push(error("invalid_status", `Step ${id} has invalid status '${status}'`, heading.line));
+		const end = stepHeadings[index + 1]?.index ?? stagesHeading.index;
+		const step = {
+			id,
+			status,
+			title: title.trim(),
+			body: contentBetween(lines, heading.index + 1, end),
+			line: heading.line,
+		};
+		if (!step.body) errors.push(error("empty_step", `Step ${id} must have a body`, heading.line));
+		validateBodyMetadata(step, errors);
+		steps.push(step);
+	}
+
+	const stagesContent = contentBetween(lines, stagesHeading.index + 1, lines.length);
+	const stages = parseStagesTable(stagesContent, stagesHeading.index + 2, steps, errors);
+	if (stages.length === 0) errors.push(error("no_stages", "Plan must contain at least one stage"));
+	if (errors.length > 0) return { ok: false, errors };
+
+	const normalizedSteps = steps.map(({ line: _line, ...step }) => step);
+	const stepById = new Map(normalizedSteps.map((step) => [step.id, step]));
+	return {
+		ok: true,
+		document: {
+			version: PLAN_DOCUMENT_VERSION,
+			title: titleHeading.text.trim(),
+			why,
+			what,
+			steps: normalizedSteps,
+			stages: stages.map((stage) => ({
+				...stage,
+				tasks: stage.stepIds.map((stepId) => stepById.get(stepId)),
+			})),
+		},
+	};
+}
+
+function parseLegacyOverview(content, startLine, errors) {
 	const rows = content.split("\n").map((line, offset) => ({ line, number: startLine + offset }));
 	const tableRows = rows.filter((row) => row.line.trim().startsWith("|"));
 	if (tableRows.length < 3) {
@@ -96,54 +259,9 @@ function parseOverview(content, startLine, errors) {
 	return stages;
 }
 
-function escapeTableCell(value) {
-	return value.replaceAll("\\", "\\\\").replaceAll("|", "\\|").replaceAll("\n", " ");
-}
-
-function validateBodyMetadata(task, errors) {
-	const targets = task.body.match(/^- \*\*Targets:\*\*\s*(.+)$/m);
-	const tools = task.body.match(/^- \*\*Tools \/ APIs:\*\*\s*(.+)$/m);
-	if (!targets?.[1]?.trim()) {
-		errors.push(error("missing_targets", `Task ${task.id} must include '- **Targets:** ...'`, task.line));
-	}
-	if (!tools?.[1]?.trim()) {
-		errors.push(error("missing_tools", `Task ${task.id} must include '- **Tools / APIs:** ...'`, task.line));
-	}
-}
-
-export function parsePlanDocument(markdown, options = {}) {
-	const maxBytes = options.maxBytes ?? MAX_PLAN_BYTES;
-	const errors = [];
-	if (typeof markdown !== "string") {
-		return { ok: false, errors: [error("invalid_input", "Plan must be a Markdown string")] };
-	}
-	if (Buffer.byteLength(markdown, "utf8") > maxBytes) {
-		return { ok: false, errors: [error("plan_too_large", `Plan exceeds the ${maxBytes}-byte limit`)] };
-	}
-	const normalized = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
-	if (!normalized) return { ok: false, errors: [error("empty_plan", "Plan cannot be empty")] };
-
-	const lines = normalized.split("\n");
-	const headings = scanHeadings(lines);
-	const titleHeadings = headings.filter((heading) => heading.level === 1);
-	if (titleHeadings.length !== 1 || titleHeadings[0].index !== 0 || !titleHeadings[0].text.trim()) {
-		errors.push(error("invalid_title", "Plan must start with exactly one non-empty H1 title", titleHeadings[0]?.line));
-	}
-
+function parseLegacyDocument(lines, headings, titleHeading, errors) {
 	const h2 = headings.filter((heading) => heading.level === 2);
-	if (h2.length !== REQUIRED_H2.length || h2.some((heading, index) => heading.text !== REQUIRED_H2[index])) {
-		errors.push(
-			error(
-				"invalid_section_order",
-				`Required H2 sections, in order: ${REQUIRED_H2.join("; ")}`,
-				h2.find((heading, index) => heading.text !== REQUIRED_H2[index])?.line,
-			),
-		);
-	}
-	const sectionByName = new Map(h2.map((heading) => [heading.text, heading]));
-	for (const name of REQUIRED_H2) {
-		if (!sectionByName.has(name)) errors.push(error("missing_section", `Missing section: ${name}`));
-	}
+	const sectionByName = validateSectionOrder(h2, LEGACY_REQUIRED_H2, errors);
 	if (errors.some((item) => item.code === "invalid_section_order" || item.code === "missing_section")) {
 		return { ok: false, errors };
 	}
@@ -153,9 +271,7 @@ export function parsePlanDocument(markdown, options = {}) {
 		const heading = h2[index];
 		const end = h2[index + 1]?.index ?? lines.length;
 		sectionContent[heading.text] = contentBetween(lines, heading.index + 1, end);
-		if (!sectionContent[heading.text]) {
-			errors.push(error("empty_section", `Section cannot be empty: ${heading.text}`, heading.line));
-		}
+		if (!sectionContent[heading.text]) errors.push(error("empty_section", `Section cannot be empty: ${heading.text}`, heading.line));
 	}
 
 	const overviewHeading = sectionByName.get("Stages Overview");
@@ -164,12 +280,8 @@ export function parsePlanDocument(markdown, options = {}) {
 		(heading) => heading.level === 3 && heading.index > overviewHeading.index && heading.index < stagesEnd,
 	);
 	const overviewEnd = stageHeadings[0]?.index ?? stagesEnd;
-	const overviewContent = contentBetween(lines, overviewHeading.index + 1, overviewEnd);
-	const overview = parseOverview(overviewContent, overviewHeading.index + 2, errors);
-	const unexpectedH3 = headings.filter(
-		(heading) => heading.level === 3 && !stageHeadings.includes(heading),
-	);
-	for (const heading of unexpectedH3) {
+	const overview = parseLegacyOverview(contentBetween(lines, overviewHeading.index + 1, overviewEnd), overviewHeading.index + 2, errors);
+	for (const heading of headings.filter((item) => item.level === 3 && !stageHeadings.includes(item))) {
 		errors.push(error("unexpected_heading", `Unexpected H3 heading: ${heading.text}`, heading.line));
 	}
 	if (stageHeadings.length === 0) errors.push(error("no_stages", "Plan must contain at least one stage section"));
@@ -184,14 +296,9 @@ export function parsePlanDocument(markdown, options = {}) {
 			continue;
 		}
 		const [, id, name] = match;
-		const expectedId = String(stageIndex + 1);
-		if (id !== expectedId) {
-			errors.push(error("stage_order", `Expected Stage ${expectedId}, found Stage ${id}`, heading.line));
-		}
+		if (id !== String(stageIndex + 1)) errors.push(error("stage_order", `Expected Stage ${stageIndex + 1}, found Stage ${id}`, heading.line));
 		const end = stageHeadings[stageIndex + 1]?.index ?? stagesEnd;
-		const taskHeadings = headings.filter(
-			(item) => item.level === 4 && item.index > heading.index && item.index < end,
-		);
+		const taskHeadings = headings.filter((item) => item.level === 4 && item.index > heading.index && item.index < end);
 		const tasks = [];
 		for (let taskIndex = 0; taskIndex < taskHeadings.length; taskIndex += 1) {
 			const taskHeading = taskHeadings[taskIndex];
@@ -200,27 +307,14 @@ export function parsePlanDocument(markdown, options = {}) {
 				errors.push(error("malformed_task_heading", "Task headings must use '#### N.M [status] Title'", taskHeading.line));
 				continue;
 			}
-			const [, taskStage, taskNumber, status, title] = taskMatch;
+			const [, taskStage, taskNumber, status, taskTitle] = taskMatch;
 			const taskId = `${taskStage}.${taskNumber}`;
-			if (taskStage !== id || Number(taskNumber) !== taskIndex + 1) {
-				errors.push(error("task_order", `Expected task ${id}.${taskIndex + 1}, found ${taskId}`, taskHeading.line));
-			}
-			if (!STATUS_SET.has(status)) {
-				errors.push(error("invalid_status", `Task ${taskId} has invalid status '${status}'`, taskHeading.line));
-			}
-			if (taskIds.has(taskId)) {
-				errors.push(error("duplicate_task", `Duplicate task ID ${taskId}`, taskHeading.line));
-			}
+			if (taskStage !== id || Number(taskNumber) !== taskIndex + 1) errors.push(error("task_order", `Expected task ${id}.${taskIndex + 1}, found ${taskId}`, taskHeading.line));
+			if (!STATUS_SET.has(status)) errors.push(error("invalid_status", `Task ${taskId} has invalid status '${status}'`, taskHeading.line));
+			if (taskIds.has(taskId)) errors.push(error("duplicate_task", `Duplicate task ID ${taskId}`, taskHeading.line));
 			taskIds.add(taskId);
 			const taskEnd = taskHeadings[taskIndex + 1]?.index ?? end;
-			const task = {
-				id: taskId,
-				stageId: id,
-				status,
-				title: title.trim(),
-				body: contentBetween(lines, taskHeading.index + 1, taskEnd),
-				line: taskHeading.line,
-			};
+			const task = { id: taskId, stageId: id, status, title: taskTitle.trim(), body: contentBetween(lines, taskHeading.index + 1, taskEnd), line: taskHeading.line };
 			if (!task.body) errors.push(error("empty_task", `Task ${taskId} must have a body`, taskHeading.line));
 			validateBodyMetadata(task, errors);
 			tasks.push(task);
@@ -229,24 +323,9 @@ export function parsePlanDocument(markdown, options = {}) {
 		stages.push({ id, name: name.trim(), tasks });
 	}
 
-	const unexpectedH4 = headings.filter((heading) => {
-		if (heading.level !== 4) return false;
-		return !stageHeadings.some((stage, index) => {
-			const end = stageHeadings[index + 1]?.index ?? stagesEnd;
-			return heading.index > stage.index && heading.index < end;
-		});
-	});
-	for (const heading of unexpectedH4) {
-		errors.push(error("unexpected_heading", `Task heading is outside a stage: ${heading.text}`, heading.line));
-	}
-
-	if (overview.length !== stages.length) {
-		errors.push(error("stage_mismatch", "Stages Overview and stage sections must contain the same stages"));
-	}
+	if (overview.length !== stages.length) errors.push(error("stage_mismatch", "Stages Overview and stage sections must contain the same stages"));
 	for (let index = 0; index < Math.min(overview.length, stages.length); index += 1) {
-		if (overview[index].id !== stages[index].id || overview[index].name !== stages[index].name) {
-			errors.push(error("stage_mismatch", `Overview row ${index + 1} does not match its stage section`));
-		}
+		if (overview[index].id !== stages[index].id || overview[index].name !== stages[index].name) errors.push(error("stage_mismatch", `Overview row ${index + 1} does not match its stage section`));
 	}
 	if (taskIds.size === 0) errors.push(error("no_tasks", "Plan must contain at least one executable task"));
 	if (errors.length > 0) return { ok: false, errors };
@@ -254,12 +333,14 @@ export function parsePlanDocument(markdown, options = {}) {
 	return {
 		ok: true,
 		document: {
-			version: PLAN_DOCUMENT_VERSION,
-			title: titleHeadings[0].text.trim(),
+			version: 1,
+			title: titleHeading.text.trim(),
 			objective: sectionContent["Objective / Goal Statement"],
 			stages: stages.map((stage, index) => ({
 				...stage,
 				purpose: overview[index].purpose,
+				description: overview[index].purpose,
+				stepIds: stage.tasks.map((task) => task.id),
 				tasks: stage.tasks.map(({ line: _line, ...task }) => task),
 			})),
 			conditionalLogic: sectionContent["Conditional Logic and Edge Cases"],
@@ -270,7 +351,48 @@ export function parsePlanDocument(markdown, options = {}) {
 	};
 }
 
-export function renderPlanDocument(document) {
+export function parsePlanDocument(markdown, options = {}) {
+	const maxBytes = options.maxBytes ?? MAX_PLAN_BYTES;
+	if (typeof markdown !== "string") return { ok: false, errors: [error("invalid_input", "Plan must be a Markdown string")] };
+	if (Buffer.byteLength(markdown, "utf8") > maxBytes) return { ok: false, errors: [error("plan_too_large", `Plan exceeds the ${maxBytes}-byte limit`)] };
+	const normalized = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+	if (!normalized) return { ok: false, errors: [error("empty_plan", "Plan cannot be empty")] };
+
+	const lines = normalized.split("\n");
+	const headings = scanHeadings(lines);
+	const errors = [];
+	const titleHeading = validateTitle(headings, errors);
+	const h2Texts = headings.filter((heading) => heading.level === 2).map((heading) => heading.text);
+	const legacy = h2Texts.some((text) => LEGACY_REQUIRED_H2.includes(text));
+	return legacy
+		? parseLegacyDocument(lines, headings, titleHeading, errors)
+		: parseCurrentDocument(lines, headings, titleHeading, errors);
+}
+
+function renderCurrentDocument(document) {
+	const lines = [
+		`# ${document.title.trim()}`,
+		"",
+		"## Why",
+		"",
+		document.why.trim(),
+		"",
+		"## What",
+		"",
+		document.what.trim(),
+	];
+	for (const step of document.steps) {
+		lines.push("", `### Step ${step.id} [${step.status}] ${step.title}`, "", step.body.trim());
+	}
+	lines.push("", "## Stages", "", "| Stage | Description | Steps |", "|---|---|---|");
+	for (const stage of document.stages) {
+		lines.push(`| ${stage.id} | ${escapeTableCell(stage.description)} | ${stage.stepIds.join(", ")} |`);
+	}
+	lines.push("");
+	return lines.join("\n");
+}
+
+function renderLegacyDocument(document) {
 	const lines = [
 		`# ${document.title.trim()}`,
 		"",
@@ -283,35 +405,22 @@ export function renderPlanDocument(document) {
 		"| Stage | Name | Purpose |",
 		"|---|---|---|",
 	];
-	for (const stage of document.stages) {
-		lines.push(`| ${stage.id} | ${escapeTableCell(stage.name)} | ${escapeTableCell(stage.purpose)} |`);
-	}
+	for (const stage of document.stages) lines.push(`| ${stage.id} | ${escapeTableCell(stage.name)} | ${escapeTableCell(stage.purpose)} |`);
 	for (const stage of document.stages) {
 		lines.push("", `### Stage ${stage.id} — ${stage.name}`);
-		for (const task of stage.tasks) {
-			lines.push("", `#### ${task.id} [${task.status}] ${task.title}`, "", task.body.trim());
-		}
+		for (const task of stage.tasks) lines.push("", `#### ${task.id} [${task.status}] ${task.title}`, "", task.body.trim());
 	}
 	lines.push(
-		"",
-		"## Conditional Logic and Edge Cases",
-		"",
-		document.conditionalLogic.trim(),
-		"",
-		"## Parallel Subagent Recommendations",
-		"",
-		document.parallelSubagents.trim(),
-		"",
-		"## Testing Requirements and Edge Cases",
-		"",
-		document.testingRequirements.trim(),
-		"",
-		"## Stopping Criteria / Guardrails",
-		"",
-		document.stoppingCriteria.trim(),
-		"",
+		"", "## Conditional Logic and Edge Cases", "", document.conditionalLogic.trim(),
+		"", "## Parallel Subagent Recommendations", "", document.parallelSubagents.trim(),
+		"", "## Testing Requirements and Edge Cases", "", document.testingRequirements.trim(),
+		"", "## Stopping Criteria / Guardrails", "", document.stoppingCriteria.trim(), "",
 	);
 	return lines.join("\n");
+}
+
+export function renderPlanDocument(document) {
+	return document.version === 1 ? renderLegacyDocument(document) : renderCurrentDocument(document);
 }
 
 export function validatePlanDocument(markdown, options) {
