@@ -75,6 +75,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let state = createInitialState() as PlanModeState;
 	let executionContract: ExecutionContract | null = null;
 	let lastContext: ExtensionContext | undefined;
+	let approvalCommandContext: ExtensionCommandContext | undefined;
+	let pendingApprovalNonce: string | null = null;
+	let presentingApproval = false;
 	registerPlanRenderer(pi);
 
 	pi.registerFlag("plan", {
@@ -207,6 +210,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("plan", {
 		description: "Enter planning mode with an optional goal; use /plan off to exit",
 		handler: async (args, ctx) => {
+			approvalCommandContext = ctx;
 			const value = args?.trim() ?? "";
 			if (value.toLowerCase() === "off") {
 				stopPlanning(ctx);
@@ -327,31 +331,37 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
+	async function openPlanActions(args: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
+		const supplied = args?.trim();
+		if (state.mode !== "approval" || !state.approval || state.approval.consumed || (supplied && supplied !== state.approval.nonce)) {
+			if (ctx.hasUI) ctx.ui.notify("No matching plan approval is pending.", "warning");
+			return;
+		}
+		if (!ctx.hasUI) return;
+		const nonce = state.approval.nonce;
+		if (pendingApprovalNonce === nonce) pendingApprovalNonce = null;
+		if (!state.approval.presented) {
+			const next = structuredClone(state);
+			next.approval!.presented = true;
+			commitState(next);
+		}
+		for (;;) {
+			const choice = await showPlanActionDialog(ctx);
+			if (choice.action === "cancel") return;
+			if (choice.action === "run" || choice.action === "staged") {
+				await handoffExecution(ctx, nonce, choice.action === "run" ? "all" : "staged");
+				return;
+			}
+			if (choice.action === "change") { await requestPlanChange(ctx, nonce, choice.text); return; }
+			if (choice.action === "review" && await requestPlanReview(ctx, nonce)) return;
+		}
+	}
+
 	pi.registerCommand("plan-actions", {
 		description: "Open actions for the currently submitted plan",
 		handler: async (args, ctx) => {
-			const supplied = args?.trim();
-			if (state.mode !== "approval" || !state.approval || state.approval.consumed || (supplied && supplied !== state.approval.nonce)) {
-				if (ctx.hasUI) ctx.ui.notify("No matching plan approval is pending.", "warning");
-				return;
-			}
-			if (!ctx.hasUI) return;
-			if (!state.approval.presented) {
-				const next = structuredClone(state);
-				next.approval!.presented = true;
-				commitState(next);
-			}
-			const nonce = state.approval.nonce;
-			for (;;) {
-				const choice = await showPlanActionDialog(ctx);
-				if (choice.action === "cancel") return;
-				if (choice.action === "run" || choice.action === "staged") {
-					await handoffExecution(ctx, nonce, choice.action === "run" ? "all" : "staged");
-					return;
-				}
-				if (choice.action === "change") { await requestPlanChange(ctx, nonce, choice.text); return; }
-				if (choice.action === "review" && await requestPlanReview(ctx, nonce)) return;
-			}
+			approvalCommandContext = ctx;
+			await openPlanActions(args, ctx);
 		},
 	});
 
@@ -508,9 +518,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					revision: result.state.plan?.revision ?? 1,
 					hash: stored.hash,
 				});
-				pi.sendUserMessage(`/plan-actions ${nonce}`, { deliverAs: "followUp" });
+				const autoOpenApproval = ctx.hasUI && approvalCommandContext !== undefined;
+				if (autoOpenApproval) pendingApprovalNonce = nonce;
 				return {
-					content: [{ type: "text", text: `Validated and saved plan to ${stored.path}. Approval actions queued.` }],
+					content: [{
+						type: "text",
+						text: `Validated and saved plan to ${stored.path}. ${autoOpenApproval ? "Approval actions will open automatically." : "Use /plan-actions to continue."}`,
+					}],
 					details: {
 						accepted: true,
 						path: stored.path,
@@ -578,6 +592,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	let handlingEarlyIdle = false;
 	pi.on("agent_settled", async (_event, ctx) => {
+		const commandCtx = approvalCommandContext;
+		if (pendingApprovalNonce && commandCtx && !presentingApproval && state.mode === "approval" && state.approval && !state.approval.consumed) {
+			const nonce = pendingApprovalNonce;
+			presentingApproval = true;
+			try {
+				await openPlanActions(nonce, commandCtx);
+			} finally {
+				presentingApproval = false;
+			}
+			return;
+		}
 		if (handlingEarlyIdle || (state.mode !== "executing_all" && state.mode !== "executing_staged") || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
 		const relevant = state.mode === "executing_staged"
 			? Object.entries(state.ledger).filter(([id]) => id.startsWith(`${state.currentStageId}.`))

@@ -56,7 +56,7 @@
     ],
     "deniedDomains": [],
     "strictAllowlist": true,
-    "allowUnixSockets": [],
+    "allowUnixSockets": ["~/.config/herdr"],
     "allowAllUnixSockets": false,
     "allowLocalBinding": true,
     "allowMachLookup": ["com.apple.pasteboard.1"]
@@ -65,27 +65,34 @@
     "denyRead": ["~"],
     "allowRead": [
       ".",
+      "~/src",
 
       "~/.pi/agent",
       "~/.pi/sandbox",
       "~/.agents/skills",
-      "~/.dotfiles/pi/agent",
-      "~/.dotfiles/agents/skills",
+      "~/.dotfiles",
 
       "~/bin",
       "~/.local/bin",
       "~/.gitconfig",
       "~/.gitconfig.local",
+      "~/.gitignore",
       "~/.config/git",
       "~/.config/uv",
       "~/.config/rtk",
       "~/.config/ketch",
+      "~/.config/herdr/config.toml",
 
-      "~/.cargo/bin",
-      "~/.cargo/config",
-      "~/.cargo/config.toml",
-      "~/.cargo/git",
-      "~/.cargo/registry",
+      "~/.profile",
+      "~/.bash_profile",
+      "~/.bashrc",
+      "~/.zprofile",
+      "~/.zshenv",
+      "~/.zshrc",
+      "~/.ssh/config",
+      "~/.ssh/known_hosts",
+
+      "~/.cargo",
       "~/.rustup",
 
       "~/.cache/pi-sandbox",
@@ -115,8 +122,8 @@
       "~/.local/share/uv",
       "~/.cache/huggingface",
 
-      "~/.cargo/git",
-      "~/.cargo/registry",
+      "~/.cargo",
+      "~/.rustup",
 
       "~/.local/state/nvim",
       "~/.cache/nvim",
@@ -137,10 +144,6 @@
   },
   "credentials": {
     "files": [
-      {
-        "path": "~/.ssh",
-        "mode": "deny"
-      },
       {
         "path": "~/.gnupg",
         "mode": "deny"

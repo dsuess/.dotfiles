@@ -44,6 +44,9 @@ printf '\n'
 printf 'secret=%s\n' "${SECRET_SHOULD_NOT_LEAK-unset}"
 printf 'tmpdir=%s\n' "$TMPDIR"
 printf 'path=%s\n' "$PATH"
+printf 'herdr_env=%s\n' "${HERDR_ENV-unset}"
+printf 'herdr_socket=%s\n' "${HERDR_SOCKET_PATH-unset}"
+printf 'herdr_pane=%s\n' "${HERDR_PANE_ID-unset}"
 EOF
 
 cat >"$SHIM_BIN/node" <<'EOF'
@@ -76,6 +79,9 @@ output="$(
     PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
     BASH_ENV="$SHIM_BIN/bash-env" \
     SECRET_SHOULD_NOT_LEAK="leak" \
+    HERDR_ENV= \
+    HERDR_SOCKET_PATH= \
+    HERDR_PANE_ID= \
     "$WRAPPER" --flag "two words"
 )"
 
@@ -84,6 +90,22 @@ grep -F 'args=<--flag><two words>' <<<"$output" >/dev/null
 grep -F 'secret=unset' <<<"$output" >/dev/null
 grep -F 'tmpdir=/tmp' <<<"$output" >/dev/null
 grep -F "path=$RESOLVED_REAL_BIN:" <<<"$output" >/dev/null
+grep -F 'herdr_env=unset' <<<"$output" >/dev/null
+grep -F 'herdr_socket=unset' <<<"$output" >/dev/null
+grep -F 'herdr_pane=unset' <<<"$output" >/dev/null
+
+herdr_output="$(
+    cd "$SHIM_BIN"
+    HOME="$TEST_HOME" \
+    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
+    HERDR_ENV=1 \
+    HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" \
+    HERDR_PANE_ID="pane-7" \
+    "$WRAPPER"
+)"
+grep -F 'herdr_env=1' <<<"$herdr_output" >/dev/null
+grep -F "herdr_socket=$TEST_ROOT/herdr.sock" <<<"$herdr_output" >/dev/null
+grep -F 'herdr_pane=pane-7' <<<"$herdr_output" >/dev/null
 
 rm "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt"
 if HOME="$TEST_HOME" \

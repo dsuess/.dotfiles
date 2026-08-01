@@ -78,9 +78,9 @@ try {
 	assert.equal(submitted.details.accepted, true);
 	assert.equal(submitted.terminate, true);
 	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-plan-display").length, 1);
-	assert.match(queued.at(-1).message, /^\/plan-actions /);
+	assert.equal(queued.length, 0, "approval commands are not sent to the model");
 
-	await commands.get("plan-actions").handler("", ctx);
+	await handlers.get("agent_settled")[0]({}, ctx);
 	const executionState = replacementSetup.find((entry) => entry.customType === "plan-mode-state").data;
 	assert.equal(executionState.mode, "executing_all");
 	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.approval.consumed, true);

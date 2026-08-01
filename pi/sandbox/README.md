@@ -37,7 +37,8 @@ names any missing prerequisite and exits.
   hosts, plus localhost for vLLM-MLX.
 - macOS pseudo-terminal operations are allowed so Pi can put its interactive
   terminal into raw mode.
-- Apple Events and host Unix sockets, including Docker, remain blocked.
+- Apple Events and host Unix sockets remain blocked except for Herdr sockets under
+  `~/.config/herdr`, which let the official Pi integration report agent state.
 
 Edit the checked-in policy outside sandboxed Pi to add another directory or
 domain. The wrapper, policy, and plan-mode gate are write-protected from
@@ -65,6 +66,14 @@ process tree to policy-approved locations, but the current workspace is one of
 those writable locations. Therefore the sandbox does not turn arbitrary
 planning-mode shell programs into read-only operations; the denylist remains a
 workflow convenience rather than a complete mutation boundary.
+
+## Accepted Herdr control risk
+
+On macOS, the Herdr socket under `~/.config/herdr` is intentionally available
+inside the sandbox. Model-invoked code can therefore use Herdr's full API,
+including controlling or launching unsandboxed panes; this is an explicit
+sandbox-escape capability accepted for agent orchestration. Linux remains
+blocked because SRT cannot restrict Unix sockets by path there.
 
 ## Accepted credential risk
 

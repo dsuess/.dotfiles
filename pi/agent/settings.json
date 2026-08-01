@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.82.1",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "xhigh",
   "editorPaddingX": 1,
   "quietStartup": true,
   "skills": [
@@ -17,6 +17,6 @@
     "npm:pi-tuicr",
     "npm:@juicesharp/rpiv-ask-user-question"
   ],
-  "hideThinkingBlock": false,
+  "hideThinkingBlock": true,
   "theme": "dark"
 }

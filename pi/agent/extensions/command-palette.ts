@@ -172,6 +172,169 @@ function getShortcutFromManager(keybindings: any, kbId: string): string {
 	return "";
 }
 
+// ── Searchable overlay ─────────────────────────────────────────────
+
+async function showSearchableOverlay(
+	ctx: ExtensionContext,
+	createItems: (keybindings: any) => SelectItem[],
+	searchPrompt: string,
+	getSearchText: (item: SelectItem) => string = (item) =>
+		`${item.label} ${item.description ?? ""}`,
+): Promise<string | null> {
+	return ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
+		const items = createItems(keybindings);
+		let searchQuery = "";
+		const selectList = new SelectList(items, Math.min(items.length, 14), {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", theme.bold(text)),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		});
+
+		selectList.onSelect = (item) => done(item.value);
+		selectList.onCancel = () => done(null);
+
+		function applyFuzzyFilter(query: string): void {
+			const filtered = fuzzyFilter(items, query, getSearchText);
+			(selectList as any).filteredItems = filtered;
+			(selectList as any).selectedIndex = 0;
+		}
+
+		const searchLine = new Text(
+			theme.fg("accent", searchPrompt) + theme.fg("accent", "▎"),
+			0,
+			0,
+		);
+		const container = new Container();
+		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+		container.addChild(searchLine);
+		container.addChild(new DynamicBorder((text: string) => theme.fg("border", text)));
+		container.addChild(selectList);
+		container.addChild(
+			new Text(
+				theme.fg("dim", " type to filter · ↑↓ navigate · ↵ select · esc close"),
+				1,
+				0,
+			),
+		);
+		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+		function updateSearch(): void {
+			searchLine.setText(
+				theme.fg("accent", searchPrompt) + searchQuery + theme.fg("accent", "▎"),
+			);
+			applyFuzzyFilter(searchQuery);
+			container.invalidate();
+			tui.requestRender();
+		}
+
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (matchesKey(data, Key.escape)) {
+					done(null);
+					return;
+				}
+
+				if (
+					matchesKey(data, Key.enter) ||
+					matchesKey(data, Key.return) ||
+					matchesKey(data, Key.up) ||
+					matchesKey(data, Key.down) ||
+					matchesKey(data, Key.pageUp) ||
+					matchesKey(data, Key.pageDown)
+				) {
+					selectList.handleInput(data);
+					tui.requestRender();
+					return;
+				}
+
+				if (matchesKey(data, Key.ctrl("u"))) {
+					searchQuery = "";
+					updateSearch();
+					return;
+				}
+
+				if (matchesKey(data, Key.ctrl("w"))) {
+					const trimmed = searchQuery.trimEnd();
+					const lastSpace = trimmed.lastIndexOf(" ");
+					searchQuery = lastSpace >= 0 ? trimmed.slice(0, lastSpace + 1) : "";
+					updateSearch();
+					return;
+				}
+
+				if (matchesKey(data, Key.backspace)) {
+					searchQuery = searchQuery.slice(0, -1);
+					updateSearch();
+					return;
+				}
+
+				if (data.length === 1 && data.charCodeAt(0) >= 32) {
+					searchQuery += data;
+					updateSearch();
+				}
+			},
+		};
+	}, {
+		overlay: true,
+		overlayOptions: {
+			anchor: "top-center",
+			width: "60%",
+			minWidth: 50,
+			maxHeight: "80%",
+			margin: { top: 1 },
+		},
+	});
+}
+
+// ── Model selector ─────────────────────────────────────────────────
+
+async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	const current = ctx.model;
+	const models = [...ctx.modelRegistry.getAvailable()].sort((a, b) => {
+		const aIsCurrent = !!current && a.provider === current.provider && a.id === current.id;
+		const bIsCurrent = !!current && b.provider === current.provider && b.id === current.id;
+		if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
+		return a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id);
+	});
+
+	if (models.length === 0) {
+		ctx.ui.notify("No models available. Use /login to configure a provider.", "warning");
+		return;
+	}
+
+	const modelMap = new Map<string, Model<Api>>();
+	const items: SelectItem[] = models.map((model) => {
+		const value = `${model.provider}/${model.id}`;
+		const isCurrent = !!current && model.provider === current.provider && model.id === current.id;
+		modelMap.set(value, model);
+
+		const details = [model.provider];
+		if (model.name && model.name !== model.id) details.push(model.name);
+		if (isCurrent) details.push("current");
+
+		return {
+			value,
+			label: model.id,
+			description: details.join(" · "),
+		};
+	});
+
+	const selected = await showSearchableOverlay(ctx, () => items, " Select Model ❯ ");
+	if (selected === null) return;
+
+	const model = modelMap.get(selected);
+	if (!model) return;
+
+	if (await pi.setModel(model)) {
+		ctx.ui.notify(`Model: ${model.provider}/${model.id}`, "info");
+	} else {
+		ctx.ui.notify(`No API key for ${model.provider}/${model.id}`, "error");
+	}
+}
+
 // ── Command definitions ────────────────────────────────────────────
 
 function buildCommands(pi: ExtensionAPI): CommandEntry[] {
@@ -286,7 +449,7 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 			label: "Select Model",
 			keybindingId: "app.model.select",
 			category: "Models & Thinking",
-			execute: (pi) => pi.sendUserMessage("/model"),
+			execute: showModelSelector,
 		},
 		{
 			id: "app.model.cycleForward",
@@ -759,174 +922,37 @@ export default function commandPaletteExtension(pi: ExtensionAPI) {
 			// Capture shortcut text resolved inside the custom callback
 			const shortcutMap = new Map<string, string>();
 
-			const result = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
-				// Build select items with resolved shortcuts
-				const items: SelectItem[] = commands.map((cmd) => {
-					let shortcut = "";
-					if (cmd.keybindingId) {
-						// Try keyText() first (uses global keybindings), fall back to injected manager
-						shortcut = getShortcut(cmd.keybindingId) || getShortcutFromManager(keybindings, cmd.keybindingId);
-						if (shortcut) shortcutMap.set(cmd.id, shortcut);
-					}
-
-					// Editor shortcuts get a ⟡ indicator
-					const desc = cmd.isEditorShortcut
-						? shortcut
-							? `⟡ ${shortcut}`
-							: "⟡"
-						: shortcut || "—";
-
-					return {
-						value: cmd.id,
-						label: cmd.label,
-						description: desc,
-					};
-				});
-
-				// Search state
-				let searchQuery = "";
-
-				// SelectList
-				const selectList = new SelectList(items, 14, {
-					selectedPrefix: (t) => theme.fg("accent", t),
-					selectedText: (t) => theme.fg("accent", theme.bold(t)),
-					description: (t) => theme.fg("muted", t),
-					scrollInfo: (t) => theme.fg("dim", t),
-					noMatch: (t) => theme.fg("warning", t),
-				});
-
-				selectList.onSelect = (item) => done(item.value);
-				selectList.onCancel = () => done(null);
-
-				/** Fuzzy-filter the list and update the SelectList's internal state */
-				function applyFuzzyFilter(query: string): void {
-					// Match against label, description, AND the command's category for richer fuzzy hits
-					// (e.g. typing "session" matches all items in the Sessions category)
-					const cmdMap = new Map(items.map((item) => [item.value, commands.find((c) => c.id === item.value)]));
-					const filtered = fuzzyFilter(items, query, (item) => {
-						const cmd = cmdMap.get(item.value);
-						return `${item.label} ${item.description ?? ""} ${cmd?.category ?? ""}`;
-					});
-					// Directly update SelectList internals (items/filteredItems are not truly private)
-					(selectList as any).filteredItems = filtered;
-					(selectList as any).selectedIndex = 0;
-				}
-
-				// Search prompt
-				const searchLine = new Text(
-					theme.fg("accent", " ❯ ") + theme.fg("accent", "▎"),
-					0,
-					0,
-				);
-
-				// Separator between search and list
-				const separator = new DynamicBorder((s: string) => theme.fg("border", s));
-
-				// Assemble layout
-				const container = new Container();
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				container.addChild(searchLine);
-				container.addChild(separator);
-				container.addChild(selectList);
-				container.addChild(
-					new Text(
-						theme.fg("dim", " type to filter · ↑↓ navigate · ↵ select · esc close"),
-						1,
-						0,
-					),
-				);
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => {
-						// Escape → close palette
-						if (matchesKey(data, Key.escape)) {
-							done(null);
-							return;
+			const commandMap = new Map(commands.map((command) => [command.id, command]));
+			const result = await showSearchableOverlay(
+				ctx,
+				(keybindings) =>
+					commands.map((cmd) => {
+						let shortcut = "";
+						if (cmd.keybindingId) {
+							shortcut =
+								getShortcut(cmd.keybindingId) ||
+								getShortcutFromManager(keybindings, cmd.keybindingId);
+							if (shortcut) shortcutMap.set(cmd.id, shortcut);
 						}
 
-						// Enter → confirm selection
-						if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-							selectList.handleInput(data);
-							tui.requestRender();
-							return;
-						}
+						const description = cmd.isEditorShortcut
+							? shortcut
+								? `⟡ ${shortcut}`
+								: "⟡"
+							: shortcut || "—";
 
-						// Navigation keys → pass to SelectList
-						if (
-							matchesKey(data, Key.up) ||
-							matchesKey(data, Key.down) ||
-							matchesKey(data, Key.pageUp) ||
-							matchesKey(data, Key.pageDown)
-						) {
-							selectList.handleInput(data);
-							tui.requestRender();
-							return;
-						}
-
-						// Ctrl+U → clear search
-						if (matchesKey(data, Key.ctrl("u"))) {
-							searchQuery = "";
-							searchLine.setText(
-								theme.fg("accent", " ❯ ") + theme.fg("accent", "▎"),
-							);
-							applyFuzzyFilter("");
-							container.invalidate();
-							tui.requestRender();
-							return;
-						}
-
-						// Ctrl+W → delete last word
-						if (matchesKey(data, Key.ctrl("w"))) {
-							const trimmed = searchQuery.trimEnd();
-							const lastSpace = trimmed.lastIndexOf(" ");
-							searchQuery = lastSpace >= 0 ? trimmed.slice(0, lastSpace + 1) : "";
-							searchLine.setText(
-								theme.fg("accent", " ❯ ") + searchQuery + theme.fg("accent", "▎"),
-							);
-							applyFuzzyFilter(searchQuery);
-							container.invalidate();
-							tui.requestRender();
-							return;
-						}
-
-						// Backspace → delete last char
-						if (matchesKey(data, Key.backspace)) {
-							searchQuery = searchQuery.slice(0, -1);
-							searchLine.setText(
-								theme.fg("accent", " ❯ ") + searchQuery + theme.fg("accent", "▎"),
-							);
-							applyFuzzyFilter(searchQuery);
-							container.invalidate();
-							tui.requestRender();
-							return;
-						}
-
-						// Printable character → append to search
-						if (data.length === 1 && data.charCodeAt(0) >= 32) {
-							searchQuery += data;
-							searchLine.setText(
-								theme.fg("accent", " ❯ ") + searchQuery + theme.fg("accent", "▎"),
-							);
-							applyFuzzyFilter(searchQuery);
-							container.invalidate();
-							tui.requestRender();
-							return;
-						}
-					},
-				};
-			}, {
-				overlay: true,
-				overlayOptions: {
-					anchor: "top-center",
-					width: "60%",
-					minWidth: 50,
-					maxHeight: "80%",
-					margin: { top: 1 },
+						return {
+							value: cmd.id,
+							label: cmd.label,
+							description,
+						};
+					}),
+				" ❯ ",
+				(item) => {
+					const command = commandMap.get(item.value);
+					return `${item.label} ${item.description ?? ""} ${command?.category ?? ""}`;
 				},
-			});
+			);
 
 			// ── Handle selection ────────────────────────
 			if (result === null) return;

@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+
+const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
+const core = await import(`${root}/dist/index.js`);
+const tuiPackage = await import(`${root}/node_modules/@earendil-works/pi-tui/dist/index.js`);
+await core.initTheme("dark", false);
+const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
+const jiti = createJiti(import.meta.url, { alias: {
+	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
+	"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
+	"typebox": `${root}/node_modules/typebox/build/index.mjs`,
+} });
+const uiModule = await jiti.import(new URL("../ui.ts", import.meta.url).pathname);
+
+const ansi = (code, text) => `\u001b[${code}m${text}\u001b[0m`;
+const theme = {
+	fg: (color, text) => ansi(color === "error" ? 31 : color === "success" ? 32 : color === "warning" ? 33 : color === "accent" ? 36 : 90, text),
+	bg: (_color, text) => text,
+	bold: (text) => ansi(1, text),
+	italic: (text) => ansi(3, text),
+	underline: (text) => ansi(4, text),
+	strikethrough: (text) => text,
+};
+
+const widgetCalls = [];
+const fakeUi = { setWidget(...args) { widgetCalls.push(args); } };
+const manager = uiModule.createRunUiManager(fakeUi);
+manager.start("call-a", { ordinal: 1, model: "openai-codex/gpt-5.6-sol", prompt: "Inspect source" });
+manager.start("call-b", { ordinal: 2, model: "anthropic/claude-sonnet", prompt: "Search tests" });
+manager.update("call-a", { kind: "reading", emoji: "📖", label: "reading", action: "/very/long/path/to/a/source/file.ts" });
+manager.update("call-b", { kind: "shell", emoji: "💻", label: "shell", action: "git status --short and then an intentionally long preview" });
+
+const [, widgetFactory, placement] = widgetCalls.at(-1);
+assert.equal(placement.placement, "belowEditor");
+const widget = widgetFactory({ requestRender() {} }, theme);
+for (const width of [24, 40, 80]) {
+	const lines = widget.render(width);
+	assert.equal(lines.length, 2, "exactly one widget row per concurrent child");
+	assert.ok(lines.every((line) => tuiPackage.visibleWidth(line) <= width), `widget exceeded width ${width}`);
+}
+const rows = widget.render(120).join("\n");
+assert.match(rows, /📖/);
+assert.match(rows, /💻/);
+assert.match(rows, /subagent #1/);
+assert.match(rows, /subagent #2/);
+assert.match(rows, /gpt-5\.6-sol/);
+assert.match(rows, /git status --short/);
+widget.invalidate();
+assert.ok(widget.render(32).every((line) => tuiPackage.visibleWidth(line) <= 32));
+
+manager.remove("call-a");
+const oneRunFactory = widgetCalls.at(-1)[1];
+assert.equal(oneRunFactory({ requestRender() {} }, theme).render(80).length, 1);
+manager.remove("call-b");
+assert.equal(widgetCalls.at(-1)[1], undefined, "shared widget clears when no runs remain");
+manager.clear();
+assert.equal(widgetCalls.at(-1)[1], undefined);
+
+const callComponent = uiModule.renderSubagentCall({
+	prompt: "Inspect a very long repository path and report concise findings without changing files ".repeat(4),
+	model: "anthropic/claude-sonnet",
+}, theme);
+for (const width of [24, 40, 80]) {
+	assert.ok(callComponent.render(width).every((line) => tuiPackage.visibleWidth(line) <= width), `call renderer exceeded ${width}`);
+}
+
+const activity = Array.from({ length: 18 }, (_, index) => ({
+	kind: index === 0 ? "thinking" : index % 2 ? "reading" : "searching",
+	emoji: index === 0 ? "🧠" : index % 2 ? "📖" : "🔎",
+	label: index === 0 ? "thinking" : index % 2 ? "reading" : "searching",
+	action: index === 0 ? "RAW PRIVATE CHAIN OF THOUGHT" : `/workspace/file-${index}.ts`,
+}));
+const result = {
+	content: [{ type: "text", text: "# Final answer\n\nA bounded **Markdown** report." }],
+	details: {
+		status: "completed",
+		model: "anthropic/claude-sonnet",
+		prompt: "Inspect source",
+		activity,
+		finalText: "# Final answer\n\nA bounded **Markdown** report.",
+		turns: 2,
+	},
+	usage: {
+		input: 1200, output: 80, cacheRead: 400, cacheWrite: 20, totalTokens: 1700,
+		cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+	},
+};
+for (const expanded of [false, true]) {
+	const component = uiModule.renderSubagentResult(result, { expanded, isPartial: false }, theme, core.getMarkdownTheme());
+	for (const width of [24, 40, 80]) {
+		const lines = component.render(width);
+		assert.ok(lines.every((line) => tuiPackage.visibleWidth(line) <= width), `result renderer exceeded ${width}`);
+	}
+	const text = component.render(100).join("\n");
+	assert.match(text, /completed/);
+	assert.match(text, /claude-sonnet/);
+	assert.doesNotMatch(text, /RAW PRIVATE CHAIN OF THOUGHT/);
+	if (expanded) {
+		assert.match(text, /Final answer/);
+		assert.match(text, /file-1\.ts/);
+		assert.match(text, /1\.2k|1200/);
+	} else {
+		assert.doesNotMatch(text, /file-1\.ts/, "collapsed view keeps only recent bounded activity");
+		assert.match(text, /file-17\.ts/);
+	}
+}
+
+const partial = uiModule.renderSubagentResult({
+	content: [{ type: "text", text: "running" }],
+	details: { status: "running", model: "test/model", activity: activity.slice(-3) },
+}, { expanded: false, isPartial: true }, theme, core.getMarkdownTheme());
+assert.match(partial.render(80).join("\n"), /running/);

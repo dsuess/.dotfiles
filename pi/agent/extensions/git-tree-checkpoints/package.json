@@ -1,0 +1,14 @@
+{
+  "name": "pi-git-tree-checkpoints",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke-load.mjs",
+    "check": "npm test && npm run smoke"
+  }
+}
