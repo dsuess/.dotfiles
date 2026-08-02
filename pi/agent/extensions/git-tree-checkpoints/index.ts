@@ -189,8 +189,8 @@ export function createGitTreeCheckpointsExtension(overrides: Partial<Dependencie
 				if (ctx.hasUI) {
 					if (destination) {
 						const choice = await ctx.ui.select("Restore code state?", [
-							"Restore checkpointed code",
 							"Keep current code",
+							"Restore checkpointed code",
 							"Cancel navigation",
 						], { signal: event.signal });
 						if (choice === undefined || choice === "Cancel navigation") return { cancel: true };

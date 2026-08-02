@@ -16,8 +16,8 @@ Ignored files are neither captured nor cleaned. The current branch, `HEAD`, comm
 
 Pi's built-in **Summarize branch?** choice appears first (unless disabled in Pi settings). The extension then asks:
 
-1. **Restore checkpointed code** — restore code and ordinary staging to the destination checkpoint.
-2. **Keep current code** — navigate only the conversation and intentionally allow code/conversation divergence.
+1. **Keep current code** (default) — navigate only the conversation and intentionally allow code/conversation divergence.
+2. **Restore checkpointed code** — restore code and ordinary staging to the destination checkpoint.
 3. **Cancel navigation** — leave both conversation and code in place. Escape also cancels.
 
 Old conversation points without a checkpoint offer only **Keep current code and navigate** or cancellation. This preserves conversation-only navigation for sessions created before the extension existed.

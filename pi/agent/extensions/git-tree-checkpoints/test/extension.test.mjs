@@ -230,7 +230,7 @@ test("restore choice captures safety state, restores destination, and permits na
 	assert.equal(result, undefined);
 	assert.deepEqual(harness.selections[0], {
 		title: "Restore code state?",
-		values: ["Restore checkpointed code", "Keep current code", "Cancel navigation"],
+		values: ["Keep current code", "Restore checkpointed code", "Cancel navigation"],
 	});
 	assert.equal(harness.captureCalls.at(-1).options.reason, "before-tree-navigation");
 	assert.equal(harness.captureCalls.at(-1).options.representedLeafId, "a2");
