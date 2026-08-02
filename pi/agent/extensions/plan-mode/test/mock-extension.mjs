@@ -19,6 +19,7 @@ const commands = new Map();
 const tools = new Map();
 const appended = [];
 const queued = [];
+const boundaryMessages = [];
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
 const pi = {
@@ -31,14 +32,16 @@ const pi = {
 	getActiveTools() { return [...activeTools]; },
 	getAllTools() { return [...allTools].map((name) => ({ name })); },
 	setActiveTools(names) { activeTools = [...names]; },
+	sendMessage(message, options) {
+		boundaryMessages.push({ message, options });
+		appended.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
+	},
 	sendUserMessage(message, options) { queued.push({ message, options }); },
 };
 extension.default(pi);
 
 const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-mock-"));
 const theme = { fg: (_color, text) => text, bold: (text) => text };
-let replacementSetup = [];
-let replacementKickoff = [];
 let ledgerWidget;
 const ctx = {
 	cwd: project, mode: "tui", hasUI: true, model: undefined, thinkingLevel: "high",
@@ -53,12 +56,6 @@ const ctx = {
 			});
 		},
 		async editor() { return undefined; }, async confirm() { return true; }, async input() { return "declared stop"; },
-	},
-	async newSession(options) {
-		const sessionManager = { appendCustomEntry(customType, data) { replacementSetup.push({ customType, data }); } };
-		await options.setup(sessionManager);
-		await options.withSession({ sendUserMessage: async (message) => { replacementKickoff.push(message); } });
-		return { cancelled: false };
 	},
 };
 
@@ -95,52 +92,48 @@ try {
 
 	await rm(submitted.details.path);
 	await handlers.get("agent_settled")[0]({}, ctx);
-	assert.equal(await readFile(submitted.details.path, "utf8"), VALID_PLAN, "approval recovers a missing plan from the durable display entry");
-	const executionState = replacementSetup.find((entry) => entry.customType === "plan-mode-state").data;
+	const recovered = await readFile(submitted.details.path, "utf8");
+	assert.match(recovered, /# Add Reliable Cache Invalidation/, "approval recovers a missing plan from the durable display entry");
+	assert.match(recovered, /pi-plan-mode:progress:start/, "recovery retains the canonical managed progress report");
+	const executionState = appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data;
 	assert.equal(executionState.mode, "executing_all");
-	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.approval.consumed, true);
-	assert.equal(replacementSetup.some((entry) => entry.customType === "plan-mode-execution"), true);
-	assert.equal(replacementSetup.every((entry) => entry.customType), true, "handoff setup contains only non-context custom entries");
-	assert.equal(replacementKickoff.length, 1);
-	assert.match(replacementKickoff[0], /No planning conversation was copied/);
-	assert.match(replacementKickoff[0], /# Add Reliable Cache Invalidation/);
-
-	const executionHandlers = new Map();
-	const executionTools = new Map();
-	const executionBranch = replacementSetup.map((entry) => ({ type: "custom", ...entry }));
-	let executionActive = ["read", "bash", "edit", "write", "custom_tool"];
-	const executionAll = new Set(executionActive);
-	const pi2 = {
-		events: { on() { return () => {}; }, emit() {} },
-		registerFlag() {}, getFlag() { return false; }, registerShortcut() {}, registerEntryRenderer() {}, registerCommand() {},
-		registerTool(definition) { executionTools.set(definition.name, definition); executionAll.add(definition.name); executionActive.push(definition.name); },
-		on(name, handler) { if (!executionHandlers.has(name)) executionHandlers.set(name, []); executionHandlers.get(name).push(handler); },
-		appendEntry(customType, data) { executionBranch.push({ type: "custom", customType, data }); },
-		getActiveTools() { return [...executionActive]; }, getAllTools() { return [...executionAll].map((name) => ({ name })); },
-		setActiveTools(names) { executionActive = [...names]; }, sendUserMessage() {},
-	};
-	extension.default(pi2);
-	const executionCtx = { ...ctx, sessionManager: { getBranch: () => executionBranch, getSessionFile: () => "/sessions/execution.jsonl" } };
-	for (const handler of executionHandlers.get("session_start")) await handler({ reason: "new" }, executionCtx);
-	assert.ok(executionActive.includes("plan_progress"));
-	assert.ok(executionActive.includes("complete_plan"));
-	assert.equal(executionActive.includes("complete_stage"), false);
+	assert.equal(executionState.approval.consumed, true);
+	assert.ok(executionState.execution.runId);
+	const contract = appended.filter((entry) => entry.customType === "plan-mode-execution").at(-1).data;
+	assert.equal(contract.version, 2);
+	assert.equal(contract.handoff, "in_place");
+	assert.equal(contract.runId, executionState.execution.runId);
+	assert.equal(boundaryMessages.length, 1);
+	assert.equal(boundaryMessages[0].message.display, false);
+	assert.match(boundaryMessages[0].message.content, /current visible session/);
+	assert.match(boundaryMessages[0].message.content, /# Add Reliable Cache Invalidation/);
+	assert.ok(activeTools.includes("plan_progress"));
+	assert.ok(activeTools.includes("complete_plan"));
+	assert.equal(activeTools.includes("complete_stage"), false);
 	assert.deepEqual(ledgerWidget, [
-		"☐ Stage 1 — Establish expected behavior before implementation.",
-		"⛔ Stage 2 — Implement and verify the behavior; the two changes may proceed together once Stage 1 is settled.",
+		"☐ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
 	]);
 
-	const progress = executionTools.get("plan_progress");
-	await progress.execute("p1", { taskId: "1", status: "in_progress" }, undefined, undefined, executionCtx);
-	await progress.execute("p2", { taskId: "1", status: "completed", evidence: "contract tests passed" }, undefined, undefined, executionCtx);
-	await progress.execute("p3", { taskId: "2", status: "completed", evidence: "implementation test passed" }, undefined, undefined, executionCtx);
-	await progress.execute("p4", { taskId: "3", status: "in_progress", note: "retrying blocker" }, undefined, undefined, executionCtx);
-	await progress.execute("p5", { taskId: "3", status: "completed", evidence: "edge tests passed" }, undefined, undefined, executionCtx);
-	const completed = await executionTools.get("complete_plan").execute("done", {
+	const progress = tools.get("plan_progress");
+	await progress.execute("p1", { taskId: "1", status: "in_progress" }, undefined, undefined, ctx);
+	await progress.execute("p2", { taskId: "1", status: "completed", evidence: "contract tests passed" }, undefined, undefined, ctx);
+	await progress.execute("p3", { taskId: "2", status: "completed", evidence: "implementation test passed" }, undefined, undefined, ctx);
+	await progress.execute("p4", { taskId: "3", status: "in_progress", note: "retrying blocker" }, undefined, undefined, ctx);
+	await progress.execute("p5", { taskId: "3", status: "completed", evidence: "edge tests passed" }, undefined, undefined, ctx);
+	assert.deepEqual(ledgerWidget, [
+		"☑ Define the cache behavior",
+		"☑ Add reliable invalidation",
+		"☑ Cover boundary conditions",
+	]);
+	const saved = await readFile(submitted.details.path, "utf8");
+	assert.match(saved, /## Step Progress[\s\S]*- ☑ Define the cache behavior[\s\S]*- ☑ Add reliable invalidation[\s\S]*- ☑ Cover boundary conditions/);
+	const completed = await tools.get("complete_plan").execute("done", {
 		summary: "all stages complete", tests: ["node --test"], allowBlockedStoppingCriterion: false,
-	}, undefined, undefined, executionCtx);
+	}, undefined, undefined, ctx);
 	assert.equal(completed.terminate, true);
-	assert.equal(executionBranch.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.mode, "completed");
+	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.mode, "completed");
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

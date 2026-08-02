@@ -1,0 +1,40 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const REQUIRED_DISCUSSION_KEYS = [
+  "sentinel.discuss",
+  "discussion.heading",
+  "discussion.empty",
+  "discussion.you",
+  "discussion.agent",
+  "discussion.running_cancel",
+  "discussion.error",
+  "discussion.cancelled",
+  "discussion.input_label",
+  "discussion.send",
+  "discussion.ask",
+  "discussion.back",
+  "discussion.continue",
+  "discussion.unavailable",
+  "discussion.input",
+  "discussion.hint",
+  "rpc.multi_choose",
+] as const;
+
+describe("discussion localization", () => {
+  it("ships every new discussion key in every locale with a non-empty value", () => {
+    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const localeDir = join(packageRoot, "locales");
+    const files = readdirSync(localeDir).filter((name) => name.endsWith(".json"));
+    expect(files).toHaveLength(9);
+    for (const file of files) {
+      const locale = JSON.parse(readFileSync(join(localeDir, file), "utf8")) as Record<string, unknown>;
+      for (const key of REQUIRED_DISCUSSION_KEYS) {
+        expect(locale[key], `${file}:${key}`).toEqual(expect.any(String));
+        expect((locale[key] as string).trim().length, `${file}:${key}`).toBeGreaterThan(0);
+      }
+    }
+  });
+});

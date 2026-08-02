@@ -44,7 +44,7 @@ Three mechanisms, all in `install.sh`:
   the copy works through the symlink.
 
 - **Other tools — downloaded, pinned, checksum-verified.** `ensure_static_bins()` fetches
-  prebuilt static binaries for `herdr`, `fzf`, `ripgrep`, `fd`, `bat`, `direnv` from pinned
+  prebuilt static binaries for `herdr`, `ketch`, `fzf`, `ripgrep`, `fd`, `bat`, `direnv` from pinned
   GitHub releases. Each asset is verified against a **hardcoded SHA256 before install** (a
   mismatch aborts — an unverified binary is never installed). Tools already on `PATH` are
   skipped. Arch is auto-detected (`x86_64` / `aarch64`).
@@ -140,6 +140,11 @@ Key files:
 2. Add `"<name>"` to the `enabledCssSnippets` array in `obsidian/appearance.json`
 3. Run `./install.sh config` (deploys the new file into all vaults as real files)
 4. Reload Obsidian (command palette → "Reload app without saving") to pick up changes
+
+## Pi Extension Invariants
+
+- `git-tree-checkpoints`: **Keep current code** must remain the first/default restore-dialog choice. Restoring checkpointed code is always an explicit opt-in.
+- `bin/pi`: Keep Ketch on its upstream direct-spawn path. Do not add a Ketch broker or network/domain allowlist; sandboxed Pi intentionally has unrestricted host network and Unix-socket traffic.
 
 ## Machine-Specific Overrides
 

@@ -4,10 +4,13 @@
   "version": "1.0.0",
   "description": "Pinned whole-process sandbox runtime for Pi",
   "scripts": {
-    "test": "npm run test:broker && npm run test:wrapper && npm run test:containment",
+    "test": "npm run test:broker && npm run test:wrapper && npm run test:repository && npm run test:ketch-config && npm run test:containment && npm run test:ketch-live",
     "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs",
     "test:wrapper": "bash test-wrapper.sh",
-    "test:containment": "bash test-containment.sh"
+    "test:repository": "bash test-repository-scope.sh",
+    "test:ketch-config": "bash test-ketch-config.sh",
+    "test:containment": "bash test-containment.sh && bash test-repository-containment.sh",
+    "test:ketch-live": "bash test-ketch-live.sh"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.67"

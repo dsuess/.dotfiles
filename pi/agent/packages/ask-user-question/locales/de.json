@@ -1,0 +1,49 @@
+{
+  "_meta.notes": "Auto-translated draft. Native-speaker review welcome via PR. TUI symbols (↑/↓, ⚠) and key names (Enter, Esc, Tab, Space, n, Ctrl+G, Ctrl+U) are universal CLI conventions and stay untranslated.",
+
+  "sentinel.discuss": "Dies besprechen",
+  "sentinel.other": "Schreibe etwas.",
+  "sentinel.next": "Weiter",
+
+  "discussion.heading": "Diese Frage besprechen",
+  "discussion.empty": "Noch keine Diskussion.",
+  "discussion.you": "Du",
+  "discussion.agent": "Diskussionsagent",
+  "discussion.running_cancel": "Esc bricht diese Runde ab",
+  "discussion.error": "Fehler",
+  "discussion.cancelled": "Runde abgebrochen",
+  "discussion.input_label": "Deine Rückfrage:",
+  "discussion.send": "Senden",
+  "discussion.ask": "Rückfrage stellen",
+  "discussion.back": "Zurück zur Frage",
+  "discussion.continue": "Im Chat fortfahren",
+  "discussion.unavailable": "nicht verfügbar",
+  "discussion.input": "Was möchtest du klären?",
+  "discussion.hint": "Enter senden/auswählen · Shift+Enter neue Zeile · Tab Aktionen · Ctrl+G Editor · Esc zurück/abbrechen",
+
+  "submit.label": "Antworten senden",
+  "submit.cancel": "Abbrechen",
+
+  "hint.enter": "Enter zum Auswählen",
+  "hint.navigate": "↑/↓ zur Navigation",
+  "hint.newline": "Umschalt+Enter für neue Zeile",
+  "hint.clear": "Ctrl+U zum Leeren",
+  "hint.toggle": "Leertaste zum Umschalten",
+  "hint.notes": "n für Notizen",
+  "hint.tab": "Tab wechselt die Frage",
+  "hint.cancel": "Esc zum Abbrechen",
+
+  "review.heading": "Antworten überprüfen",
+  "review.ready": "Bereit, deine Antworten zu senden?",
+  "review.incomplete": "⚠ Beantworte die verbleibenden Fragen vor dem Senden:",
+
+  "preview.no_preview": "Keine Vorschau verfügbar",
+  "preview.notes_affordance": "Notizen: drücke n, um Notizen hinzuzufügen",
+  "notes.header": "Notizen:",
+
+  "editor.failed": "Externer Editor fehlgeschlagen",
+
+  "rpc.multi_choose": "Mehrere auswählen…",
+  "rpc.multi_instructions": "Gib die Nummern aller zutreffenden Optionen durch Komma getrennt ein (z. B. \"1,3\") oder tippe eine eigene Antwort als Text.",
+  "rpc.custom_answer_title": "Gib deine Antwort ein:"
+}

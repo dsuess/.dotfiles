@@ -2,8 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
 	CONFIG_DIR_NAME,
+	withFileMutationQueue,
 	type ExtensionAPI,
-	type ExtensionCommandContext,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -13,12 +13,16 @@ import { PLAN_MODE_DIRECT_TOGGLE_EVENT, PLAN_MODE_WORKFLOW_STATE_EVENT } from ".
 import { editPlanForReview } from "./external-editor.ts";
 import {
 	EXECUTION_ENTRY,
+	buildExecutionBoundaryMessage,
 	buildExecutionKickoff,
 	buildStageInstruction,
 	getExecutionToolNames,
+	hashExecutionBoundary,
+	isolateExecutionMessages,
 	registerExecutionTools,
 	restoreExecutionContract,
 	type ExecutionContract,
+	type InPlaceExecutionContract,
 } from "./execution.ts";
 import {
 	evaluatePlanningToolCall,
@@ -27,9 +31,11 @@ import {
 	snapshotActiveTools,
 	WORKFLOW_TOOLS,
 } from "./planning-gate.js";
+import { synchronizeLedgerMarkdown } from "./ledger.js";
+import { parsePlanDocument, splitManagedProgressReport } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
-import { buildStageProgressRows } from "./progress-widget.js";
+import { buildStepProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
 import { buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
 import { parseReviewAnnotations } from "./review-annotations.js";
 import { showStageDialog } from "./stage-dialog.ts";
@@ -77,10 +83,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let state = createInitialState() as PlanModeState;
 	let executionContract: ExecutionContract | null = null;
 	let lastContext: ExtensionContext | undefined;
-	let approvalCommandContext: ExtensionCommandContext | undefined;
-	let pendingApprovalNonce: string | null = null;
 	let approvedPlanMarkdown: string | null = null;
 	let presentingApproval = false;
+	let presentingCheckpoint = false;
 	registerPlanRenderer(pi);
 
 	pi.registerFlag("plan", {
@@ -148,7 +153,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const total = Object.keys(state.ledger).length;
 			const paused = state.execution?.paused ? ":paused" : "";
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `plan:${completed}/${total}${paused}`));
-			ctx.ui.setWidget("plan-mode-ledger", buildStageProgressRows(state));
+			ctx.ui.setWidget("plan-mode-ledger", buildStepProgressRows(state));
 			return;
 		} else {
 			ctx.ui.setStatus("plan-mode", undefined);
@@ -220,7 +225,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("plan", {
 		description: "Enter planning mode with an optional goal; use /plan off to exit",
 		handler: async (args, ctx) => {
-			approvalCommandContext = ctx;
 			const value = args?.trim() ?? "";
 			if (value.toLowerCase() === "off") {
 				stopPlanning(ctx);
@@ -229,7 +233,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (state.mode === "approval") {
 				if (ctx.hasUI) ctx.ui.notify(
 					state.approval?.consumed
-						? "This plan was already handed off to a fresh implementation session. Use /plan off to start a new planning run."
+						? "This plan was already handed off for implementation in this session. Use /plan off to start a new planning run."
 						: "A plan is awaiting approval. Use /plan-actions to reopen its actions or /plan off.",
 					"info",
 				);
@@ -261,7 +265,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function handoffExecution(ctx: ExtensionCommandContext, nonce: string, mode: "all" | "staged"): Promise<void> {
+	async function handoffExecution(ctx: ExtensionContext, nonce: string, mode: "all" | "staged"): Promise<void> {
 		if (!state.plan) return;
 		let approvedMarkdown: string;
 		try {
@@ -270,53 +274,50 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
 			return;
 		}
-		const approvalState = structuredClone(state);
 		const transition = approveExecution(state, nonce, mode) as TransitionResult;
 		if (!transition.ok) { ctx.ui.notify(transition.error.message, "warning"); return; }
 		const next = structuredClone(transition.state);
-		const parentSessionPath = ctx.sessionManager.getSessionFile() ?? null;
+		const runId = randomBytes(18).toString("base64url");
 		if (next.execution) {
 			next.execution.startedAt = new Date().toISOString();
-			next.execution.parentSessionPath = parentSessionPath;
+			next.execution.parentSessionPath = null;
+			next.execution.runId = runId;
 		}
-		const contract: ExecutionContract = {
-			version: 1,
+		const contract: InPlaceExecutionContract = {
+			version: 2,
+			handoff: "in_place",
+			runId,
 			approvedMarkdown,
 			planPath: state.plan.path,
 			planHash: state.plan.hash,
 			executionMode: mode,
 			originalActiveTools: [...state.originalActiveTools],
-			parentSessionPath,
+			sessionPath: ctx.sessionManager.getSessionFile() ?? null,
+			boundaryHash: "",
 		};
-		const consumedParent = structuredClone(approvalState);
-		if (consumedParent.approval) consumedParent.approval.consumed = true;
-		consumedParent.lastAction = `handoff_${mode}`;
-		commitState(consumedParent);
-		try {
-			const result = await ctx.newSession({
-				parentSession: parentSessionPath ?? undefined,
-				setup: async (sessionManager) => {
-					sessionManager.appendCustomEntry(EXECUTION_ENTRY, contract);
-					sessionManager.appendCustomEntry(PLAN_MODE_STATE_ENTRY, next);
-					sessionManager.appendCustomEntry(PLAN_DISPLAY_ENTRY, {
-						markdown: approvedMarkdown, path: contract.planPath, revision: next.plan?.revision ?? 1, hash: contract.planHash,
-					});
-				},
-				withSession: async (replacementCtx) => {
-					await replacementCtx.sendUserMessage(buildExecutionKickoff(contract, next));
-				},
-			});
-			if (!result.cancelled) return;
-		} catch (error) {
-			ctx.ui.notify(`Fresh-session handoff failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-		}
-		commitState(approvalState);
-		applyPlanningGate();
+		contract.boundaryHash = hashExecutionBoundary(buildExecutionKickoff(contract, next));
+
+		// Persist the contract before the executing state. If the hidden marker is
+		// interrupted, context isolation reconstructs only this approved contract.
+		pi.appendEntry(EXECUTION_ENTRY, contract);
+		executionContract = contract;
+		commitState(next);
+		applyExecutionTools(ctx);
 		updateStatus(ctx);
-		ctx.ui.notify("The plan remains pending approval.", "warning");
+		const boundary = buildExecutionBoundaryMessage(contract, next);
+		try {
+			pi.sendMessage({
+				customType: boundary.customType,
+				content: boundary.content,
+				display: boundary.display,
+				details: boundary.details,
+			}, { triggerTurn: true, deliverAs: "followUp" });
+		} catch (error) {
+			ctx.ui.notify(`Execution boundary delivery was interrupted; the persisted approved contract will be restored on the next turn: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
 	}
 
-	async function requestPlanChange(ctx: ExtensionCommandContext, nonce: string, text: string): Promise<void> {
+	async function requestPlanChange(ctx: ExtensionContext, nonce: string, text: string): Promise<void> {
 		try {
 			await readApprovedPlan(ctx);
 		} catch (error) {
@@ -335,7 +336,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		pi.sendUserMessage(`Revise the saved plan at ${state.plan?.path}. Apply this exact user feedback:\n\n${text}\n\nRe-read the current plan, use grill-with-docs for any newly exposed decision, and submit the complete revised canonical plan with submit_plan. Do not implement.`);
 	}
 
-	async function requestPlanReview(ctx: ExtensionCommandContext, nonce: string): Promise<boolean> {
+	async function requestPlanReview(ctx: ExtensionContext, nonce: string): Promise<boolean> {
 		if (!state.plan) return false;
 		if (state.counters.reviewRounds >= 10 && ctx.hasUI) {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
@@ -371,7 +372,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
-	async function openPlanActions(args: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
+	async function openPlanActions(args: string | undefined, ctx: ExtensionContext): Promise<void> {
 		const supplied = args?.trim();
 		if (state.mode !== "approval" || !state.approval || state.approval.consumed || (supplied && supplied !== state.approval.nonce)) {
 			if (ctx.hasUI) ctx.ui.notify("No matching plan approval is pending.", "warning");
@@ -379,7 +380,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 		if (!ctx.hasUI) return;
 		const nonce = state.approval.nonce;
-		if (pendingApprovalNonce === nonce) pendingApprovalNonce = null;
 		if (!state.approval.presented) {
 			const next = structuredClone(state);
 			next.approval!.presented = true;
@@ -400,14 +400,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("plan-actions", {
 		description: "Open actions for the currently submitted plan",
 		handler: async (args, ctx) => {
-			approvalCommandContext = ctx;
 			await openPlanActions(args, ctx);
 		},
 	});
 
-	pi.registerCommand("plan-stage-actions", {
-		description: "Open the mandatory staged-execution checkpoint",
-		handler: async (args, ctx) => {
+	async function openStageActions(args: string | undefined, ctx: ExtensionContext): Promise<void> {
 			const supplied = args?.trim();
 			if (state.mode !== "executing_staged" || !state.checkpoint || (supplied && supplied !== state.checkpoint.nonce)) {
 				if (ctx.hasUI) ctx.ui.notify("No matching stage checkpoint is pending.", "warning");
@@ -471,6 +468,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				pi.sendUserMessage(buildStageInstruction(state));
 				return;
 			}
+	}
+
+	pi.registerCommand("plan-stage-actions", {
+		description: "Open the mandatory staged-execution checkpoint",
+		handler: async (args, ctx) => {
+			await openStageActions(args, ctx);
 		},
 	});
 
@@ -538,8 +541,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					description: stage.description,
 					taskIds: stage.stepIds,
 				}));
-				const tasks = (stored.document.steps ?? stored.document.stages.flatMap((stage) => stage.tasks))
-					.map((task) => ({ id: task.id, status: task.status }));
+				const tasks = getDocumentProgressTasks(stored.document)
+					.map((task) => ({ id: task.id, title: task.title, status: task.status }));
 				const result = submitPlan(state, {
 					path: stored.path,
 					slug: stored.slug,
@@ -553,21 +556,19 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
 				commitTransition(result);
-				approvedPlanMarkdown = params.markdown;
+				approvedPlanMarkdown = stored.markdown;
 				applyPlanningGate();
 				updateStatus(ctx);
 				pi.appendEntry(PLAN_DISPLAY_ENTRY, {
-					markdown: params.markdown,
+					markdown: stored.markdown,
 					path: stored.path,
 					revision: result.state.plan?.revision ?? 1,
 					hash: stored.hash,
 				});
-				const autoOpenApproval = ctx.hasUI && approvalCommandContext !== undefined;
-				if (autoOpenApproval) pendingApprovalNonce = nonce;
 				return {
 					content: [{
 						type: "text",
-						text: `Validated and saved plan to ${stored.path}. ${autoOpenApproval ? "Approval actions will open automatically." : "Use /plan-actions to continue."}`,
+						text: `Validated and saved plan to ${stored.path}. ${ctx.hasUI ? "Approval actions will open automatically." : "This mode does not prompt or execute plans."}`,
 					}],
 					details: {
 						accepted: true,
@@ -634,19 +635,39 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (state.mode === "executing_all" || state.mode === "executing_staged") applyExecutionTools();
 	});
 
-	let handlingEarlyIdle = false;
-	pi.on("agent_settled", async (_event, ctx) => {
-		const commandCtx = approvalCommandContext;
-		if (pendingApprovalNonce && commandCtx && !presentingApproval && state.mode === "approval" && state.approval && !state.approval.consumed) {
-			const nonce = pendingApprovalNonce;
+	async function presentPendingWorkflowDecision(ctx: ExtensionContext): Promise<boolean> {
+		if (ctx.hasUI && !presentingApproval && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented) {
+			const nonce = state.approval.nonce;
+			const next = structuredClone(state);
+			next.approval!.presented = true;
+			commitState(next);
 			presentingApproval = true;
 			try {
-				await openPlanActions(nonce, commandCtx);
+				await openPlanActions(nonce, ctx);
 			} finally {
 				presentingApproval = false;
 			}
-			return;
+			return true;
 		}
+		if (ctx.hasUI && !presentingCheckpoint && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented) {
+			const nonce = state.checkpoint.nonce;
+			const next = structuredClone(state);
+			next.checkpoint!.presented = true;
+			commitState(next);
+			presentingCheckpoint = true;
+			try {
+				await openStageActions(nonce, ctx);
+			} finally {
+				presentingCheckpoint = false;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	let handlingEarlyIdle = false;
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (await presentPendingWorkflowDecision(ctx)) return;
 		if (handlingEarlyIdle || (state.mode !== "executing_all" && state.mode !== "executing_staged") || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
 		const relevant = state.mode === "executing_staged"
 			? Object.entries(state.ledger).filter(([id]) => getStageTaskIds(state, state.currentStageId).includes(id))
@@ -678,19 +699,71 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	pi.on("context", async (event) => {
 		if (state.mode === "planning") return;
-		return {
-			messages: event.messages.filter((message) =>
-				!(message.role === "custom" && "customType" in message && message.customType === PLAN_MODE_CONTEXT_TYPE)),
-		};
+		const messages = event.messages.filter((message) =>
+			!(message.role === "custom" && "customType" in message && message.customType === PLAN_MODE_CONTEXT_TYPE));
+		if (executionContract?.version === 2 && state.execution?.runId === executionContract.runId) {
+			return { messages: isolateExecutionMessages(messages, executionContract, state) };
+		}
+		return { messages };
 	});
 
-	function restoreForContext(ctx: ExtensionContext, honorFlag: boolean): void {
+	async function restoreTaskMetadata(ctx: ExtensionContext): Promise<void> {
+		if (!state.plan || state.plan.tasks.length === state.plan.taskIds.length) return;
+		let durableMarkdown = executionContract?.approvedMarkdown ?? approvedPlanMarkdown;
+		if (!durableMarkdown) {
+			try {
+				durableMarkdown = await readFile(state.plan.path, "utf8");
+			} catch (error) {
+				if (ctx.hasUI) ctx.ui.notify(`Plan progress titles could not be restored: ${formatStoreError(error)}`, "error");
+				return;
+			}
+		}
+		const parsed = parsePlanDocument(durableMarkdown);
+		if (!parsed.ok) {
+			if (ctx.hasUI) ctx.ui.notify("Plan progress titles could not be restored from the durable approved plan.", "error");
+			return;
+		}
+		const tasks = getDocumentProgressTasks(parsed.document).map(({ id, title }) => ({ id, title }));
+		if (tasks.map((task) => task.id).join("\0") !== state.plan.taskIds.join("\0")) {
+			if (ctx.hasUI) ctx.ui.notify("Plan progress titles do not match the durable execution ledger.", "error");
+			return;
+		}
+		const next = structuredClone(state);
+		next.plan!.tasks = tasks;
+		commitState(next);
+	}
+
+	async function backfillExecutionProgressReport(ctx: ExtensionContext): Promise<void> {
+		if (!state.plan || (state.mode !== "executing_all" && state.mode !== "executing_staged")) return;
+		const approvedMarkdown = executionContract?.approvedMarkdown ?? approvedPlanMarkdown;
+		if (!approvedMarkdown) return;
+		try {
+			await withFileMutationQueue(state.plan.path, async () => {
+				let current: string;
+				let missing = false;
+				try {
+					current = await readFile(state.plan!.path, "utf8");
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+					current = approvedMarkdown;
+					missing = true;
+				}
+				if (!missing && splitManagedProgressReport(current).report) return;
+				const next = synchronizeLedgerMarkdown(current, approvedMarkdown, state.ledger);
+				await atomicReplaceFile(state.plan!.path, next);
+			});
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Plan progress report could not be restored: ${formatStoreError(error)}`, "error");
+		}
+	}
+
+	async function restoreForContext(ctx: ExtensionContext, honorFlag: boolean): Promise<void> {
 		const branch = ctx.sessionManager.getBranch();
 		const hasPersistedWorkflow = branch.some(
 			(entry) => entry.type === "custom" && entry.customType === PLAN_MODE_STATE_ENTRY,
 		);
 		state = restoreLatestState(branch) as PlanModeState;
-		executionContract = restoreExecutionContract(branch);
+		executionContract = restoreExecutionContract(branch, state);
 		approvedPlanMarkdown = null;
 		if (state.plan) {
 			for (let index = branch.length - 1; index >= 0; index -= 1) {
@@ -703,6 +776,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				}
 			}
 		}
+		await restoreTaskMetadata(ctx);
+		await backfillExecutionProgressReport(ctx);
 		if (honorFlag && !hasPersistedWorkflow && pi.getFlag("plan") === true && state.mode === "off") {
 			const result = enterPlanning(state, snapshotOriginalTools()) as TransitionResult;
 			if (result.ok) commitTransition(result);
@@ -713,18 +788,19 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		else if (state.mode === "off" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
 		else hideWorkflowTools();
 		updateStatus(ctx);
-		if (ctx.hasUI && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented) {
-			ctx.ui.notify("A validated plan is awaiting approval. Use /plan-actions to reopen its actions.", "info");
-		} else if (ctx.hasUI && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.presented) {
-			const next = structuredClone(state);
-			next.checkpoint!.presented = true;
-			commitState(next);
-			queueMicrotask(() => pi.sendUserMessage(`/plan-stage-actions ${next.checkpoint!.nonce}`));
+		const pendingApproval = ctx.hasUI && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented;
+		const pendingCheckpoint = ctx.hasUI && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented;
+		if (pendingApproval || pendingCheckpoint) {
+			queueMicrotask(() => {
+				presentPendingWorkflowDecision(ctx).catch((error) => {
+					ctx.ui.notify(`Plan workflow dialog failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				});
+			});
 		}
 	}
 
-	pi.on("session_start", (_event, ctx) => restoreForContext(ctx, true));
-	pi.on("session_tree", (_event, ctx) => restoreForContext(ctx, false));
+	pi.on("session_start", async (_event, ctx) => restoreForContext(ctx, true));
+	pi.on("session_tree", async (_event, ctx) => restoreForContext(ctx, false));
 	pi.on("session_shutdown", () => {
 		if (lastContext?.hasUI) {
 			lastContext.ui.setStatus("plan-mode", undefined);

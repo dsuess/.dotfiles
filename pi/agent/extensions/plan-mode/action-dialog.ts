@@ -9,7 +9,7 @@ export type PlanAction =
 	| { action: "cancel" };
 
 const ITEMS: SelectItem[] = [
-	{ value: "run", label: "Implement plan", description: "Execute every stage in a fresh session" },
+	{ value: "run", label: "Implement plan", description: "Execute every stage in the current session" },
 	{ value: "staged", label: "Implement in stages", description: "Pause for review after every stage" },
 	{ value: "change", label: "Change", description: "Send revision instructions to the planner" },
 	{ value: "review", label: "Review", description: "Edit the saved plan with ! and ? annotations" },

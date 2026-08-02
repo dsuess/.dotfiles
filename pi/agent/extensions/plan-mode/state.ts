@@ -16,6 +16,11 @@ export interface PlanStageV1 {
 	taskIds: string[];
 }
 
+export interface PlanTaskV1 {
+	id: string;
+	title: string;
+}
+
 export interface PlanReferenceV1 {
 	path: string;
 	slug: string;
@@ -25,6 +30,7 @@ export interface PlanReferenceV1 {
 	revision: number;
 	stageIds: string[];
 	taskIds: string[];
+	tasks: PlanTaskV1[];
 	stages: PlanStageV1[];
 }
 
@@ -74,6 +80,7 @@ export interface PlanModeStateV1 {
 		mode: ExecutionMode;
 		startedAt: string | null;
 		parentSessionPath: string | null;
+		runId: string | null;
 		paused: boolean;
 	} | null;
 	ledger: Record<string, LedgerItemV1>;
@@ -110,7 +117,7 @@ export interface PlanSubmission {
 	intent: string;
 	approvalNonce: string;
 	stages: Array<{ id: string; description: string; taskIds: string[] }>;
-	tasks: Array<{ id: string; status: TaskStatus }>;
+	tasks: Array<{ id: string; title: string; status: TaskStatus }>;
 }
 
 // Runtime helpers live in JavaScript so the unit suite works on Node 20 without

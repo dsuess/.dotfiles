@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { immutablePlanHash, updateLedgerMarkdown } from "../ledger.js";
-import { parsePlanDocument } from "../plan-document.js";
+import { immutablePlanHash, synchronizeLedgerMarkdown, updateLedgerMarkdown } from "../ledger.js";
+import { parsePlanDocument, replaceManagedProgressReport, splitManagedProgressReport } from "../plan-document.js";
 import { VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
 
 test("updates exactly one status and ledger note while preserving canonical parsing", () => {
@@ -12,6 +12,17 @@ test("updates exactly one status and ledger note while preserving canonical pars
 	assert.match(next, /- \*\*Ledger:\*\* \{"status":"in_progress","note":"started","evidence":null\}/);
 	assert.equal(parsePlanDocument(next).ok, true);
 	assert.equal(immutablePlanHash(next), immutablePlanHash(VALID_PLAN));
+});
+
+test("uses the shared Step projection for the trailing report", () => {
+	const next = updateLedgerMarkdown(VALID_PLAN, VALID_PLAN, "1", {
+		status: "completed", note: null, evidence: "verified",
+	});
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, [
+		"☑ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
 });
 
 test("retains the metadata anchor for version 2 plans", () => {
@@ -46,6 +57,39 @@ test("ignores fenced step examples and treats their status as immutable content"
 			status: "in_progress", note: null, evidence: null,
 		}),
 		/content drifted/,
+	);
+});
+
+test("synchronizes every durable ledger item and safely backfills a missing report", () => {
+	const next = synchronizeLedgerMarkdown(VALID_PLAN, VALID_PLAN, {
+		1: { status: "completed", note: null, evidence: "first done" },
+		2: { status: "blocked", note: "waiting", evidence: "access denied" },
+		3: { status: "in_progress", note: "reopened", evidence: null },
+	});
+	assert.match(next, /### Step 1 \[completed\]/);
+	assert.match(next, /### Step 2 \[blocked\]/);
+	assert.match(next, /### Step 3 \[in_progress\]/);
+	assert.equal((next.match(/- \*\*Ledger:\*\*/g) ?? []).length, 3);
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, [
+		"☑ Define the cache behavior",
+		"⛔ Add reliable invalidation",
+		"▶ Cover boundary conditions",
+	]);
+});
+
+test("regenerates a well-formed mutable report but rejects malformed or ambiguous markers", () => {
+	const stale = replaceManagedProgressReport(VALID_PLAN, ["☑ Stale generated row"]);
+	const next = updateLedgerMarkdown(stale, replaceManagedProgressReport(VALID_PLAN, ["☐ Approved row"]), "1", {
+		status: "in_progress", note: null, evidence: null,
+	});
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, [
+		"▶ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
+	assert.throws(
+		() => immutablePlanHash(`${stale}\n<!-- pi-plan-mode:progress:start -->\n`),
+		/at most one managed progress report/,
 	);
 });
 

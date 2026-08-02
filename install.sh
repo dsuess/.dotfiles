@@ -113,6 +113,7 @@ ensure_static_bins() {
         echo "✅ installed $name → $LOCAL_BIN/$name"
     done <<'TOOLS'
 herdr|raw||https://github.com/ogulcancelik/herdr/releases/download/v0.7.1/herdr-linux-x86_64|b965acaffc2c22f54b6e6c64af7cf8e98a3f4ac2622630a0599c67a4b9d8a654|https://github.com/ogulcancelik/herdr/releases/download/v0.7.1/herdr-linux-aarch64|3d757ac30c631e79dc45038c3ecc6423fe13a89f9cffa0f415aedd2c27f1576c
+ketch|targz|ketch|https://github.com/1broseidon/ketch/releases/download/v0.13.0/ketch_0.13.0_linux_x86_64.tar.gz|8077f9f6a1347cc2980d4012923c0b41d6eb5b52f023cd14602f78c0abd618ae|https://github.com/1broseidon/ketch/releases/download/v0.13.0/ketch_0.13.0_linux_arm64.tar.gz|6a18b1fa94aec1471dc438ff278f807925a254529478b1c4271753ab0098b99e
 rg|targz|rg|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz|33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz|800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915
 fd|targz|fd|https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-musl.tar.gz|e3257d48e29a6be965187dbd24ce9af564e0fe67b3e73c9bdcd180f4ec11bdde|https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-aarch64-unknown-linux-musl.tar.gz|f32d3657473fba74e2600babc8db0b93420d51169223b7e8143b2ed55d8fd9e8
 bat|targz|bat|https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz|0dcd8ac79732c0d5b136f11f4ee00e581440e16a44eab5b3105b611bbf2cf191|https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-aarch64-unknown-linux-musl.tar.gz|6369242c584065f195fb20cb36fbd7cb63ae690605bbe89868a7596b596c2c23
@@ -224,6 +225,21 @@ cmd_software() {
     fi
 }
 
+deploy_ketch_config() {
+    local legacy_dir="$HOME/.config/ketch"
+    local config_dir="$legacy_dir"
+
+    mkdir -p "$legacy_dir"
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+        config_dir="$HOME/Library/Application Support/ketch"
+        mkdir -p "$config_dir"
+        # Ketch follows os.UserConfigDir on macOS. Remove the obsolete managed
+        # ~/.config placement with Stow before deploying to the native path.
+        stow -D ketch -t "$legacy_dir"
+    fi
+    stow ketch -t "$config_dir"
+}
+
 cmd_config() {
     ensure_stow   # Linux: make `stow` available (vendored); no-op on macOS
 
@@ -252,15 +268,19 @@ cmd_config() {
     stow pi -t ~/.pi/
     stow uv -t ~/.config/uv
     stow herdr -t ~/.config/herdr
-    stow ketch -t ~/.config/ketch
+    deploy_ketch_config
 
     # Install npm dependencies for pi extensions that need them (skip if no npm)
     if command -v node >/dev/null 2>&1; then
-        for pkg in ~/.pi/agent/extensions/*/package.json; do
+        for pkg in ~/.pi/agent/extensions/*/package.json ~/.pi/agent/packages/*/package.json; do
             if [[ -f "$pkg" ]]; then
-                dir="$(dirname "$pkg")"
+                dir="$(cd -P "$(dirname "$pkg")" && pwd)"
                 echo "📦 Installing npm deps in $dir"
-                (cd "$dir" && npm install --omit=dev)
+                if [[ "$pkg" == */agent/packages/*/package.json && -f "$dir/package-lock.json" ]]; then
+                    (cd "$dir" && npm ci --omit=dev --ignore-scripts)
+                else
+                    (cd "$dir" && npm install --omit=dev)
+                fi
             fi
         done
     else
@@ -351,31 +371,36 @@ sync_obsidian() {
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-echo ""
-echo "🚀 dotfiles installer"
-echo "━━━━━━━━━━━━━━━━━━━━━"
-echo "📦 Platform: $PLATFORM"
-echo ""
+main() {
+    echo ""
+    echo "🚀 dotfiles installer"
+    echo "━━━━━━━━━━━━━━━━━━━━━"
+    echo "📦 Platform: $PLATFORM"
+    echo ""
 
-COMMAND="${1:-all}"
+    local command="${1:-all}"
+    case "$command" in
+        software)
+            cmd_software
+            ;;
+        config)
+            cmd_config
+            ;;
+        all)
+            cmd_software
+            cmd_config
+            ;;
+        *)
+            echo "Usage: $0 [software|config|all]"
+            exit 1
+            ;;
+    esac
 
-case "$COMMAND" in
-    software)
-        cmd_software
-        ;;
-    config)
-        cmd_config
-        ;;
-    all)
-        cmd_software
-        cmd_config
-        ;;
-    *)
-        echo "Usage: $0 [software|config|all]"
-        exit 1
-        ;;
-esac
+    echo ""
+    echo "✨ All done! Restart your shell or run: source ~/.zshrc"
+    echo ""
+}
 
-echo ""
-echo "✨ All done! Restart your shell or run: source ~/.zshrc"
-echo ""
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

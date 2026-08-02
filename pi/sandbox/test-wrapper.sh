@@ -24,8 +24,27 @@ mkdir -p \
     "$PREREQ_BIN" \
     "$SHIM_BIN" \
     "$TEST_ROOT/tmp"
-printf '{}\n' >"$TEST_HOME/.pi/sandbox/settings.json"
+cat >"$TEST_HOME/.pi/sandbox/settings.json" <<'EOF'
+{
+  "network": {"allowedDomains": [], "deniedDomains": [], "strictAllowlist": true},
+  "filesystem": {
+    "denyRead": ["~"],
+    "allowRead": ["."],
+    "allowWrite": [".", "/tmp"],
+    "denyWrite": [],
+    "allowGitConfig": false
+  }
+}
+EOF
 cp "$HERE/herdr-status-broker.mjs" "$TEST_HOME/.pi/sandbox/herdr-status-broker.mjs"
+cat >"$TEST_HOME/.pi/sandbox/unrestricted-network.mjs" <<'EOF'
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+if (args[0] !== "--settings" || args[2] !== "--") process.exit(2);
+const result = spawnSync(args[3], args.slice(4), { stdio: "inherit", env: process.env });
+process.exit(result.status ?? 1);
+EOF
 
 cat >"$TEST_HOME/.pi/sandbox/node_modules/.bin/srt" <<'EOF'
 #!/usr/bin/env bash

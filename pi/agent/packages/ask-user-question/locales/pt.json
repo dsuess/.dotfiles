@@ -1,0 +1,49 @@
+{
+  "_meta.notes": "European Portuguese (Portugal). Auto-translated draft. Native-speaker review welcome via PR. Distinct from pt-BR (Brasil): differs in lexicon (utilizador / você), conjugation, and some terms. TUI symbols (↑/↓, ⚠) and key names (Enter, Esc, Tab, Space, n, Ctrl+G, Ctrl+U) are universal CLI conventions and stay untranslated.",
+
+  "sentinel.discuss": "Discutir isto",
+  "sentinel.other": "Escreva algo.",
+  "sentinel.next": "Seguinte",
+
+  "discussion.heading": "Discutir esta pergunta",
+  "discussion.empty": "Ainda não há discussão.",
+  "discussion.you": "Utilizador",
+  "discussion.agent": "Agente de discussão",
+  "discussion.running_cancel": "Esc cancela este turno",
+  "discussion.error": "Erro",
+  "discussion.cancelled": "Turno cancelado",
+  "discussion.input_label": "O seu pedido de esclarecimento:",
+  "discussion.send": "Enviar",
+  "discussion.ask": "Pedir esclarecimento",
+  "discussion.back": "Voltar à pergunta",
+  "discussion.continue": "Continuar no chat",
+  "discussion.unavailable": "indisponível",
+  "discussion.input": "O que pretende esclarecer?",
+  "discussion.hint": "Enter enviar/selecionar · Shift+Enter nova linha · Tab ações · Ctrl+G editor · Esc voltar/cancelar",
+
+  "submit.label": "Enviar respostas",
+  "submit.cancel": "Cancelar",
+
+  "hint.enter": "Enter para selecionar",
+  "hint.navigate": "↑/↓ para navegar",
+  "hint.newline": "Shift+Enter para nova linha",
+  "hint.clear": "Ctrl+U para limpar",
+  "hint.toggle": "Espaço para alternar",
+  "hint.notes": "n para adicionar notas",
+  "hint.tab": "Tab para mudar de pergunta",
+  "hint.cancel": "Esc para cancelar",
+
+  "review.heading": "Reveja as suas respostas",
+  "review.ready": "Pronto para enviar as suas respostas?",
+  "review.incomplete": "⚠ Responda às perguntas restantes antes de enviar:",
+
+  "preview.no_preview": "Pré-visualização indisponível",
+  "preview.notes_affordance": "Notas: prima n para adicionar notas",
+  "notes.header": "Notas:",
+
+  "editor.failed": "Falha no editor externo",
+
+  "rpc.multi_choose": "Selecionar várias…",
+  "rpc.multi_instructions": "Introduza os números de todas as opções aplicáveis, separados por vírgulas (ex.: \"1,3\") ou escreva uma resposta própria em texto.",
+  "rpc.custom_answer_title": "Escreva a sua resposta:"
+}

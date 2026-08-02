@@ -34,8 +34,8 @@ function submission(overrides = {}) {
 			{ id: "2", description: "Implement and verify.", taskIds: ["2"] },
 		],
 		tasks: [
-			{ id: "1", status: "pending" },
-			{ id: "2", status: "pending" },
+			{ id: "1", title: "Establish the contract", status: "pending" },
+			{ id: "2", title: "Implement and verify", status: "pending" },
 		],
 		...overrides,
 	};
@@ -78,6 +78,10 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 	assert.equal(approved.state.mode, "approval");
 	assert.equal(approved.state.plan.revision, 1);
 	assert.deepEqual(Object.keys(approved.state.ledger), ["1", "2"]);
+	assert.deepEqual(approved.state.plan.tasks, [
+		{ id: "1", title: "Establish the contract" },
+		{ id: "2", title: "Implement and verify" },
+	]);
 	assert.equal(approved.state.plan.stages[1].description, "Implement and verify.");
 
 	const executing = approveExecution(approved.state, "nonce-1", "staged");
@@ -224,16 +228,18 @@ test("restore migrates stage metadata for legacy persisted plans", () => {
 	const legacy = approvalState({
 		stages: [{ id: "1" }, { id: "2" }],
 		tasks: [
-			{ id: "1.1", status: "pending" },
-			{ id: "2.1", status: "pending" },
+			{ id: "1.1", title: "First legacy task", status: "pending" },
+			{ id: "2.1", title: "Second legacy task", status: "pending" },
 		],
 	});
 	delete legacy.plan.stages;
+	delete legacy.plan.tasks;
 	const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: legacy }]);
 	assert.deepEqual(restored.plan.stages, [
 		{ id: "1", description: "Stage 1", taskIds: ["1.1"] },
 		{ id: "2", description: "Stage 2", taskIds: ["2.1"] },
 	]);
+	assert.deepEqual(restored.plan.tasks, []);
 });
 
 test("restore ignores malformed or unsupported state entries", () => {

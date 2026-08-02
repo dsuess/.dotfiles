@@ -1,0 +1,488 @@
+import {
+	aggregateDiscussionUsage,
+	boundDiscussionTranscript,
+	buildDiscussionContexts,
+	emptyQuestionDiscussion,
+	MAX_DISCUSSION_ACTIVITY_ITEMS,
+	mergeDiscussionUsage,
+	type QuestionDiscussionState,
+} from "../discussion/types.js";
+import type { QuestionAnswer, QuestionData, QuestionnaireResult } from "../tool/types.js";
+import type { WrappingSelectItem } from "../view/components/wrapping-select.js";
+import type { QuestionnaireAction } from "./key-router.js";
+import { ROW_INTENT_META } from "./row-intent.js";
+import type { QuestionnaireState } from "./state.js";
+
+/** Session-lifetime constants. No live-component reads — peripheral values live on canonical state. */
+export interface ApplyContext {
+	questions: readonly QuestionData[];
+	itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
+}
+
+/**
+ * Declarative side-effects emitted by `reduce`. The runtime executes them after
+ * committing the new state, then asks the props-adapter to re-project. Closed set —
+ * adding an effect requires updating both the union AND the runtime's `runEffect` switch
+ * (compiler-enforced exhaustive). No string-keyed escape hatch.
+ */
+export type Effect =
+	| { kind: "set_input_buffer"; value: string }
+	| { kind: "clear_input_buffer" }
+	| { kind: "open_input_editor"; value: string }
+	| { kind: "set_notes_value"; value: string }
+	| { kind: "set_notes_focused"; focused: boolean }
+	| { kind: "forward_notes_keystroke"; data: string }
+	/**
+	 * Tell the session to hide or show its underlying overlay. Emitted by the
+	 * `toggle_collapsed` action so the runtime can call `OverlayHandle.setHidden(...)`,
+	 * which lets other overlay-aware consumers (e.g. `pi-station`) see the questionnaire
+	 * as truly hidden and resume normal chat scroll while the user reads the transcript
+	 * behind the modal.
+	 */
+	| { kind: "set_overlay_hidden"; hidden: boolean }
+	| { kind: "done"; result: QuestionnaireResult };
+
+export interface ApplyResult {
+	state: QuestionnaireState;
+	effects: readonly Effect[];
+}
+
+function orderedAnswers(state: QuestionnaireState, questions: readonly QuestionData[]): QuestionAnswer[] {
+	const out: QuestionAnswer[] = [];
+	for (let i = 0; i < questions.length; i++) {
+		const a = state.answers.get(i);
+		if (a) out.push(a);
+	}
+	return out;
+}
+
+function syncMultiSelectFromAnswers(
+	answers: ReadonlyMap<number, QuestionAnswer>,
+	questions: readonly QuestionData[],
+	tab: number,
+): ReadonlySet<number> {
+	const q = questions[tab];
+	if (!q?.multiSelect) return new Set();
+	const saved = answers.get(tab);
+	const labels = saved?.selected ?? [];
+	const indices = new Set<number>();
+	for (let i = 0; i < q.options.length; i++) {
+		if (labels.includes(q.options[i]!.label)) indices.add(i);
+	}
+	return indices;
+}
+
+function persistMultiSelectAnswer(state: QuestionnaireState, ctx: ApplyContext): ReadonlyMap<number, QuestionAnswer> {
+	const q = ctx.questions[state.currentTab];
+	if (!q?.multiSelect) return state.answers;
+	const selected: string[] = [];
+	for (let i = 0; i < q.options.length; i++) {
+		if (state.multiSelectChecked.has(i)) selected.push(q.options[i]!.label);
+	}
+	const out = new Map(state.answers);
+	if (selected.length === 0) {
+		out.delete(state.currentTab);
+		return out;
+	}
+	const pendingNotes = state.notesByTab.get(state.currentTab);
+	out.set(state.currentTab, {
+		questionIndex: state.currentTab,
+		question: q.question,
+		kind: "multi",
+		answer: null,
+		selected,
+		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
+	});
+	return out;
+}
+
+/**
+ * Note text to seed the editor/draft with for a tab. The in-flight side-band store
+ * (`notesByTab`) is authoritative — before an option is confirmed the note lives ONLY
+ * there; `answer.notes` is a mirror written on exit/confirm.
+ */
+function notesValueFor(state: QuestionnaireState, tab: number): string {
+	return state.notesByTab.get(tab) ?? state.answers.get(tab)?.notes ?? "";
+}
+
+function customDraftValueFor(state: QuestionnaireState, tab: number): string {
+	const draft = state.customDraftsByTab.get(tab);
+	if (draft !== undefined) return draft;
+	const answer = state.answers.get(tab);
+	return answer?.kind === "custom" && typeof answer.answer === "string" ? answer.answer : "";
+}
+
+function setCustomDraft(state: QuestionnaireState, tab: number, value: string): ReadonlyMap<number, string> {
+	const drafts = new Map(state.customDraftsByTab);
+	drafts.set(tab, value);
+	return drafts;
+}
+
+function withoutCustomDraft(state: QuestionnaireState, tab: number): ReadonlyMap<number, string> {
+	if (!state.customDraftsByTab.has(tab)) return state.customDraftsByTab;
+	const drafts = new Map(state.customDraftsByTab);
+	drafts.delete(tab);
+	return drafts;
+}
+
+function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyContext): ApplyResult {
+	if (state.discussionOpenTab != null) return { state, effects: [] };
+	const notesValue = notesValueFor(state, nextTab);
+	const transitioned: QuestionnaireState = {
+		...state,
+		currentTab: nextTab,
+		optionIndex: 0,
+		inputMode: false,
+		notesVisible: false,
+		submitChoiceIndex: 0,
+		multiSelectChecked: syncMultiSelectFromAnswers(state.answers, ctx.questions, nextTab),
+		notesDraft: notesValue,
+	};
+	return {
+		state: transitioned,
+		effects: [
+			{ kind: "set_notes_focused", focused: false },
+			{ kind: "set_notes_value", value: notesValue },
+			{ kind: "set_input_buffer", value: customDraftValueFor(state, nextTab) },
+		],
+	};
+}
+
+function resultMetadata(state: QuestionnaireState, ctx: ApplyContext) {
+	const discussionsByTab = state.discussionsByTab ?? new Map<number, QuestionDiscussionState>();
+	const discussions = buildDiscussionContexts(discussionsByTab, ctx.questions);
+	return discussions.length > 0
+		? { discussions, discussionUsage: aggregateDiscussionUsage(discussionsByTab) }
+		: {};
+}
+
+function doneFor(state: QuestionnaireState, ctx: ApplyContext, cancelled: boolean): ApplyResult {
+	const result: QuestionnaireResult = {
+		answers: orderedAnswers(state, ctx.questions),
+		cancelled,
+		...resultMetadata(state, ctx),
+	};
+	return { state, effects: [{ kind: "done", result }] };
+}
+
+function discussionFor(state: QuestionnaireState, tab = state.currentTab): QuestionDiscussionState {
+	return state.discussionsByTab?.get(tab) ?? emptyQuestionDiscussion();
+}
+
+function withDiscussion(
+	state: QuestionnaireState,
+	discussion: QuestionDiscussionState,
+	tab = state.currentTab,
+): QuestionnaireState {
+	const discussionsByTab = new Map(state.discussionsByTab ?? []);
+	discussionsByTab.set(tab, discussion);
+	return { ...state, discussionsByTab };
+}
+
+/**
+ * Per-kind handler signature: action payload narrows to the matching union member
+ * via `Extract`, so handlers consume fully-typed actions without `as` casts.
+ */
+type Handler<K extends QuestionnaireAction["kind"]> = (
+	state: QuestionnaireState,
+	action: Extract<QuestionnaireAction, { kind: K }>,
+	ctx: ApplyContext,
+) => ApplyResult;
+
+const navHandler: Handler<"nav"> = (state, action, ctx) => {
+	const items = ctx.itemsByTab[state.currentTab] ?? [];
+	const item = items[action.nextIndex];
+	const inputMode = item ? ROW_INTENT_META[item.kind].activatesInputMode : false;
+	const customDraftsByTab = state.inputMode
+		? setCustomDraft(state, state.currentTab, action.inputValue)
+		: state.customDraftsByTab;
+	const next: QuestionnaireState = { ...state, optionIndex: action.nextIndex, inputMode, customDraftsByTab };
+	if (!inputMode) return { state: next, effects: [] };
+	return {
+		state: next,
+		effects: [{ kind: "set_input_buffer", value: customDraftValueFor(next, state.currentTab) }],
+	};
+};
+
+const inputClearHandler: Handler<"input_clear"> = (state, _action, _ctx) => ({
+	state: { ...state, customDraftsByTab: setCustomDraft(state, state.currentTab, "") },
+	effects: [{ kind: "clear_input_buffer" }],
+});
+const inputEditHandler: Handler<"input_edit"> = (state, action, _ctx) => ({
+	state,
+	effects: [{ kind: "open_input_editor", value: action.value }],
+});
+const inputReplaceHandler: Handler<"input_replace"> = (state, action, _ctx) => ({
+	state: { ...state, customDraftsByTab: setCustomDraft(state, state.currentTab, action.value) },
+	effects: [{ kind: "set_input_buffer", value: action.value }],
+});
+
+const tabSwitchHandler: Handler<"tab_switch"> = (state, action, ctx) => switchTabResult(state, action.nextTab, ctx);
+
+const discussionEnterHandler: Handler<"discussion_enter"> = (state, _action, _ctx) => ({
+	state: {
+		...withDiscussion(state, discussionFor(state)),
+		discussionOpenTab: state.currentTab,
+	},
+	effects: [],
+});
+
+const discussionBackHandler: Handler<"discussion_back"> = (state, _action, _ctx) => {
+	const discussion = discussionFor(state, state.discussionOpenTab ?? state.currentTab);
+	if (discussion.running) return { state, effects: [] };
+	return { state: { ...state, discussionOpenTab: null }, effects: [] };
+};
+
+const discussionDraftHandler: Handler<"discussion_draft"> = (state, action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	return {
+		state: withDiscussion(state, { ...discussionFor(state, tab), draft: action.value }, tab),
+		effects: [],
+	};
+};
+
+const discussionStartHandler: Handler<"discussion_start"> = (state, _action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	const discussion = discussionFor(state, tab);
+	if (discussion.running || discussion.draft.trim().length === 0) return { state, effects: [] };
+	return {
+		state: withDiscussion(state, { ...discussion, running: true, activity: [], error: undefined }, tab),
+		effects: [],
+	};
+};
+
+const discussionActivityHandler: Handler<"discussion_activity"> = (state, action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	const discussion = discussionFor(state, tab);
+	const activity = [...discussion.activity, action.message].slice(-MAX_DISCUSSION_ACTIVITY_ITEMS);
+	return { state: withDiscussion(state, { ...discussion, activity }, tab), effects: [] };
+};
+
+const discussionSuccessHandler: Handler<"discussion_success"> = (state, action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	const discussion = discussionFor(state, tab);
+	const transcript = [
+		...discussion.transcript,
+		{ role: "user" as const, text: discussion.draft },
+		{ role: "assistant" as const, text: action.response, ...(action.truncated ? { truncated: true } : {}) },
+	];
+	return {
+		state: withDiscussion(
+			state,
+			{
+				...discussion,
+				draft: "",
+				transcript,
+				running: false,
+				activity: [],
+				error: undefined,
+				usage: mergeDiscussionUsage(discussion.usage, action.usage),
+			},
+			tab,
+		),
+		effects: [],
+	};
+};
+
+const discussionFailureHandler: Handler<"discussion_failure"> = (state, action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	const discussion = discussionFor(state, tab);
+	return {
+		state: withDiscussion(state, { ...discussion, running: false, activity: [], error: action.error }, tab),
+		effects: [],
+	};
+};
+
+const discussionCancelHandler: Handler<"discussion_cancel"> = (state, _action, _ctx) => {
+	const tab = state.discussionOpenTab ?? state.currentTab;
+	const discussion = discussionFor(state, tab);
+	return {
+		state: withDiscussion(state, { ...discussion, running: false, activity: [], error: "Turn cancelled" }, tab),
+		effects: [],
+	};
+};
+
+const discussionHandoffHandler: Handler<"discussion_handoff"> = (state, action, ctx) => {
+	const questionIndex = state.discussionOpenTab ?? state.currentTab;
+	const question = ctx.questions[questionIndex];
+	if (!question) return { state, effects: [] };
+	const discussion = discussionFor(state, questionIndex);
+	const pendingDraft = discussion.draft.trim();
+	const transcript = pendingDraft.length > 0
+		? [...discussion.transcript, { role: "user" as const, text: pendingDraft }]
+		: discussion.transcript;
+	const bounded = boundDiscussionTranscript(transcript);
+	const answers = orderedAnswers(state, ctx.questions);
+	const result: QuestionnaireResult = {
+		answers,
+		cancelled: false,
+		outcome: "handoff",
+		...resultMetadata(state, ctx),
+		handoff: {
+			questionIndex,
+			question: question.question,
+			options: question.options.map(({ label, description }) => ({ label, description })),
+			reason: action.reason,
+			transcript: bounded.messages,
+			partialAnswers: answers,
+			...(bounded.truncated ? { truncated: true } : {}),
+		},
+	};
+	return { state, effects: [{ kind: "done", result }] };
+};
+
+const confirmHandler: Handler<"confirm"> = (state, action, ctx) => {
+	let answer = action.answer;
+	if (answer.kind === "option" && answer.answer) {
+		const q = ctx.questions[answer.questionIndex];
+		const matched = q?.options.find((o) => o.label === answer.answer);
+		if (matched?.preview && matched.preview.length > 0) {
+			answer = { ...answer, preview: matched.preview };
+		}
+	}
+	const pendingNotes = state.notesByTab.get(answer.questionIndex);
+	if (pendingNotes && pendingNotes.length > 0) {
+		answer = { ...answer, notes: pendingNotes };
+	}
+	const answers = new Map(state.answers);
+	answers.set(answer.questionIndex, answer);
+	// Custom free-text on a multi-select tab is mutually exclusive with checkbox selections:
+	// clear the checked set immediately so [✔] glyphs vanish on Enter. (A custom answer
+	// carries no `selected` array, so syncMultiSelectFromAnswers keeps it empty on tab-back.)
+	const isCustomMulti = answer.kind === "custom" && ctx.questions[answer.questionIndex]?.multiSelect === true;
+	const customDraftsByTab =
+		answer.kind === "custom" ? withoutCustomDraft(state, answer.questionIndex) : state.customDraftsByTab;
+	const next: QuestionnaireState = {
+		...state,
+		answers,
+		customDraftsByTab,
+		...(isCustomMulti ? { multiSelectChecked: new Set<number>() } : {}),
+	};
+	if (action.autoAdvanceTab !== undefined) return switchTabResult(next, action.autoAdvanceTab, ctx);
+	return doneFor(next, ctx, false);
+};
+
+const toggleHandler: Handler<"toggle"> = (state, action, ctx) => {
+	const checked = new Set(state.multiSelectChecked);
+	if (checked.has(action.index)) checked.delete(action.index);
+	else checked.add(action.index);
+	const intermediate: QuestionnaireState = { ...state, multiSelectChecked: checked };
+	const answers = persistMultiSelectAnswer(intermediate, ctx);
+	return { state: { ...intermediate, answers }, effects: [] };
+};
+
+const multiConfirmHandler: Handler<"multi_confirm"> = (state, action, ctx) => {
+	const q = ctx.questions[state.currentTab];
+	if (!q) return { state, effects: [] };
+	const pendingNotes = state.notesByTab.get(state.currentTab);
+	const answers = new Map(state.answers);
+	answers.set(state.currentTab, {
+		questionIndex: state.currentTab,
+		question: q.question,
+		kind: "multi",
+		answer: null,
+		selected: action.selected,
+		...(pendingNotes && pendingNotes.length > 0 ? { notes: pendingNotes } : {}),
+	});
+	const synced: QuestionnaireState = {
+		...state,
+		answers,
+		multiSelectChecked: syncMultiSelectFromAnswers(answers, ctx.questions, state.currentTab),
+	};
+	if (action.autoAdvanceTab !== undefined) return switchTabResult(synced, action.autoAdvanceTab, ctx);
+	return doneFor(synced, ctx, false);
+};
+
+const notesEnterHandler: Handler<"notes_enter"> = (state, _action, _ctx) => {
+	const value = notesValueFor(state, state.currentTab);
+	return {
+		state: { ...state, notesVisible: true, notesDraft: value },
+		effects: [
+			{ kind: "set_notes_value", value },
+			{ kind: "set_notes_focused", focused: true },
+		],
+	};
+};
+
+const notesExitHandler: Handler<"notes_exit"> = (state, _action, _ctx) => {
+	const trimmed = state.notesDraft.trim();
+	const notes = new Map(state.notesByTab);
+	const answers = new Map(state.answers);
+	if (trimmed.length === 0) {
+		notes.delete(state.currentTab);
+		const prev = answers.get(state.currentTab);
+		if (prev?.notes) {
+			const stripped = { ...prev };
+			delete (stripped as { notes?: string }).notes;
+			answers.set(state.currentTab, stripped);
+		}
+	} else {
+		notes.set(state.currentTab, trimmed);
+		const prev = answers.get(state.currentTab);
+		if (prev) answers.set(state.currentTab, { ...prev, notes: trimmed });
+	}
+	return {
+		state: { ...state, notesByTab: notes, answers, notesVisible: false },
+		effects: [{ kind: "set_notes_focused", focused: false }],
+	};
+};
+
+const cancelHandler: Handler<"cancel"> = (s, _a, c) => doneFor(s, c, true);
+const submitHandler: Handler<"submit"> = (s, _a, c) => doneFor(s, c, false);
+const submitNavHandler: Handler<"submit_nav"> = (s, a, _c) => ({
+	state: { ...s, submitChoiceIndex: a.nextIndex },
+	effects: [],
+});
+const notesForwardHandler: Handler<"notes_forward"> = (s, a, _c) => ({
+	state: s,
+	effects: [{ kind: "forward_notes_keystroke", data: a.data }],
+});
+const toggleCollapsedHandler: Handler<"toggle_collapsed"> = (s, _a, _c) => ({
+	state: { ...s, collapsed: !s.collapsed },
+	effects: [{ kind: "set_overlay_hidden", hidden: !s.collapsed }],
+});
+const ignoreHandler: Handler<"ignore"> = (s, _a, _c) => ({ state: s, effects: [] });
+
+/**
+ * Compile-time-exhaustive dispatch table. `{ [K in Kind]: Handler<K> }` requires
+ * an entry per union member — adding a new `QuestionnaireAction` variant fails to
+ * compile here until a handler is registered, mirroring the `Record<RowKind, …>`
+ * pattern used by `ROW_INTENT_META`.
+ */
+const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
+	nav: navHandler,
+	input_clear: inputClearHandler,
+	input_edit: inputEditHandler,
+	input_replace: inputReplaceHandler,
+	tab_switch: tabSwitchHandler,
+	discussion_enter: discussionEnterHandler,
+	discussion_back: discussionBackHandler,
+	discussion_draft: discussionDraftHandler,
+	discussion_start: discussionStartHandler,
+	discussion_activity: discussionActivityHandler,
+	discussion_success: discussionSuccessHandler,
+	discussion_failure: discussionFailureHandler,
+	discussion_cancel: discussionCancelHandler,
+	discussion_handoff: discussionHandoffHandler,
+	confirm: confirmHandler,
+	toggle: toggleHandler,
+	multi_confirm: multiConfirmHandler,
+	cancel: cancelHandler,
+	notes_enter: notesEnterHandler,
+	notes_exit: notesExitHandler,
+	notes_forward: notesForwardHandler,
+	submit: submitHandler,
+	submit_nav: submitNavHandler,
+	toggle_collapsed: toggleCollapsedHandler,
+	ignore: ignoreHandler,
+};
+
+/**
+ * Pure reducer: (state, action, ctx) → (state, Effect[]). Mirrors `rpiv-todo`'s `applyTaskMutation`.
+ * Delegates to `HANDLERS` — per-kind handlers above are pure, named, and individually testable.
+ * `ignore` is also handled outside the reducer by `handleIgnoreInline` in the runtime fast path.
+ */
+export function reduce(state: QuestionnaireState, action: QuestionnaireAction, ctx: ApplyContext): ApplyResult {
+	const handler = HANDLERS[action.kind] as Handler<typeof action.kind>;
+	return handler(state, action as never, ctx);
+}

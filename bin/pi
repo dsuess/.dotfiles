@@ -4,10 +4,12 @@ set -euo pipefail
 readonly SANDBOX_DIR="$HOME/.pi/sandbox"
 readonly SRT_BIN="$SANDBOX_DIR/node_modules/.bin/srt"
 readonly SRT_SETTINGS="$SANDBOX_DIR/settings.json"
+readonly SRT_UNRESTRICTED_NETWORK="$SANDBOX_DIR/unrestricted-network.mjs"
 readonly HERDR_STATUS_BROKER="$SANDBOX_DIR/herdr-status-broker.mjs"
 
 HERDR_BROKER_PID=""
 HERDR_BROKER_DIR=""
+EFFECTIVE_POLICY_DIR=""
 
 cleanup_herdr_broker() {
     [[ -n "$HERDR_BROKER_PID" ]] || return 0
@@ -22,16 +24,132 @@ cleanup_herdr_broker() {
     [[ -z "$HERDR_BROKER_DIR" ]] || /bin/rm -rf -- "$HERDR_BROKER_DIR"
 }
 
+cleanup_launcher() {
+    cleanup_herdr_broker
+    [[ -z "$EFFECTIVE_POLICY_DIR" ]] || /bin/rm -rf -- "$EFFECTIVE_POLICY_DIR"
+}
+
 die() {
     echo "pi: sandbox initialization failed: $*" >&2
     exit 1
 }
 
-readonly WORKSPACE_ROOT="$(builtin pwd -P)"
+readonly LAUNCH_DIR="$(builtin pwd -P)"
 
-# Resolve bootstrap tools only from absolute PATH directories outside the
-# writable workspace. SRT has not applied the OS sandbox yet, so executing a
-# workspace-local node, rg, bwrap, or socat here would bypass the boundary.
+BOOTSTRAP_EXCLUDED_ROOTS=("$LAUNCH_DIR")
+CANDIDATE_WORKTREE_ROOT=""
+WORKTREE_ROOT=""
+BARE_COMMON_DIR=""
+
+path_is_within() {
+    local candidate="$1"
+    local root="$2"
+
+    [[ "$root" == "/" || "$candidate" == "$root" || "$candidate" == "$root/"* ]]
+}
+
+sandbox_path_is_literal() {
+    local candidate="$1"
+
+    [[ "$candidate" != *'*'* && "$candidate" != *'?'* &&
+        "$candidate" != *'['* && "$candidate" != *']'* ]]
+}
+
+canonical_directory() {
+    local directory="$1"
+
+    (
+        builtin cd -- "$directory" 2>/dev/null || exit 1
+        builtin pwd -P
+    )
+}
+
+add_bootstrap_exclusion() {
+    local root="$1"
+    local existing
+
+    [[ "$root" == /* ]] || return 0
+    for existing in "${BOOTSTRAP_EXCLUDED_ROOTS[@]}"; do
+        [[ "$root" == "$existing" ]] && return 0
+    done
+    BOOTSTRAP_EXCLUDED_ROOTS+=("$root")
+}
+
+# Locate the nearest .git marker without executing Git or anything from the
+# candidate repository. These paths are exclusions only; they do not grant
+# sandbox access until a trusted host Git validates them below.
+discover_bootstrap_exclusions() {
+    local cursor="$LAUNCH_DIR"
+    local dot_git metadata_hint metadata_dir common_hint common_dir
+
+    while :; do
+        dot_git="$cursor/.git"
+        if [[ -e "$dot_git" || -L "$dot_git" ]]; then
+            CANDIDATE_WORKTREE_ROOT="$cursor"
+            add_bootstrap_exclusion "$cursor"
+
+            if [[ -d "$dot_git" ]]; then
+                metadata_dir="$(canonical_directory "$dot_git")" || return 0
+            elif [[ -f "$dot_git" ]]; then
+                IFS= read -r metadata_hint <"$dot_git" || return 0
+                [[ "$metadata_hint" == "gitdir: "* ]] || return 0
+                metadata_hint="${metadata_hint#gitdir: }"
+                [[ -n "$metadata_hint" ]] || return 0
+                if [[ "$metadata_hint" != /* ]]; then
+                    metadata_hint="$cursor/$metadata_hint"
+                fi
+                metadata_dir="$(canonical_directory "$metadata_hint")" || return 0
+            else
+                return 0
+            fi
+            add_bootstrap_exclusion "$metadata_dir"
+
+            if [[ -f "$metadata_dir/commondir" ]]; then
+                IFS= read -r common_hint <"$metadata_dir/commondir" || return 0
+                [[ -n "$common_hint" ]] || return 0
+                if [[ "$common_hint" != /* ]]; then
+                    common_hint="$metadata_dir/$common_hint"
+                fi
+                common_dir="$(canonical_directory "$common_hint")" || return 0
+                add_bootstrap_exclusion "$common_dir"
+            fi
+            return 0
+        fi
+        [[ "$cursor" == "/" ]] && return 0
+        cursor="${cursor%/*}"
+        [[ -n "$cursor" ]] || cursor="/"
+    done
+}
+
+discover_bootstrap_exclusions
+
+bootstrap_path_is_allowed() {
+    local candidate="$1"
+    local excluded
+
+    for excluded in "${BOOTSTRAP_EXCLUDED_ROOTS[@]}"; do
+        path_is_within "$candidate" "$excluded" && return 1
+    done
+    return 0
+}
+
+canonical_executable() {
+    local candidate="$1"
+
+    if [[ -x /usr/bin/realpath ]]; then
+        /usr/bin/realpath "$candidate" 2>/dev/null
+    elif [[ -x /bin/realpath ]]; then
+        /bin/realpath "$candidate" 2>/dev/null
+    elif [[ ! -L "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+    else
+        return 1
+    fi
+}
+
+# Resolve bootstrap tools only from absolute PATH directories outside every
+# untrusted repository candidate. SRT has not applied the OS sandbox yet, so
+# executing a repository-local shim here would bypass the boundary.
 safe_path_entries() {
     local entry resolved_dir
     local entries=()
@@ -39,27 +157,23 @@ safe_path_entries() {
     IFS=: read -r -a entries <<<"${PATH-}"
     for entry in "${entries[@]}"; do
         [[ "$entry" == /* ]] || continue
-        resolved_dir="$(
-            if ! builtin cd -- "$entry" 2>/dev/null; then
-                exit 1
-            fi
-            builtin pwd -P
-        )" || continue
-        case "$resolved_dir" in
-            "$WORKSPACE_ROOT"|"$WORKSPACE_ROOT"/*) continue ;;
-        esac
+        resolved_dir="$(canonical_directory "$entry")" || continue
+        bootstrap_path_is_allowed "$resolved_dir" || continue
         printf '%s\n' "$resolved_dir"
     done
 }
 
 find_host_executable() {
     local name="$1"
-    local entry candidate
+    local entry candidate resolved_candidate
 
     while IFS= read -r entry; do
         candidate="$entry/$name"
         [[ -x "$candidate" && ! -d "$candidate" ]] || continue
-        printf '%s\n' "$candidate"
+        resolved_candidate="$(canonical_executable "$candidate")" || continue
+        [[ -x "$resolved_candidate" && ! -d "$resolved_candidate" ]] || continue
+        bootstrap_path_is_allowed "$resolved_candidate" || continue
+        printf '%s\n' "$resolved_candidate"
         return 0
     done < <(safe_path_entries)
 
@@ -67,17 +181,81 @@ find_host_executable() {
 }
 
 find_real_pi() {
-    local candidate entry
+    local candidate entry resolved_candidate
 
     while IFS= read -r entry; do
         candidate="$entry/pi"
         [[ -x "$candidate" ]] || continue
-        [[ "$candidate" -ef "${BASH_SOURCE[0]}" ]] && continue
-        printf '%s\n' "$candidate"
+        resolved_candidate="$(canonical_executable "$candidate")" || continue
+        bootstrap_path_is_allowed "$resolved_candidate" || continue
+        [[ "$resolved_candidate" -ef "${BASH_SOURCE[0]}" ]] && continue
+        printf '%s\n' "$resolved_candidate"
         return 0
     done < <(safe_path_entries)
 
     return 1
+}
+
+trusted_git() {
+    /usr/bin/env -i \
+        HOME=/ \
+        XDG_CONFIG_HOME=/nonexistent \
+        PATH="${HOST_GIT%/*}:/usr/bin:/bin" \
+        LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_SYSTEM=/dev/null \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_OPTIONAL_LOCKS=0 \
+        GIT_TERMINAL_PROMPT=0 \
+        "$HOST_GIT" "$@"
+}
+
+git_scalar() {
+    local value
+
+    value="$(trusted_git "$@" 2>/dev/null)" || return 1
+    [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+    printf '%s\n' "$value"
+}
+
+discover_repository_scopes() {
+    local inside top_level_raw top_level
+    local git_dir_raw git_dir common_raw common_dir common_is_bare
+
+    [[ -n "$CANDIDATE_WORKTREE_ROOT" ]] || return 0
+    HOST_GIT="$(find_host_executable git)" || return 0
+    readonly HOST_GIT
+
+    inside="$(git_scalar -C "$LAUNCH_DIR" rev-parse --is-inside-work-tree)" || return 0
+    [[ "$inside" == "true" ]] || return 0
+
+    top_level_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --show-toplevel)" || return 0
+    top_level="$(canonical_directory "$top_level_raw")" || return 0
+    [[ "$top_level" == "$CANDIDATE_WORKTREE_ROOT" ]] || return 0
+    path_is_within "$LAUNCH_DIR" "$top_level" || return 0
+    sandbox_path_is_literal "$top_level" || return 0
+
+    git_dir_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --absolute-git-dir)" || return 0
+    git_dir="$(canonical_directory "$git_dir_raw")" || return 0
+    common_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --path-format=absolute --git-common-dir)" || return 0
+    common_dir="$(canonical_directory "$common_raw")" || return 0
+
+    WORKTREE_ROOT="$top_level"
+    add_bootstrap_exclusion "$top_level"
+    add_bootstrap_exclusion "$git_dir"
+
+    # A linked worktree receives its external common directory only when Git
+    # identifies that repository as bare. Non-bare common metadata stays out.
+    if ! path_is_within "$common_dir" "$top_level"; then
+        common_is_bare="$(git_scalar --git-dir="$common_dir" rev-parse --is-bare-repository)" || return 0
+        if [[ "$common_is_bare" == "true" ]] &&
+            path_is_within "$git_dir" "$common_dir/worktrees" &&
+            sandbox_path_is_literal "$common_dir"
+        then
+            BARE_COMMON_DIR="$common_dir"
+            add_bootstrap_exclusion "$common_dir"
+        fi
+    fi
 }
 
 yolo=false
@@ -95,6 +273,8 @@ if [[ "$yolo" == true ]]; then
     echo "pi: warning: sandbox disabled by --yolo" >&2
     exec "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
 fi
+
+discover_repository_scopes
 
 case "$OSTYPE" in
     darwin*)
@@ -115,16 +295,107 @@ esac
 
 host_node="$(find_host_executable node)" || die "Node.js is required"
 readonly HOST_NODE="$host_node"
-"$HOST_NODE" -e '
+trusted_node() {
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        PATH="${HOST_NODE%/*}:/usr/bin:/bin" \
+        LC_ALL=C \
+        "$HOST_NODE" "$@"
+}
+trusted_node -e '
     const [major, minor] = process.versions.node.split(".").map(Number);
     process.exit(major > 20 || (major === 20 && minor >= 11) ? 0 : 1);
 ' || die "Node.js 20.11 or newer is required"
+
 host_rg="$(find_host_executable rg)" || die "ripgrep (rg) is required"
 readonly HOST_RG="$host_rg"
 host_mktemp="$(find_host_executable mktemp)" || die "mktemp is required"
 readonly HOST_MKTEMP="$host_mktemp"
+trusted_mktemp() {
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        PATH="${HOST_MKTEMP%/*}:/usr/bin:/bin" \
+        LC_ALL=C \
+        "$HOST_MKTEMP" "$@"
+}
 [[ -x "$SRT_BIN" ]] || die "sandbox runtime is not installed; run ./install.sh config"
 [[ -r "$SRT_SETTINGS" ]] || die "sandbox policy is missing or unreadable: $SRT_SETTINGS"
+[[ -r "$SRT_UNRESTRICTED_NETWORK" ]] ||
+    die "unrestricted-network sandbox launcher is missing or unreadable: $SRT_UNRESTRICTED_NETWORK"
+
+compose_effective_policy() {
+    local output="$1"
+
+    trusted_node -e '
+        const fs = require("node:fs");
+        const path = require("node:path");
+
+        const [basePath, outputPath, launchDir, worktreeRoot, bareCommonDir] = process.argv.slice(1);
+        const base = JSON.parse(fs.readFileSync(basePath, "utf8"));
+        if (!base || typeof base !== "object" || !base.filesystem) {
+            throw new Error("sandbox policy has no filesystem section");
+        }
+        for (const key of ["allowRead", "allowWrite", "denyWrite"]) {
+            if (!Array.isArray(base.filesystem[key])) {
+                throw new Error(`sandbox policy filesystem.${key} is not an array`);
+            }
+        }
+
+        const effective = structuredClone(base);
+        const appendExact = (items, value) => {
+            if (value && !items.includes(value)) items.push(value);
+        };
+        const contains = (parent, child) => {
+            const relative = path.relative(parent, child);
+            return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+        };
+
+        const scopes = [worktreeRoot, bareCommonDir]
+            .filter(Boolean)
+            .sort((a, b) => a.length - b.length)
+            .filter((scope, index, all) => !all.slice(0, index).some(parent => contains(parent, scope)));
+        for (const scope of scopes) {
+            if (scope !== launchDir || !effective.filesystem.allowRead.includes(".")) {
+                appendExact(effective.filesystem.allowRead, scope);
+            }
+            if (scope !== launchDir || !effective.filesystem.allowWrite.includes(".")) {
+                appendExact(effective.filesystem.allowWrite, scope);
+            }
+        }
+
+        // Mirror the runtime mandatory write carve-outs at the validated root.
+        // Initializing SRT from this root also retains its bounded subtree scan.
+        if (worktreeRoot) {
+            for (const relative of [
+                ".gitconfig", ".gitmodules", ".bashrc", ".bash_profile",
+                ".zshrc", ".zprofile", ".profile", ".ripgreprc", ".mcp.json",
+                ".vscode", ".idea", ".claude/commands", ".claude/agents",
+                ".git/hooks", ".git/config",
+            ]) {
+                appendExact(effective.filesystem.denyWrite, path.join(worktreeRoot, relative));
+            }
+        }
+        if (bareCommonDir) {
+            appendExact(effective.filesystem.denyWrite, path.join(bareCommonDir, "hooks"));
+            appendExact(effective.filesystem.denyWrite, path.join(bareCommonDir, "config"));
+        }
+        appendExact(effective.filesystem.denyWrite, outputPath);
+
+        const fd = fs.openSync(outputPath, "wx", 0o600);
+        try {
+            fs.writeFileSync(fd, `${JSON.stringify(effective, null, 2)}\n`);
+        } finally {
+            fs.closeSync(fd);
+        }
+    ' "$SRT_SETTINGS" "$output" "$LAUNCH_DIR" "$WORKTREE_ROOT" "$BARE_COMMON_DIR"
+}
+
+umask 077
+EFFECTIVE_POLICY_DIR="$(trusted_mktemp -d /tmp/pi-sandbox-policy.XXXXXX)" ||
+    die "cannot create the effective sandbox policy directory"
+readonly EFFECTIVE_POLICY="$EFFECTIVE_POLICY_DIR/settings.json"
+trap cleanup_launcher EXIT
+compose_effective_policy "$EFFECTIVE_POLICY" || die "cannot compose the effective sandbox policy"
 
 real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
 readonly REAL_PI="$real_pi"
@@ -171,7 +442,7 @@ start_herdr_broker() {
     [[ -r "$HERDR_STATUS_BROKER" ]] || die "Herdr status broker is missing: $HERDR_STATUS_BROKER"
     [[ -d "$HOME/.pi/agent/sessions" ]] || die "Pi session directory is missing"
 
-    HERDR_BROKER_DIR="$($HOST_MKTEMP -d "${TMPDIR:-/tmp}/pi-herdr-status.XXXXXX")" ||
+    HERDR_BROKER_DIR="$(trusted_mktemp -d /tmp/pi-herdr-status.XXXXXX)" ||
         die "cannot create the Herdr status broker directory"
     local ready_file="$HERDR_BROKER_DIR/ready"
     local error_file="$HERDR_BROKER_DIR/error.log"
@@ -185,7 +456,6 @@ start_herdr_broker() {
         HERDR_PANE_ID="$HERDR_PANE_ID" \
         "$HOST_NODE" "$HERDR_STATUS_BROKER" </dev/null > /dev/null 2>"$error_file" &
     HERDR_BROKER_PID=$!
-    trap cleanup_herdr_broker EXIT
 
     for _ in {1..200}; do
         [[ -s "$ready_file" ]] && break
@@ -204,8 +474,8 @@ start_herdr_broker() {
         die "Herdr status broker returned an invalid token"
 
     # Pi receives only the narrow broker capability. The real Herdr socket path
-    # remains outside the sandbox and the broker ignores caller-supplied pane,
-    # source, agent, and sequence values.
+    # is not passed into Pi, and the broker ignores caller-supplied pane, source,
+    # agent, and sequence values.
     safe_env+=(
         "HERDR_ENV=1"
         "HERDR_PANE_ID=$HERDR_PANE_ID"
@@ -216,5 +486,18 @@ start_herdr_broker() {
 
 start_herdr_broker
 
-exec /usr/bin/env -i "${safe_env[@]}" \
-    "$SRT_BIN" --settings "$SRT_SETTINGS" -- "$REAL_PI" "$@"
+# SRT resolves relative policy paths and mandatory project protections from its
+# own cwd. Initialize it at the validated worktree root, then restore Pi's
+# physical launch directory inside the already-active sandbox.
+readonly SANDBOX_POLICY_ROOT="${WORKTREE_ROOT:-$LAUNCH_DIR}"
+set +e
+(
+    builtin cd -- "$SANDBOX_POLICY_ROOT" || exit 1
+    /usr/bin/env -i "${safe_env[@]}" \
+        "$HOST_NODE" "$SRT_UNRESTRICTED_NETWORK" --settings "$EFFECTIVE_POLICY" -- \
+        /bin/bash -c 'builtin cd -- "$1" || exit 1; shift; exec "$@"' \
+        pi-sandbox-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"}
+)
+status=$?
+set -e
+exit "$status"

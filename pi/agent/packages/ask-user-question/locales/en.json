@@ -1,0 +1,49 @@
+{
+  "sentinel.discuss": "Discuss this",
+  "sentinel.other": "Type something.",
+  "sentinel.next": "Next",
+
+  "discussion.heading": "Discuss this question",
+  "discussion.empty": "No discussion yet.",
+  "discussion.you": "You",
+  "discussion.agent": "Discussion agent",
+  "discussion.running_cancel": "Esc cancels this turn",
+  "discussion.error": "Error",
+  "discussion.cancelled": "Turn cancelled",
+  "discussion.input_label": "Your clarification:",
+  "discussion.send": "Send",
+  "discussion.ask": "Ask a clarification",
+  "discussion.back": "Back to question",
+  "discussion.continue": "Continue in chat",
+  "discussion.unavailable": "unavailable",
+  "discussion.input": "What would you like clarified?",
+  "discussion.hint": "Enter send/select · Shift+Enter newline · Tab actions · Ctrl+G editor · Esc back/cancel",
+
+  "submit.label": "Submit answers",
+  "submit.cancel": "Cancel",
+
+  "hint.enter": "Enter to select",
+  "hint.navigate": "↑/↓ to navigate",
+  "hint.newline": "Shift+Enter for newline",
+  "hint.clear": "Ctrl+U to clear",
+  "hint.toggle": "Space to toggle",
+  "hint.notes": "n to add notes",
+  "hint.tab": "Tab to switch questions",
+  "hint.collapse": "Ctrl+] to collapse",
+  "hint.expand_line": "Ctrl+] to expand · Esc to cancel",
+  "hint.cancel": "Esc to cancel",
+
+  "review.heading": "Review your answers",
+  "review.ready": "Ready to submit your answers?",
+  "review.incomplete": "⚠ Answer remaining questions before submitting:",
+
+  "preview.no_preview": "No preview available",
+  "preview.notes_affordance": "Notes: press n to add notes",
+  "notes.header": "Notes:",
+
+  "editor.failed": "External editor failed",
+
+  "rpc.multi_choose": "Select multiple…",
+  "rpc.multi_instructions": "Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.",
+  "rpc.custom_answer_title": "Type your answer:"
+}

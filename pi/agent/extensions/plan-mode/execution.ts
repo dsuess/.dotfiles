@@ -8,13 +8,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	EXECUTION_BOUNDARY_MESSAGE,
 	EXECUTION_ENTRY,
+	buildExecutionBoundaryMessage,
 	buildExecutionKickoff,
 	buildStageInstruction,
 	getExecutionToolNames,
+	hashExecutionBoundary,
+	isolateExecutionMessages,
 	restoreExecutionContract,
 } from "./execution-helpers.js";
-import { updateLedgerMarkdown } from "./ledger.js";
+import { synchronizeLedgerMarkdown } from "./ledger.js";
 import { atomicReplaceFile } from "./plan-store.js";
 import {
 	completeWorkflow,
@@ -23,9 +27,19 @@ import {
 } from "./state.js";
 import type { PlanModeState, TransitionResult } from "./state.ts";
 
-export { EXECUTION_ENTRY, buildExecutionKickoff, buildStageInstruction, getExecutionToolNames, restoreExecutionContract };
+export {
+	EXECUTION_BOUNDARY_MESSAGE,
+	EXECUTION_ENTRY,
+	buildExecutionBoundaryMessage,
+	buildExecutionKickoff,
+	buildStageInstruction,
+	getExecutionToolNames,
+	hashExecutionBoundary,
+	isolateExecutionMessages,
+	restoreExecutionContract,
+};
 
-export interface ExecutionContract {
+export interface LegacyExecutionContract {
 	version: 1;
 	approvedMarkdown: string;
 	planPath: string;
@@ -34,6 +48,21 @@ export interface ExecutionContract {
 	originalActiveTools: string[];
 	parentSessionPath: string | null;
 }
+
+export interface InPlaceExecutionContract {
+	version: 2;
+	handoff: "in_place";
+	runId: string;
+	approvedMarkdown: string;
+	planPath: string;
+	planHash: string;
+	executionMode: "all" | "staged";
+	originalActiveTools: string[];
+	sessionPath: string | null;
+	boundaryHash: string;
+}
+
+export type ExecutionContract = LegacyExecutionContract | InPlaceExecutionContract;
 
 interface ExecutionRuntime {
 	getState(): PlanModeState;
@@ -62,8 +91,14 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 			return withFileMutationQueue(contract.planPath, async () => {
 				const transition = recordTaskProgress(runtime.getState(), params) as TransitionResult;
 				if (!transition.ok) throw new Error(transition.error.message);
-				const current = await readFile(contract.planPath, "utf8");
-				const next = updateLedgerMarkdown(current, contract.approvedMarkdown, params.taskId, transition.state.ledger[params.taskId]);
+				let current: string;
+				try {
+					current = await readFile(contract.planPath, "utf8");
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+					current = contract.approvedMarkdown;
+				}
+				const next = synchronizeLedgerMarkdown(current, contract.approvedMarkdown, transition.state.ledger);
 				await atomicReplaceFile(contract.planPath, next);
 				const accepted = structuredClone(transition.state);
 				accepted.counters.recoveryAttempts = 0;
@@ -108,7 +143,7 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 	pi.registerTool({
 		name: "complete_stage",
 		label: "Complete Stage",
-		description: "Validate the current staged-execution boundary, persist its summary, and queue the mandatory user checkpoint.",
+		description: "Validate the current staged-execution boundary, persist its summary, and open the mandatory user checkpoint after the agent settles.",
 		parameters: Type.Object({
 			stageId: Type.String(),
 			summary: Type.String({ minLength: 1 }),
@@ -129,9 +164,8 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 			if (!result.ok) throw new Error(result.error.message);
 			runtime.commit(result);
 			runtime.refreshUI(ctx);
-			pi.sendUserMessage(`/plan-stage-actions ${nonce}`, { deliverAs: "followUp" });
 			return {
-				content: [{ type: "text", text: `Stage ${params.stageId} complete. Mandatory checkpoint queued.` }],
+				content: [{ type: "text", text: `Stage ${params.stageId} complete. Mandatory checkpoint will open when the agent settles.` }],
 				details: { stageId: params.stageId, nonce, summary: params.summary },
 				terminate: true,
 			};

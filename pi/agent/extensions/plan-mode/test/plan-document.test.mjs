@@ -5,6 +5,8 @@ import {
 	MAX_PLAN_BYTES,
 	parsePlanDocument,
 	renderPlanDocument,
+	replaceManagedProgressReport,
+	splitManagedProgressReport,
 	validatePlanDocument,
 } from "../plan-document.js";
 import { LEGACY_PLAN, SMALL_PLAN, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
@@ -58,6 +60,45 @@ test("parse/render round-trip preserves the execution contract", () => {
 		assert.equal(second.ok, true, JSON.stringify(second.errors));
 		assert.deepEqual(second.document, first.document);
 	}
+});
+
+test("recognizes and canonically renders one trailing managed Step report", () => {
+	const parsed = parsePlanDocument(VALID_PLAN);
+	assert.equal(parsed.ok, true);
+	const managed = replaceManagedProgressReport(VALID_PLAN, [
+		"☐ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
+	const withReport = parsePlanDocument(managed);
+	assert.equal(withReport.ok, true, JSON.stringify(withReport.errors));
+	assert.equal(withReport.document.managedProgressReport, true);
+	assert.deepEqual(splitManagedProgressReport(managed).report.rows, [
+		"☐ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
+	assert.equal(renderPlanDocument(withReport.document), managed);
+});
+
+test("rendering regenerates stale well-formed report rows without duplication", () => {
+	const managed = replaceManagedProgressReport(VALID_PLAN, ["☑ Stale row"]);
+	const parsed = parsePlanDocument(managed);
+	assert.equal(parsed.ok, true);
+	const rendered = renderPlanDocument(parsed.document);
+	assert.deepEqual(splitManagedProgressReport(rendered).report.rows, [
+		"☐ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
+	assert.equal((rendered.match(/pi-plan-mode:progress:start/g) ?? []).length, 1);
+});
+
+test("rejects malformed, ambiguous, or non-trailing managed report regions", () => {
+	const managed = replaceManagedProgressReport(VALID_PLAN, ["☐ Define the cache behavior"]);
+	assert.deepEqual(errorCodes(managed.replace("## Step Progress", "## Progress")), ["malformed_progress_report"]);
+	assert.deepEqual(errorCodes(`${managed}\nnot managed`), ["malformed_progress_report"]);
+	assert.deepEqual(errorCodes(`${managed}\n${managed.slice(managed.indexOf("<!-- pi-plan-mode:progress:start -->"))}`), ["ambiguous_progress_report"]);
 });
 
 test("accepts version 2 and legacy plans for active-session compatibility", () => {

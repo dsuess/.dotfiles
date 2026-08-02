@@ -1,0 +1,49 @@
+{
+  "_meta.notes": "Auto-translated draft. Native-speaker review welcome via PR. TUI symbols (↑/↓, ⚠) and key names (Enter, Esc, Tab, Space, n, Ctrl+G, Ctrl+U) are universal CLI conventions and stay untranslated.",
+
+  "sentinel.discuss": "Discuter de ceci",
+  "sentinel.other": "Écrivez quelque chose.",
+  "sentinel.next": "Suivant",
+
+  "discussion.heading": "Discuter de cette question",
+  "discussion.empty": "Aucune discussion pour l’instant.",
+  "discussion.you": "Vous",
+  "discussion.agent": "Agent de discussion",
+  "discussion.running_cancel": "Échap annule ce tour",
+  "discussion.error": "Erreur",
+  "discussion.cancelled": "Tour annulé",
+  "discussion.input_label": "Votre demande de clarification :",
+  "discussion.send": "Envoyer",
+  "discussion.ask": "Demander une clarification",
+  "discussion.back": "Retour à la question",
+  "discussion.continue": "Continuer dans le chat",
+  "discussion.unavailable": "indisponible",
+  "discussion.input": "Que souhaitez-vous clarifier ?",
+  "discussion.hint": "Entrée envoyer/sélectionner · Maj+Entrée nouvelle ligne · Tab actions · Ctrl+G éditeur · Échap retour/annuler",
+
+  "submit.label": "Envoyer les réponses",
+  "submit.cancel": "Annuler",
+
+  "hint.enter": "Entrée pour sélectionner",
+  "hint.navigate": "↑/↓ pour naviguer",
+  "hint.newline": "Maj+Entrée pour une nouvelle ligne",
+  "hint.clear": "Ctrl+U pour effacer",
+  "hint.toggle": "Espace pour basculer",
+  "hint.notes": "n pour ajouter des notes",
+  "hint.tab": "Tab pour changer de question",
+  "hint.cancel": "Échap pour annuler",
+
+  "review.heading": "Vérifiez vos réponses",
+  "review.ready": "Prêt à envoyer vos réponses ?",
+  "review.incomplete": "⚠ Répondez aux questions restantes avant d'envoyer :",
+
+  "preview.no_preview": "Aucun aperçu disponible",
+  "preview.notes_affordance": "Notes : appuyez sur n pour ajouter des notes",
+  "notes.header": "Notes :",
+
+  "editor.failed": "Échec de l’éditeur externe",
+
+  "rpc.multi_choose": "Sélectionner plusieurs…",
+  "rpc.multi_instructions": "Saisissez les numéros de toutes les options applicables, séparés par des virgules (p. ex. « 1,3 »), ou tapez une réponse libre en texte.",
+  "rpc.custom_answer_title": "Tapez votre réponse :"
+}

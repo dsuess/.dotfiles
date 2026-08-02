@@ -28,14 +28,73 @@ concepts do not exist.
 - If evidence contradicts the plan, stop implementation briefly, revise the
   plan, and continue from the updated understanding.
 
-### 2. Parallel Investigation and Subagents
+### 2. Context-First Delegation and Subagents
 
 - Use parallel tool calls for independent reads, searches, and inspections to
-  keep context efficient.
-- Use subagents liberally for isolated research, exploration, parallel analysis,
-  or alternative approaches that keep the main context focused.
-- Give each subagent one focused task. For complex problems, use several when
-  the workstreams are independent.
+  keep context efficient. Keep trivial lookups and one-tool operations in the
+  parent; delegation has startup and coordination costs.
+- Treat the parent as the coordinator. It retains the user's intent, accepted
+  decisions, synthesis, integration, user communication, and ownership of any
+  plan or workflow ledger.
+- Delegate when the parent needs the conclusion but not the verbose process,
+  when a bounded task can run from a self-contained briefing, or when genuinely
+  independent branches benefit from parallel exploration. Context protection is
+  the primary goal; cost and latency savings are secondary.
+- Use scouts for broad codebase discovery, web or documentation research, large
+  log or test-output inspection, inventories, and alternative analysis. Use
+  workers for bounded implementation or verification with clear ownership and
+  acceptance criteria.
+- Do not delegate work that depends heavily on implicit conversation history,
+  requires rapid user back-and-forth, shares mutable state with another worker,
+  or is tightly coupled to adjacent edits. Keep such work with the coordinator
+  rather than forcing a lossy handoff.
+- Parallelize only independent workstreams. Give implementation workers disjoint
+  ownership so siblings cannot overwrite or contradict one another.
+- Give each child one complete, self-contained prompt containing the objective,
+  only the relevant context and accepted decisions, explicit scope and
+  exclusions, the expected evidence or output shape, and a clear completion
+  condition. A child receives this prompt as its sole user message; it does not
+  receive the parent conversation.
+- Ask children to return compact conclusions, relevant file locations or source
+  citations, risks, and unresolved questions rather than raw intermediate
+  output. Children inherit the parent's restrictions and available tools, cannot
+  delegate further, and cannot own or update parent workflow state.
+- The coordinator must reconcile child reports, verify consequential findings,
+  integrate changes, and validate the resulting behavior.
+
+#### Semantic Model Routing
+
+- Treat the roles below as authoritative and the named models as replaceable
+  current mappings. When model catalogs change, choose the current model that
+  occupies the same semantic tier rather than preserving a stale version lock.
+- **Strong planner/coordinator:** Owns planning, architecture, ambiguity
+  resolution, cross-cutting synthesis, and high-risk decisions. During planning,
+  use exactly the model and thinking effort already selected for the active
+  session; never change or reinterpret either setting. The intended top-tier
+  families are currently GPT-5.6 Sol for OpenAI Codex and the latest Opus for
+  Anthropic.
+- **Balanced worker:** Handles selectively delegated implementation, tests,
+  focused fixes, and routine code review. Use high reasoning effort. Current
+  mappings are `openai-codex/gpt-5.6-terra` and Anthropic's latest Sonnet.
+- **Fast scout:** Handles read-oriented research, codebase exploration, source
+  gathering, and other high-volume context compression. Use high reasoning
+  effort even though this tier is optimized for cost and speed. Current mappings
+  are `openai-codex/gpt-5.6-luna` and Anthropic's latest Haiku.
+- For every worker or scout child, explicitly pass both `model` as a concrete
+  provider-qualified `provider/model` identifier and `thinkingLevel: "high"`;
+  do not let it accidentally inherit the planning model. Resolve "latest"
+  family names to a concrete ID from the active catalog at invocation time.
+- Prefer the matching route for the active provider. If it is unavailable, use
+  an available same-provider equivalent in the same semantic tier and disclose
+  a material fallback. Escalate capability only when task evidence justifies it:
+  first narrow an unreliable lower-tier prompt, then move up one tier instead of
+  spawning redundant agents or defaulting immediately to the strongest model.
+- Planning-phase codebase or web research still uses fast scouts; the active
+  strong planner interprets their evidence and owns the final plan. A planning
+  child used for an isolated alternative design instead inherits the active
+  planning session's model and thinking setting.
+- During execution, use balanced workers only for bounded, independent work with
+  disjoint ownership. Keep tightly coupled implementation with the coordinator.
 - If subagents are unavailable, simulate the same discipline by separating
   investigations clearly and keeping each line of inquiry narrow.
 
@@ -116,9 +175,3 @@ concepts do not exist.
   exhausted; never issue questionnaires back-to-back.
 - Override this collect-then-batch cadence only when the user explicitly
   requests a one-question-at-a-time interview.
-
-## Repository Constraint
-
-- **Stow Discipline**: This repository is managed by GNU Stow. Never manually
-  create symlinks or copy files into target directories. Add files to the right
-  package and deploy with `./install.sh config`.

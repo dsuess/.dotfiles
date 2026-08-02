@@ -3,3 +3,7 @@ old
 *.bak
 
 .claude
+pi/agent/packages/ask-user-question/node_modules/
+pi/agent/packages/ask-user-question/coverage/
+pi/agent/packages/ask-user-question/.test-tmp/
+.pi-ask-user-question-*/

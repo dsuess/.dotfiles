@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { MAX_PLAN_BYTES } from "../plan-document.js";
+import { MAX_PLAN_BYTES, splitManagedProgressReport } from "../plan-document.js";
 import {
 	MAX_SLUG_LENGTH,
 	PlanStoreError,
@@ -43,7 +43,8 @@ test("persists validated plans atomically and allocates collision suffixes", asy
 		const second = await persistPlan({ cwd: project, ...baseOptions });
 		assert.equal(first.slug, "add-reliable-cache-invalidation");
 		assert.equal(second.slug, "add-reliable-cache-invalidation-2");
-		assert.equal(await readFile(first.path, "utf8"), VALID_PLAN);
+		assert.equal(await readFile(first.path, "utf8"), first.markdown);
+		assert.match(first.markdown, /<!-- pi-plan-mode:progress:start -->[\s\S]*- ☐ Define the cache behavior[\s\S]*- ▶ Add reliable invalidation[\s\S]*- ⛔ Cover boundary conditions[\s\S]*<!-- pi-plan-mode:progress:end -->\n$/);
 		assert.match(first.hash, /^[a-f0-9]{64}$/);
 		assert.deepEqual(first.document.stages.map((stage) => stage.id), ["1", "2"]);
 
@@ -75,7 +76,7 @@ test("replaces only the validated active revision and preserves it on I/O failur
 			}),
 			/simulated rename failure/,
 		);
-		assert.equal(await readFile(first.path, "utf8"), VALID_PLAN);
+		assert.equal(await readFile(first.path, "utf8"), first.markdown);
 
 		const revised = await persistPlan({
 			cwd: project,
@@ -95,17 +96,17 @@ test("restores a missing validated plan from its durable transcript copy", async
 		const restored = await restorePlanFile({
 			cwd: project,
 			path: first.path,
-			markdown: VALID_PLAN,
+			markdown: first.markdown,
 			expectedHash: first.hash,
 			title: baseOptions.title,
 		});
 		assert.equal(restored.restored, true);
-		assert.equal(await readFile(first.path, "utf8"), VALID_PLAN);
+		assert.equal(await readFile(first.path, "utf8"), first.markdown);
 
 		const existing = await restorePlanFile({
 			cwd: project,
 			path: first.path,
-			markdown: VALID_PLAN,
+			markdown: first.markdown,
 			expectedHash: first.hash,
 			title: baseOptions.title,
 		});
@@ -136,6 +137,63 @@ test("rejects drift, arbitrary revision paths, and symlink escapes", async () =>
 			(error) => error instanceof PlanStoreError && error.code === "symlink_escape",
 		);
 		await assert.rejects(readFile(path.join(outside, "plans", "add-reliable-cache-invalidation.md"), "utf8"));
+	});
+});
+
+test("regenerates one managed report during revision without trusting stale rows", async () => {
+	await withProject(async (project) => {
+		const first = await persistPlan({ cwd: project, ...baseOptions });
+		const edited = first.markdown.replace(
+			"### Step 1 [pending] Define the cache behavior",
+			"### Step 1 [pending] Define cache ownership",
+		);
+		const revised = await persistPlan({
+			cwd: project,
+			...baseOptions,
+			markdown: edited,
+			existingPlan: { path: first.path, hash: first.hash },
+		});
+		const report = splitManagedProgressReport(revised.markdown).report;
+		assert.deepEqual(report.rows, [
+			"☐ Define cache ownership",
+			"▶ Add reliable invalidation",
+			"⛔ Cover boundary conditions",
+		]);
+		assert.equal((revised.markdown.match(/pi-plan-mode:progress:start/g) ?? []).length, 1);
+	});
+});
+
+test("rejects malformed or ambiguous managed report markers", async () => {
+	await withProject(async (project) => {
+		await assert.rejects(
+			persistPlan({ cwd: project, ...baseOptions, markdown: `${VALID_PLAN}\n<!-- pi-plan-mode:progress:start -->\n` }),
+			(error) => error instanceof PlanStoreError && error.code === "validation_failed" &&
+				error.details.some((item) => item.code === "ambiguous_progress_report"),
+		);
+		const first = await persistPlan({ cwd: project, ...baseOptions });
+		await assert.rejects(
+			persistPlan({
+				cwd: project,
+				...baseOptions,
+				markdown: `${first.markdown}\n${first.markdown.slice(first.markdown.indexOf("<!-- pi-plan-mode:progress:start -->"))}`,
+				existingPlan: { path: first.path, hash: first.hash },
+			}),
+			(error) => error instanceof PlanStoreError && error.code === "validation_failed" &&
+				error.details.some((item) => item.code === "ambiguous_progress_report"),
+		);
+	});
+});
+
+test("rejects plans whose generated report would exceed the size limit", async () => {
+	await withProject(async (project) => {
+		const padding = "x".repeat(MAX_PLAN_BYTES - Buffer.byteLength(VALID_PLAN, "utf8") - 32);
+		const nearLimit = `${VALID_PLAN}${padding}`;
+		assert.ok(Buffer.byteLength(nearLimit, "utf8") < MAX_PLAN_BYTES);
+		await assert.rejects(
+			persistPlan({ cwd: project, ...baseOptions, markdown: nearLimit }),
+			(error) => error instanceof PlanStoreError && error.code === "validation_failed" &&
+				error.details.some((item) => item.code === "plan_too_large"),
+		);
 	});
 });
 

@@ -222,7 +222,7 @@ test("reload resolves durable checkpoint entries rather than relying on in-memor
 	assert.equal(harness.restoreCalls[0].checkpoint.marker, "destination");
 });
 
-test("restore choice captures safety state, restores destination, and permits navigation", async () => {
+test("keep current code is the default; explicit restore captures safety state and permits navigation", async () => {
 	const harness = createHarness({ choices: ["Restore checkpointed code"] });
 	await start(harness);
 	const result = await harness.emit("session_before_tree", treeEvent());

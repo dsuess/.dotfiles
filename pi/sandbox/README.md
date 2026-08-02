@@ -2,11 +2,13 @@
 
 `~/bin/pi` wraps the installed Pi binary with
 [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime).
-The OS boundary applies to Pi itself and its entire process tree: built-in
-tools, `!` commands, extension tools, MCP processes, and `pi-subagents`.
+The OS boundary applies to Pi and its entire process tree: built-in tools, `!`
+commands, extension tools, MCP processes, `pi-subagents`, and native Ketch
+processes. It restricts filesystem access while deliberately leaving host
+network and Unix-socket access unrestricted.
 
-The wrapper is deliberately fail-closed. Missing dependencies, an invalid
-policy, or sandbox initialization failure stops Pi; there is no automatic
+The boundary is fail-closed. Missing dependencies, an invalid policy, or
+sandbox initialization failure stops the launch; there is no automatic
 unsandboxed fallback.
 
 ## Unsandboxed bypass
@@ -19,8 +21,9 @@ pi --yolo [args...]
 
 The wrapper consumes `--yolo` and launches the installed Pi binary directly,
 without sandbox prerequisite checks, policy enforcement, or environment
-filtering. It prints a warning because Pi and all model-invoked subprocesses
-then have the same host access and credentials as the calling shell.
+filtering. The wrapper prints a warning because Pi and all model-invoked
+subprocesses then have the same host filesystem access and credentials as the
+calling shell.
 
 ## Installation
 
@@ -34,33 +37,93 @@ This stows the wrapper to `~/bin/pi`, stows this directory to
 `~/.pi/sandbox`, and runs `npm ci` for the pinned runtime.
 
 Both platforms require Node.js 20.11 or newer and `rg`. macOS uses the system
-`sandbox-exec`; Linux additionally requires `bwrap` and `socat`. The wrapper
-names any missing prerequisite and exits.
+`sandbox-exec`; Linux additionally requires `bwrap` and `socat`. The installer
+also provisions a pinned Ketch binary on Linux when none is on `PATH`, but
+Ketch is not a launcher prerequisite. The wrapper names any missing sandbox
+prerequisite and exits. A trusted `git` outside the candidate repository is
+optional: when it is unavailable, repository scope discovery fails narrow to
+the physical launch directory.
 
 ## Policy
 
-`settings.json` is the trusted policy:
+`settings.json` is the trusted base policy. For each launch, the wrapper builds
+a private, ephemeral effective policy without changing the checked-in file:
 
-- The current working directory writes through to the host.
+- Outside a valid Git working tree, the physical launch directory reads and
+  writes through to the host, preserving the original boundary.
+- Inside a valid working tree, the nearest working-tree root is recursively
+  readable and writable even when Pi starts in a nested directory. Pi still
+  starts in the physical launch directory.
+- A linked worktree whose common repository is verified as bare also receives
+  recursive access to that bare common directory. This permits ordinary Git
+  updates to objects, refs, logs, lockfiles, and linked-worktree administration.
+- A linked worktree backed by a non-bare repository receives no external common
+  directory grant. Its working-tree root is still granted normally.
+- Malformed or stale metadata, failed Git verification, paths the policy cannot
+  represent literally, or an unavailable trusted host Git never broaden the
+  boundary; the wrapper falls back to the physical launch directory.
 - Other home-directory reads and writes are denied unless explicitly listed.
 - Pi's own `~/.pi/agent` state is available so auth refresh, sessions,
   packages, and trust decisions continue to work.
 - Ambient environment credentials and common credential files remain hidden.
-- Network access is restricted to the checked-in provider and development
-  hosts, plus localhost for vLLM-MLX.
+- Outbound network access is unrestricted. Pi and all descendants can reach
+  public, private, loopback, and metadata services using host networking.
 - macOS pseudo-terminal operations are allowed so Pi can put its interactive
   terminal into raw mode.
-- Apple Events and host Unix sockets remain blocked. The wrapper exposes only a
-  loopback Herdr status broker to the official Pi integration.
+- macOS trust-service access is enabled so Go HTTPS clients such as Ketch can
+  verify certificates.
+- Apple Events remain blocked. Host Unix sockets are allowed as part of the
+  unrestricted traffic policy; the Herdr status integration still uses its
+  authenticated loopback broker rather than exposing its socket path.
 
-Edit the checked-in policy outside sandboxed Pi to add another directory or
-domain. The wrapper, policy, and plan-mode gate are write-protected from
-inside Pi, including when this dotfiles repository is the workspace.
+## Unrestricted network
+
+SRT's settings schema requires `network.allowedDomains` and has no supported
+"disable network policy" setting. `unrestricted-network.mjs` therefore
+validates and initializes the checked-in policy, removes that field from the
+in-memory configuration, and only then asks SRT to wrap Pi. SRT consequently
+retains filesystem, credential, PTY, and Apple Event controls but does not emit
+its network boundary or proxy environment. `allowAllUnixSockets` is also set so
+local socket traffic is unrestricted on every supported platform.
+
+This is intentionally unrestricted host networking, not a broad HTTP
+allowlist. Pi and every descendant can use arbitrary outbound protocols and can
+reach public sites, localhost, private networks, cloud metadata services, and
+host Unix sockets.
+
+The upstream `pi-ketch` package launches Ketch directly without a shell; Ketch
+and any configured browser inherit the same filesystem sandbox and unrestricted
+network.
+
+`enableWeakerNetworkIsolation` remains enabled on macOS so Go HTTPS clients can
+use `com.apple.trustd.agent` for certificate verification. Credential filtering
+and the Apple Events deny remain unchanged.
+
+Filesystem grants remain subject to higher-priority write denies. At a
+working-tree root, Git hooks and configuration plus the runtime's protected
+shell, agent, and editor execution configuration remain non-writable. In a bare
+common directory, root-level `hooks/` and `config` remain non-writable while Git
+data and worktree administration stay writable.
+
+Repository discovery first excludes the untrusted candidate worktree and its
+candidate metadata from bootstrap executable lookup. It then uses a host Git
+outside those paths with ambient Git configuration and repository-selection
+environment variables removed. Only canonical, Git-verified paths are added to
+the effective policy. The temporary policy protects itself from writes and is
+removed when the wrapper exits.
+
+Edit the checked-in policy outside sandboxed Pi to add another filesystem path.
+The wrapper, policy, and plan-mode gate are write-protected from inside Pi,
+including when this dotfiles repository is the workspace.
 
 Run `npm run test:broker` for the Herdr broker API checks,
-`npm run test:wrapper` for launcher checks, and `npm run test:containment` from
-an unsandboxed terminal for native filesystem and network enforcement checks.
-A containment test cannot apply another native sandbox when invoked from an
+`npm run test:wrapper` for launcher compatibility,
+`npm run test:repository` for repository scope and policy composition, and
+`npm run test:ketch-config` for cross-platform deployment. Run
+`npm run test:containment` from an unsandboxed terminal for native filesystem,
+unrestricted-network, normal-repository, and bare-worktree enforcement.
+`npm run test:ketch-live` verifies direct Ketch access to an arbitrary host.
+Native sandbox tests cannot apply another boundary when invoked from an
 already-sandboxed agent session.
 
 ## Plan mode
@@ -89,7 +152,7 @@ of `HERDR_SOCKET_PATH`. The broker accepts only `pane.report_agent`,
 `pane.report_agent_session`, and `pane.release_agent`; it fixes the pane,
 source, agent, and sequence values before forwarding to Herdr. All other Herdr
 methods are rejected, agent-session paths are confined to Pi's session tree,
-and the native Herdr Unix socket remains blocked on both macOS and Linux.
+and the native Herdr Unix socket path is not passed into Pi's environment.
 
 The broker transport is a local adaptation in the generated
 `herdr-agent-state.ts`. Reinstalling Herdr's Pi integration may overwrite that
@@ -106,9 +169,12 @@ Herdr's normal direct integration.
 ## Accepted credential risk
 
 Pi's `auth.json` is intentionally available inside the sandbox. Model-invoked
-code can therefore read those credentials, and any allowed multi-tenant
-domain can be an exfiltration channel. Unrelated host credentials are not
-passed through. SRT 0.0.67 filters by hostname rather than port, so an allowed
-host is reachable on any port and enabling localhost also permits other local
-ports. On macOS, sandboxed child processes can also interact with
+code can therefore read those credentials, and unrestricted network access is
+an exfiltration channel to any reachable destination. Ketch runs in the same
+process-tree boundary and can read every filesystem path granted to Pi,
+including the workspace, Pi auth, and managed Ketch configuration and cache.
+Fetched text remains untrusted source material and must not be treated as agent
+instructions.
+
+On macOS, sandboxed child processes can also interact with
 permission-accessible pseudo-terminals; this is required by Pi's TUI.

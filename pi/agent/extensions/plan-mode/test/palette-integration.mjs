@@ -149,17 +149,13 @@ const openPalette = shortcuts.get("ctrl+p")?.handler;
 assert.ok(openPalette, "command palette shortcut is registered");
 assert.ok(shortcuts.get("shift+tab")?.handler, "planning toggle is registered on Shift+Tab");
 
-await shortcuts.get("ctrl+=")?.handler(ctx);
-assert.equal(thinkingLevel, "xhigh", "Ghostty's Ctrl+= form increases thinking one level");
-await shortcuts.get("ctrl+shift+=")?.handler(ctx);
-assert.equal(thinkingLevel, "max", "Ctrl++ increases thinking to the model maximum");
-await shortcuts.get("ctrl+shift+=")?.handler(ctx);
-assert.equal(thinkingLevel, "max", "thinking increase stops at the maximum");
-await shortcuts.get("ctrl+-")?.handler(ctx);
-assert.equal(thinkingLevel, "xhigh", "Ctrl+- decreases thinking one level");
+assert.equal(shortcuts.has("ctrl+="), false, "Ctrl+= thinking shortcut is not registered");
+assert.equal(shortcuts.has("ctrl+shift+="), false, "Ctrl++ thinking shortcut is not registered");
+assert.equal(shortcuts.has("ctrl+-"), false, "Ctrl+- thinking shortcut is not registered");
 const rendersBeforeThinkingChange = footerRenderRequests;
+thinkingLevel = "xhigh";
 for (const handler of lifecycleHandlers.get("thinking_level_select") ?? []) {
-	await handler({ level: thinkingLevel, previousLevel: "max" }, ctx);
+	await handler({ level: thinkingLevel, previousLevel: "high" }, ctx);
 }
 assert.ok(footerRenderRequests > rendersBeforeThinkingChange, "thinking changes request a footer render");
 assert.match(renderFooter(), /unknown.*\[xhigh\]/, "statusbar updates the thinking level after the model name");
@@ -196,7 +192,7 @@ const approvalState = stateModule.submitPlan(planningState, {
 	intent: "Test palette",
 	approvalNonce: "nonce",
 	stages: [{ id: "1", description: "Stage 1", taskIds: ["1"] }],
-	tasks: [{ id: "1", status: "pending" }],
+	tasks: [{ id: "1", title: "Palette task", status: "pending" }],
 }).state;
 appended.push({ type: "custom", customType: "plan-mode-state", data: approvalState });
 for (const handler of lifecycleHandlers.get("session_tree") ?? []) {

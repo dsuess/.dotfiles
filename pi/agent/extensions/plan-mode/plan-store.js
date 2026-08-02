@@ -10,7 +10,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { parsePlanDocument } from "./plan-document.js";
+import { parsePlanDocument, replaceManagedProgressReport } from "./plan-document.js";
+import { buildDocumentStepProgressRows } from "./progress-widget.js";
 
 export const MAX_INTENT_BYTES = 16 * 1024;
 export const MAX_SLUG_LENGTH = 64;
@@ -219,6 +220,20 @@ export async function persistPlan(options) {
 	if (parsed.document.title !== title.trim()) {
 		throw new PlanStoreError("title_mismatch", "The title parameter must exactly match the plan H1 title");
 	}
+	let persistedMarkdown;
+	try {
+		persistedMarkdown = replaceManagedProgressReport(markdown, buildDocumentStepProgressRows(parsed.document));
+	} catch (error) {
+		throw new PlanStoreError(
+			"validation_failed",
+			"Generated plan progress report is invalid",
+			[{ code: error.code ?? "malformed_progress_report", message: error.message }],
+		);
+	}
+	const persisted = parsePlanDocument(persistedMarkdown);
+	if (!persisted.ok) {
+		throw new PlanStoreError("validation_failed", "Persisted plan Markdown does not match the canonical schema", persisted.errors);
+	}
 
 	const baseSlug = sanitizeIntentSlug(intent);
 	const plansRoot = await ensureSafePlansRoot(cwd, configDirName);
@@ -232,13 +247,14 @@ export async function persistPlan(options) {
 		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, baseSlug, maxCollisionProbes));
 	}
 
-	const hash = hashContent(markdown);
-	await atomicWrite(target, markdown, { renameFile, targetReserved });
+	const hash = hashContent(persistedMarkdown);
+	await atomicWrite(target, persistedMarkdown, { renameFile, targetReserved });
 	await verifyWrittenPlan(target, hash);
 	return {
 		path: target,
 		slug,
 		hash,
-		document: parsed.document,
+		markdown: persistedMarkdown,
+		document: persisted.document,
 	};
 }

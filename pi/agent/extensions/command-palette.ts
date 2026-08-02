@@ -23,7 +23,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
 import {
-	getSupportedThinkingLevels,
 	type Api,
 	type Model,
 	type ModelThinkingLevel,
@@ -54,13 +53,6 @@ interface CommandEntry {
 // ── Constants ──────────────────────────────────────────────────────
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
-
-function adjustThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext, direction: -1 | 1): void {
-	const levels = ctx.model ? getSupportedThinkingLevels(ctx.model) : THINKING_LEVELS;
-	const currentIndex = levels.indexOf(pi.getThinkingLevel());
-	const nextIndex = Math.max(0, Math.min(levels.length - 1, currentIndex + direction));
-	pi.setThinkingLevel(levels[nextIndex]);
-}
 
 /** Built-in interactive commands (not returned by pi.getCommands()) */
 const BUILT_IN_COMMANDS: CommandEntry[] = [
@@ -928,20 +920,6 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 // ── Main extension ─────────────────────────────────────────────────
 
 export default function commandPaletteExtension(pi: ExtensionAPI) {
-	// Ghostty may report the physical Ctrl++ chord as Ctrl+=.
-	pi.registerShortcut("ctrl+=", {
-		description: "Increase thinking level",
-		handler: async (ctx) => adjustThinkingLevel(pi, ctx, 1),
-	});
-	pi.registerShortcut("ctrl+shift+=", {
-		description: "Increase thinking level",
-		handler: async (ctx) => adjustThinkingLevel(pi, ctx, 1),
-	});
-	pi.registerShortcut("ctrl+-", {
-		description: "Decrease thinking level",
-		handler: async (ctx) => adjustThinkingLevel(pi, ctx, -1),
-	});
-
 	pi.registerShortcut("ctrl+p", {
 		description: "Open command palette",
 		handler: async (ctx) => {

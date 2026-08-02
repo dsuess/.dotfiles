@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { parsePlanDocument } from "./plan-document.js";
+import {
+	parsePlanDocument,
+	replaceManagedProgressReport,
+	splitManagedProgressReport,
+} from "./plan-document.js";
+import { buildDocumentStepProgressRows } from "./progress-widget.js";
 
 function outsideFenceLines(lines) {
 	const outside = [];
@@ -19,7 +24,8 @@ function outsideFenceLines(lines) {
 }
 
 export function stripLedgerMutations(markdown) {
-	const lines = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+	const { coreMarkdown } = splitManagedProgressReport(markdown);
+	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
 	const outside = outsideFenceLines(lines);
 	return lines
 		.flatMap((line, index) => {
@@ -55,7 +61,8 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 		new RegExp(`^(### Step ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
 		new RegExp(`^(#### ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
 	];
-	const lines = currentMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+	const { coreMarkdown } = splitManagedProgressReport(currentMarkdown);
+	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
 	let outside = outsideFenceLines(lines);
 	const headingIndex = lines.findIndex((line, index) => outside[index] && headingPatterns.some((pattern) => pattern.test(line)));
 	if (headingIndex < 0) throw new Error(`Task heading not found for ${taskId}`);
@@ -86,5 +93,18 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 	// version 3 plans place it directly below the stable step heading so
 	// stripping the ledger restores the approved Markdown byte-for-byte.
 	lines.splice(toolsIndex >= 0 ? toolsIndex + 1 : headingIndex + 1, 0, `- **Ledger:** ${ledger}`);
-	return lines.join("\n");
+	const updatedCore = lines.join("\n");
+	const updated = parsePlanDocument(updatedCore);
+	if (!updated.ok) {
+		throw new Error(`Updated plan is no longer valid canonical Markdown: ${updated.errors.map((item) => item.message).join("; ")}`);
+	}
+	return replaceManagedProgressReport(updatedCore, buildDocumentStepProgressRows(updated.document));
+}
+
+export function synchronizeLedgerMarkdown(currentMarkdown, approvedMarkdown, ledger) {
+	let next = currentMarkdown;
+	for (const [taskId, ledgerItem] of Object.entries(ledger)) {
+		next = updateLedgerMarkdown(next, approvedMarkdown, taskId, ledgerItem);
+	}
+	return next;
 }

@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": false,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"],
+    "paths": { "@juicesharp/rpiv-test-utils": ["./test/test-utils/index.ts"] }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "coverage", ".test-tmp"]
+}

@@ -1,63 +1,8 @@
 {
   "network": {
-    "allowedDomains": [
-      "chatgpt.com",
-      "auth.openai.com",
-      "api.openai.com",
-      "pi.dev",
-      "api.z.ai",
-
-      "github.com",
-      "*.github.com",
-      "*.githubusercontent.com",
-      "ghcr.io",
-
-      "registry.npmjs.org",
-      "*.npmjs.org",
-
-      "pypi.org",
-      "*.pypi.org",
-      "files.pythonhosted.org",
-      "*.pythonhosted.org",
-
-      "repo.anaconda.com",
-      "conda.anaconda.org",
-      "*.anaconda.org",
-      "prefix.dev",
-      "*.prefix.dev",
-
-      "crates.io",
-      "*.crates.io",
-
-      "proxy.golang.org",
-      "sum.golang.org",
-      "storage.googleapis.com",
-
-      "huggingface.co",
-      "*.huggingface.co",
-      "*.hf.co",
-
-      "formulae.brew.sh",
-
-      "api.search.brave.com",
-      "html.duckduckgo.com",
-      "mcp.exa.ai",
-      "api.firecrawl.dev",
-      "api.keenable.ai",
-      "mcp.grep.app",
-      "sourcegraph.com",
-      "context7.com",
-      "registry.npmmirror.com",
-      "cdn.npmmirror.com",
-      "playwright.azureedge.net",
-      "playwright.download.prss.microsoft.com",
-
-      "localhost"
-    ],
+    "allowedDomains": [],
     "deniedDomains": [],
-    "strictAllowlist": true,
-    "allowUnixSockets": [],
-    "allowAllUnixSockets": false,
+    "allowAllUnixSockets": true,
     "allowLocalBinding": true,
     "allowMachLookup": ["com.apple.pasteboard.1"]
   },
@@ -80,6 +25,7 @@
       "~/.config/uv",
       "~/.config/rtk",
       "~/.config/ketch",
+      "~/Library/Application Support/ketch",
       "~/.config/herdr/config.toml",
 
       "~/.profile",
@@ -99,6 +45,7 @@
       "~/.uv/cache",
       "~/.local/share/uv",
       "~/.cache/huggingface",
+      "~/Library/Caches/ketch",
 
       "~/.config/nvim",
       "~/.dotfiles/nvim",
@@ -120,6 +67,7 @@
       "~/.uv/cache",
       "~/.local/share/uv",
       "~/.cache/huggingface",
+      "~/Library/Caches/ketch",
 
       "~/.cargo",
       "~/.rustup",
@@ -134,6 +82,9 @@
     "denyWrite": [
       "~/bin/pi",
       "~/.pi/sandbox",
+      "~/.config/ketch",
+      "~/Library/Application Support/ketch",
+      "~/.dotfiles/ketch",
       "~/.dotfiles/bin/pi",
       "~/.dotfiles/pi/sandbox"
     ],
@@ -197,7 +148,7 @@
     "envVars": []
   },
   "enableWeakerNestedSandbox": false,
-  "enableWeakerNetworkIsolation": false,
+  "enableWeakerNetworkIsolation": true,
   "allowAppleEvents": false,
   "allowPty": true
 }

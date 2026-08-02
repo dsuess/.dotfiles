@@ -165,12 +165,17 @@ export function submitPlan(state, submission) {
 		return rejection(state, "invalid_plan_metadata", "tasks must contain at least one task");
 	}
 	const taskIds = new Set();
+	const tasks = [];
 	const ledger = {};
 	for (const task of submission.tasks) {
-		if (!task || typeof task.id !== "string" || !task.id || taskIds.has(task.id) || !STATUS_SET.has(task.status)) {
-			return rejection(state, "invalid_plan_metadata", "tasks must have unique IDs and valid statuses");
+		if (
+			!task || typeof task.id !== "string" || !task.id || taskIds.has(task.id) ||
+			typeof task.title !== "string" || !task.title.trim() || !STATUS_SET.has(task.status)
+		) {
+			return rejection(state, "invalid_plan_metadata", "tasks must have unique IDs, non-empty titles, and valid statuses");
 		}
 		taskIds.add(task.id);
+		tasks.push({ id: task.id, title: task.title.trim() });
 		ledger[task.id] = { status: task.status, note: null, evidence: null };
 	}
 	const stageIds = new Set();
@@ -214,6 +219,7 @@ export function submitPlan(state, submission) {
 			revision,
 			stageIds: [...stageIds],
 			taskIds: [...taskIds],
+			tasks,
 			stages,
 		};
 		next.approval = {
@@ -262,6 +268,7 @@ export function approveExecution(state, nonce, executionMode) {
 			mode: executionMode,
 			startedAt: null,
 			parentSessionPath: null,
+			runId: null,
 			paused: false,
 		};
 		next.currentStageId = next.plan.stageIds[0] ?? null;
@@ -414,7 +421,7 @@ export function migrateState(value) {
 	if (!isPlanModeState(value)) return null;
 	const migrated = { ...createInitialState(), ...clone(value) };
 	migrated.counters = { ...createInitialState().counters, ...value.counters };
-	if (migrated.execution) migrated.execution = { paused: false, ...migrated.execution };
+	if (migrated.execution) migrated.execution = { runId: null, paused: false, ...migrated.execution };
 	if (migrated.approval) migrated.approval = { presented: false, ...migrated.approval };
 	if (migrated.checkpoint) migrated.checkpoint = { presented: false, ...migrated.checkpoint };
 	if (migrated.plan && !Array.isArray(migrated.plan.stages)) {
@@ -424,6 +431,7 @@ export function migrateState(value) {
 			taskIds: (migrated.plan.taskIds ?? []).filter((taskId) => taskId.startsWith(`${id}.`)),
 		}));
 	}
+	if (migrated.plan && !Array.isArray(migrated.plan.tasks)) migrated.plan.tasks = [];
 	return migrated;
 }
 

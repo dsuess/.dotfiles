@@ -15,7 +15,7 @@
     "npm:pi-context-usage",
     "npm:pi-rtk-optimizer",
     "npm:pi-tuicr",
-    "npm:@juicesharp/rpiv-ask-user-question"
+    "packages/ask-user-question"
   ],
   "hideThinkingBlock": true,
   "theme": "dark"

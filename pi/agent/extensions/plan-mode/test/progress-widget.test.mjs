@@ -1,39 +1,60 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildStageProgressRows } from "../progress-widget.js";
+import {
+	buildDocumentStepProgressRows,
+	buildStepProgressRows,
+	getDocumentProgressTasks,
+} from "../progress-widget.js";
+import { parsePlanDocument } from "../plan-document.js";
+import { SMALL_PLAN, VALID_PLAN } from "./fixtures.mjs";
 
-const base = {
-	plan: {
-		stageIds: ["1", "2", "3", "4"],
-		taskIds: ["1", "2", "3", "4", "5"],
-		stages: [
-			{ id: "1", description: "Not started.", taskIds: ["1"] },
-			{ id: "2", description: "Work underway.", taskIds: ["2", "3"] },
-			{ id: "3", description: "Verified.", taskIds: ["4"] },
-			{ id: "4", description: "Waiting on access.", taskIds: ["5"] },
-		],
-	},
-	ledger: {
-		1: { status: "pending" },
-		2: { status: "completed" },
-		3: { status: "in_progress" },
-		4: { status: "completed" },
-		5: { status: "blocked" },
-	},
+const tasks = [
+	{ id: "1", title: "Not started" },
+	{ id: "2", title: "Work underway" },
+	{ id: "3", title: "Verified" },
+	{ id: "4", title: "Waiting on access" },
+];
+
+const ledger = {
+	1: { status: "pending" },
+	2: { status: "in_progress" },
+	3: { status: "completed" },
+	4: { status: "blocked" },
 };
 
-test("shows one described stage row with a status icon", () => {
-	assert.deepEqual(buildStageProgressRows(base), [
-		"☐ Stage 1 — Not started.",
-		"▶ Stage 2 — Work underway.",
-		"☑ Stage 3 — Verified.",
-		"⛔ Stage 4 — Waiting on access.",
+test("shows every step in plan order with title-only labels and all status icons", () => {
+	assert.deepEqual(buildStepProgressRows({ plan: { tasks }, ledger }), [
+		"☐ Not started",
+		"▶ Work underway",
+		"☑ Verified",
+		"⛔ Waiting on access",
 	]);
 });
 
-test("falls back safely for restored legacy state", () => {
-	assert.deepEqual(buildStageProgressRows({
-		plan: { stageIds: ["1"], taskIds: ["1.1"] },
-		ledger: { "1.1": { status: "pending" } },
-	}), ["☐ Stage 1 — Stage 1"]);
+test("step rows are independent of explicit or implicit execution-stage grouping", () => {
+	const explicit = parsePlanDocument(VALID_PLAN);
+	const implicit = parsePlanDocument(SMALL_PLAN);
+	assert.equal(explicit.ok, true);
+	assert.equal(implicit.ok, true);
+	assert.deepEqual(buildDocumentStepProgressRows(explicit.document), [
+		"☐ Define the cache behavior",
+		"▶ Add reliable invalidation",
+		"⛔ Cover boundary conditions",
+	]);
+	assert.deepEqual(buildDocumentStepProgressRows(implicit.document), [
+		"☐ Clarify the cache lifecycle",
+	]);
+	assert.deepEqual(getDocumentProgressTasks(explicit.document).map((task) => task.id), ["1", "2", "3"]);
+});
+
+test("each row changes independently when its ledger entry transitions or reopens", () => {
+	const state = { plan: { tasks }, ledger: structuredClone(ledger) };
+	state.ledger[1].status = "in_progress";
+	state.ledger[3].status = "in_progress";
+	assert.deepEqual(buildStepProgressRows(state), [
+		"▶ Not started",
+		"▶ Work underway",
+		"▶ Verified",
+		"⛔ Waiting on access",
+	]);
 });

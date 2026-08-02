@@ -60,12 +60,18 @@ function dialogContext(keys, editorValue = undefined) {
 }
 
 assert.deepEqual(await actionModule.showPlanActionDialog(dialogContext(["\r"])), { action: "run" });
+assert.deepEqual(await actionModule.showPlanActionDialog(dialogContext(["\x1b[B", "\r"])), { action: "staged" });
 assert.deepEqual(await actionModule.showPlanActionDialog(dialogContext(["\x1b"])), { action: "cancel" });
 assert.deepEqual(
 	await actionModule.showPlanActionDialog(dialogContext(["\x1b[B", "\x1b[B", "\r"], "Use the existing helper")),
 	{ action: "change", text: "Use the existing helper" },
 );
 assert.deepEqual(
+	await actionModule.showPlanActionDialog(dialogContext(["\x1b[B", "\x1b[B", "\x1b[B", "\r"])),
+	{ action: "review" },
+);
+assert.deepEqual(
 	await stageModule.showStageDialog(dialogContext(["\x1b[B", "\r"], "Fix the race"), false),
 	{ action: "feedback", text: "Fix the race" },
 );
+assert.deepEqual(await stageModule.showStageDialog(dialogContext(["\x1b"]), false), { action: "cancel" });
