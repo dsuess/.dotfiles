@@ -1,61 +1,71 @@
 {
-  "editorMode": "vim",
-  "effortLevel": "high",
-  "enabledPlugins": {
-    "claude-powerline@claude-powerline": true,
-    "rust-analyzer-lsp@claude-plugins-official": true
-  },
   "env": {
     "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
     "DISABLE_AUTOUPDATER": "1",
     "DISABLE_INSTALLATION_CHECKS": "1"
   },
-  "extraKnownMarketplaces": {
-    "claude-powerline": {
-      "source": {
-        "repo": "Owloops/claude-powerline",
-        "source": "github"
-      }
-    },
-    "zircote-lsp": {
-      "source": {
-        "repo": "zircote/lsp-marketplace",
-        "source": "github"
-      }
-    }
+  "permissions": {
+    "allow": ["Bash(cd *)", "Bash(bazel *)"]
   },
+  "model": "opusplan",
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
-            "command": "rtk hook claude",
-            "type": "command"
+            "type": "command",
+            "command": "rtk hook claude"
           }
-        ],
-        "matcher": "Bash"
+        ]
       }
     ],
     "SessionStart": [
       {
+        "matcher": "*",
         "hooks": [
           {
+            "type": "command",
             "command": "bash '/Users/dsuess/.claude/hooks/herdr-agent-state.sh' session",
-            "timeout": 10,
-            "type": "command"
+            "timeout": 10
           }
-        ],
-        "matcher": "*"
+        ]
       }
     ]
   },
-  "permissions": {
-    "allow": ["Bash(cd *)", "Bash(bazel *)"]
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "claude-powerline@claude-powerline": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-powerline": {
+      "source": {
+        "source": "github",
+        "repo": "Owloops/claude-powerline"
+      }
+    }
   },
   "sandbox": {
     "enabled": true,
-    "excludedCommands": ["bazel"],
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "*.github.com",
+        "*.githubusercontent.com"
+      ]
+    },
     "filesystem": {
+      "allowWrite": [
+        ".",
+        "~/.claude",
+        "~/.uv/cache",
+        "~/.cache/uv",
+        "~/.local/share/uv"
+      ],
+      "denyRead": ["~/"],
       "allowRead": [
         ".",
         "~/src",
@@ -64,24 +74,15 @@
         "~/.dotfiles",
         "~/.cache/uv",
         "~/.local/share/uv"
-      ],
-      "allowWrite": [
-        ".",
-        "~/.claude",
-        "~/.uv/cache",
-        "~/.cache/uv",
-        "~/.local/share/uv"
-      ],
-      "denyRead": ["~/"]
+      ]
     },
-    "network": {}
+    "excludedCommands": ["bazel"]
   },
-  "skipDangerousModePermissionPrompt": true,
-  "statusLine": {
-    "command": "~/.claude/statusline.sh",
-    "type": "command"
-  },
-  "theme": "dark",
+  "effortLevel": "high",
   "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark",
+  "editorMode": "vim",
   "voiceEnabled": true
 }
