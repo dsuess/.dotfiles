@@ -132,3 +132,6 @@ accent = "#cba6f7"
 [ui.sound]
 # tmux `set -g bell-action none` / `set -g visual-bell off` -> no audible bell.
 enabled = false
+
+[experimental]
+kitty_graphics = true
