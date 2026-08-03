@@ -47,3 +47,5 @@
 #       gpgsign = false
 [include]
     path = ~/.gitconfig.local
+[branch]
+	autoSetupMerge = always

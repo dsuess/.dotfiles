@@ -18,8 +18,8 @@ alias gcd='cd $(git rev-parse --show-cdup)'
 
 # Tools
 alias bd="bat --diff"
-alias claude="claude --dangerously-skip-permissions"
 alias fuck="unalias fuck; eval \$(thefuck --alias); fuck"
+alias herdr-remote="herdr --remote-keybindings server --remote"
 
 # Files & Navigation
 alias mkdir="mkdir -pv"
