@@ -114,6 +114,8 @@ test("inherits model, thinking, effective prompt, active tools, and planning mod
 	assert.equal(result.details.status, "completed");
 	assert.deepEqual(result.usage, request ? result.details.usage : null);
 	assert.ok(updates.some((update) => update.details?.status === "running"));
+	assert.equal(updates.at(-1).content[0].text, "reading");
+	assert.doesNotMatch(updates.at(-1).content[0].text, /📖/, "streamed partial activity is plain text");
 	const activeWidgetCall = harness.widgetCalls.find(([, value]) => typeof value === "function");
 	assert.equal(activeWidgetCall[2].placement, "belowEditor");
 	const activeRows = activeWidgetCall[1]({ requestRender() {} }, harness.ctx.ui.theme).render(120).join("\n");

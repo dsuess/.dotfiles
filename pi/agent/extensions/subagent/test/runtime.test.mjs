@@ -291,6 +291,41 @@ test("parses split events, aggregates complete nested usage, resolves the actual
 	assert.doesNotMatch(JSON.stringify(result.details.activity), /never persist me/);
 });
 
+test("coalesces adjacent duplicate activity while preserving meaningful transitions", async () => {
+	const proc = new FakeProcess();
+	const updates = [];
+	const promise = runSubagent(baseOptions({ onActivity: (item) => updates.push(item) }), {
+		spawnImpl() { return proc; },
+	});
+	await waitFor(() => proc.stdinText.length > 0);
+	emitAndClose(proc, [
+		{ type: "agent_start" },
+		{ type: "message_update", assistantMessageEvent: { type: "text_start" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "one" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "two" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_end" } },
+		{ type: "tool_execution_start", toolName: "read", args: { path: "/workspace/a.ts" } },
+		{ type: "tool_execution_start", toolName: "read", args: { path: "/workspace/a.ts" } },
+		{ type: "tool_execution_start", toolName: "read", args: { path: "/workspace/b.ts" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_start" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "three" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_end" } },
+		assistant({ text: "done" }),
+	]);
+	const result = await promise;
+	const expected = [
+		["starting", undefined],
+		["responding", undefined],
+		["reading", "/workspace/a.ts"],
+		["reading", "/workspace/b.ts"],
+		["responding", undefined],
+		["completed", undefined],
+	];
+	const chronology = (items) => items.map((item) => [item.kind, item.action]);
+	assert.deepEqual(chronology(updates), expected, "callbacks receive one update per semantic transition");
+	assert.deepEqual(chronology(result.details.activity), expected, "retained history matches callback chronology");
+});
+
 test("returns explicit no-output text for a successful empty assistant response", async () => {
 	const proc = new FakeProcess();
 	const promise = runSubagent(baseOptions(), { spawnImpl() { return proc; } });

@@ -41,6 +41,8 @@ Sibling tool calls may run concurrently. Each tool call owns one child and one a
 
 Successful empty answers return `(no output)`. Model-visible output is bounded by lines and UTF-8 bytes. When truncated, the complete answer is saved to a mode-`0600` temporary file and the result reports its path and omitted byte count. Errors and stderr diagnostics are bounded as well.
 
+Adjacent live activities with the same kind and action are coalesced before progress updates and result history. A repeated activity after a meaningful transition remains visible, as do same-kind activities with different actions.
+
 ## Visual roles
 
 The below-editor row infers one fixed presentation role from the delegated prompt, with this precedence:
@@ -52,3 +54,5 @@ The below-editor row infers one fixed presentation role from the delegated promp
 5. `🤖 general` — no matching word
 
 Matching is case-insensitive and word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The displayed task is the whitespace-normalized delegated prompt, shortened only for terminal width. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
+
+Role icons appear only in the below-editor active-run row. Conversation tool-call and activity lines are plain text, while running, completed, failed, and cancelled result headers retain their status icons.

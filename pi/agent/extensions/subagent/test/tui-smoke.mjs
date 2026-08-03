@@ -94,6 +94,9 @@ const callComponent = uiModule.renderSubagentCall({
 for (const width of [24, 40, 80]) {
 	assert.ok(callComponent.render(width).every((line) => tuiPackage.visibleWidth(line) <= width), `call renderer exceeded ${width}`);
 }
+const callText = callComponent.render(120).join("\n");
+assert.match(callText, /subagent.*scout/);
+assert.doesNotMatch(callText, /🧪|🗺️|🔨|🔎|🤖/, "conversation tool-call row is plain text");
 
 const activity = Array.from({ length: 18 }, (_, index) => ({
 	kind: index === 0 ? "thinking" : index % 2 ? "reading" : "searching",
@@ -123,9 +126,10 @@ for (const expanded of [false, true]) {
 		assert.ok(lines.every((line) => tuiPackage.visibleWidth(line) <= width), `result renderer exceeded ${width}`);
 	}
 	const text = component.render(100).join("\n");
-	assert.match(text, /completed/);
+	assert.match(text, /✓ completed/, "completed header keeps its status icon");
 	assert.match(text, /claude-sonnet/);
 	assert.doesNotMatch(text, /RAW PRIVATE CHAIN OF THOUGHT/);
+	assert.doesNotMatch(text, /📖|🔎|🧠/, "conversation activity lines are plain text");
 	if (expanded) {
 		assert.match(text, /Final answer/);
 		assert.match(text, /file-1\.ts/);
@@ -136,8 +140,17 @@ for (const expanded of [false, true]) {
 	}
 }
 
-const partial = uiModule.renderSubagentResult({
-	content: [{ type: "text", text: "running" }],
-	details: { status: "running", model: "test/model", activity: activity.slice(-3) },
-}, { expanded: false, isPartial: true }, theme, core.getMarkdownTheme());
-assert.match(partial.render(80).join("\n"), /running/);
+const statusCases = [
+	[{ status: "running", partial: true }, /⏳ running/],
+	[{ status: "failed" }, /✗ failed/],
+	[{ status: "cancelled" }, /⛔ cancelled/],
+];
+for (const [statusCase, expectedStatus] of statusCases) {
+	const component = uiModule.renderSubagentResult({
+		content: [{ type: "text", text: statusCase.status }],
+		details: { status: statusCase.status, model: "test/model", activity: activity.slice(-3) },
+	}, { expanded: false, isPartial: statusCase.partial === true }, theme, core.getMarkdownTheme());
+	const text = component.render(80).join("\n");
+	assert.match(text, expectedStatus, `${statusCase.status} header keeps its status icon`);
+	assert.doesNotMatch(text, /📖|🔎|🧠/, `${statusCase.status} activity lines are plain text`);
+}

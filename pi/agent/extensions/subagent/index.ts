@@ -98,7 +98,7 @@ export function createSubagentExtension(dependencies: ExtensionDependencies = {}
 			description: [
 				"Run one isolated, ephemeral child Pi task and return its final report.",
 				"The child inherits the parent model, thinking level, effective system instructions, working directory, and active tool allowlist unless model or thinkingLevel is overridden.",
-				"Nested delegation and parent workflow tools are unavailable. Output is bounded; complete oversized output is retained in a secure temporary file.",
+				"Nested delegation and parent workflow tools are unavailable. Live activity is coalesced; icons appear only in result status headers and the below-editor active-run row. Output is bounded; complete oversized output is retained in a secure temporary file.",
 			].join(" "),
 			promptSnippet: "Delegate one independent task to an isolated child Pi run",
 			promptGuidelines: [
@@ -139,7 +139,7 @@ export function createSubagentExtension(dependencies: ExtensionDependencies = {}
 				const activity: SubagentActivity[] = [];
 				const emitRunningUpdate = () => onUpdate?.({
 					content: [{ type: "text", text: activity.length > 0
-						? `${activity.at(-1)?.emoji ?? "•"} ${activity.at(-1)?.label ?? activity.at(-1)?.kind ?? "running"}`
+						? activity.at(-1)?.label ?? activity.at(-1)?.kind ?? "running"
 						: "Subagent running…" }],
 					details: runningDetails(model, params.prompt, role, taskSummary, activity),
 				});

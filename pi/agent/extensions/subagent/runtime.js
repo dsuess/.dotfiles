@@ -76,6 +76,12 @@ function makeActivity(kind, action) {
 	};
 }
 
+function sameActivity(left, right) {
+	return left?.kind === right?.kind
+		&& left?.label === right?.label
+		&& left?.action === right?.action;
+}
+
 function compactAction(value, limit = 240) {
 	if (typeof value !== "string") return undefined;
 	const compact = value.replace(/\s+/g, " ").trim();
@@ -347,9 +353,11 @@ export async function runSubagent(options, dependencies = {}) {
 		const usage = {};
 		let hasUsage = false;
 		let wasAborted = false;
+		let lastActivity;
 
 		const recordActivity = (item) => {
-			if (!item) return;
+			if (!item || sameActivity(lastActivity, item)) return;
+			lastActivity = item;
 			activity.push(item);
 			if (activity.length > maxActivity) activity.splice(0, activity.length - maxActivity);
 			onActivity?.(item);

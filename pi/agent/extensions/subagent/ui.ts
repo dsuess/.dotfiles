@@ -183,10 +183,9 @@ function observableActivity(details: Record<string, any> | undefined, expanded: 
 }
 
 function activityText(item: SubagentActivity, theme: Theme): string {
-	const emoji = item.emoji || "•";
 	const label = normalizeTaskSummary(item.label || item.kind || "activity");
 	const action = normalizeTaskSummary(item.action || "");
-	return `${theme.fg("muted", `${emoji} ${label}`)}${action ? ` ${theme.fg("dim", action)}` : ""}`;
+	return `${theme.fg("muted", label)}${action ? ` ${theme.fg("dim", action)}` : ""}`;
 }
 
 function statusPresentation(status: string, theme: Theme): string {
@@ -206,7 +205,7 @@ export function renderSubagentCall(args: Record<string, any>, theme: Theme) {
 	return new RenderComponent((width) => {
 		const line = [
 			theme.fg("toolTitle", theme.bold("subagent")),
-			theme.fg("accent", `${role.emoji} ${role.name}`),
+			theme.fg("accent", role.name),
 			theme.fg("muted", `${model}${thinking}`),
 			prompt ? theme.fg("dim", prompt) : theme.fg("error", "(missing task)"),
 		].join(" · ");
