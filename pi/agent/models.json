@@ -1,5 +1,18 @@
 {
   "providers": {
+    "resetdata": {
+      "baseUrl": "https://app.resetdata.ai/api/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "zai/glm-5.2",
+          "name": "zai/glm-5.2",
+          "reasoning": true,
+          "contextWindow": 800000,
+          "maxTokens": 16384
+        }
+      ]
+    },
     "zai": {
       "baseUrl": "https://api.z.ai/api/paas/v4",
       "api": "openai-completions",
