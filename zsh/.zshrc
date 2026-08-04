@@ -64,13 +64,19 @@ if command -v direnv &>/dev/null; then
     eval "$(direnv hook zsh)"
 fi
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    # fzf key bindings (homebrew)
+# zsh-vi-mode overwrites the viins keymap when it initializes on the first
+# precmd (after this file has already sourced fzf's key bindings below),
+# which clobbers fzf's Ctrl+R binding in insert mode. Defining zvm_after_init
+# makes zsh-vi-mode re-run this once its own init finishes, so Ctrl+R keeps
+# working in insert mode too, not just normal mode.
+function zvm_after_init() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
     source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
-else
-    # fzf
+  else
     [[ -f ~/.fzf.zsh ]] && source ~/.fzf.zsh
-fi
+  fi
+}
+zvm_after_init
 
 # Ctrl+O: fzf file picker rooted at $HOME (sibling to Ctrl+T, which uses $PWD).
 # ^O defaults to accept-line-and-down-history, which we don't use interactively.
