@@ -28,9 +28,9 @@ COMPLETION_WAITING_DOTS="true"
 CASE_SENSITIVE="false"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    plugins=(git z tmux brew zsh-syntax-highlighting)
+    plugins=(git z zsh-vi-mode brew zsh-syntax-highlighting)
 else
-    plugins=(git z tmux)
+    plugins=(git z zsh-vi-mode zsh-syntax-highlighting)
 fi
 source "$ZSH/oh-my-zsh.sh"
 
