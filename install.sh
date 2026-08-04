@@ -249,7 +249,7 @@ cmd_config() {
     [[ -L ~/.claude/skills ]] && rm -f ~/.claude/skills
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.pi
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.pi/agent
 
     echo "🔗 Stowing configs..."
     stow zsh -t ~
