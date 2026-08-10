@@ -4,7 +4,9 @@ import test from "node:test";
 import {
 	LEGAL_MODE_TRANSITIONS,
 	PLAN_MODE_STATE_ENTRY,
+	acceptFastOptimization,
 	approveExecution,
+	beginFastOptimization,
 	blockWorkflow,
 	completeWorkflow,
 	createInitialState,
@@ -16,6 +18,7 @@ import {
 	requestRevision,
 	resetInvalidSubmissions,
 	resolveStageCheckpoint,
+	restoreFastOptimization,
 	resumeExecution,
 	restoreLatestState,
 	submitPlan,
@@ -117,6 +120,67 @@ test("alphabetic Part IDs pause at one derived execution stage per Part", () => 
 	full = recordTaskProgress(full, { itemId: "A", status: "in_progress" }).state;
 	full = recordTaskProgress(full, { itemId: "A", status: "completed", evidence: "contract checked" }).state;
 	assert.equal(recordTaskProgress(full, { itemId: "B", status: "in_progress" }).ok, true);
+});
+
+test("parallel execution allows siblings and blocks future waves until their predecessors are terminal", () => {
+	const schedule = (wave, dependencies = []) => ({ wave, workerId: `worker-${wave}-${dependencies.length}`, sourcePartId: "A", dependencies, ownership: `${wave}-${dependencies.length} boundary` });
+	const approved = approvalState({
+		sequentialStages: false,
+		executionStrategy: "parallel",
+		stages: [
+			{ id: "A", description: "First sibling", taskIds: ["A"], parallelExecution: schedule(1) },
+			{ id: "B", description: "Second sibling", taskIds: ["B"], parallelExecution: schedule(1) },
+			{ id: "C", description: "Dependent Part", taskIds: ["C"], parallelExecution: schedule(2, ["A"]) },
+		],
+		tasks: [
+			{ id: "A", title: "First sibling", status: "pending" },
+			{ id: "B", title: "Second sibling", status: "pending" },
+			{ id: "C", title: "Dependent Part", status: "pending" },
+		],
+	});
+	let execution = approveExecution(approved, "nonce-1", "all").state;
+	assert.equal(recordTaskProgress(execution, { itemId: "C", status: "in_progress" }).error.code, "future_wave");
+	execution = recordTaskProgress(execution, { itemId: "A", status: "in_progress" }).state;
+	execution = recordTaskProgress(execution, { itemId: "B", status: "in_progress" }).state;
+	execution = recordTaskProgress(execution, { itemId: "A", status: "completed", evidence: "worker A passed" }).state;
+	assert.equal(recordTaskProgress(execution, { itemId: "C", status: "in_progress" }).error.code, "future_wave");
+	execution = recordTaskProgress(execution, { itemId: "B", status: "completed", evidence: "worker B passed" }).state;
+	assert.equal(recordTaskProgress(execution, { itemId: "C", status: "in_progress" }).ok, true);
+});
+
+test("fast optimization retains a recoverable approval and hands off directly to parallel execution", () => {
+	const source = approvalState({
+		sequentialStages: true,
+		stages: [{ id: "A", description: "Source Part", taskIds: ["A"] }],
+		tasks: [{ id: "A", title: "Source Part", status: "pending" }],
+	});
+	const optimizing = beginFastOptimization(source, "nonce-1", ["A"]);
+	assert.equal(optimizing.ok, true);
+	assert.equal(optimizing.state.mode, "planning");
+	assert.equal(optimizing.state.approval, null);
+	assert.deepEqual(optimizing.state.optimization.sourcePartIds, ["A"]);
+	const restored = restoreFastOptimization(optimizing.state);
+	assert.equal(restored.ok, true);
+	assert.equal(restored.state.mode, "approval");
+	assert.equal(restored.state.approval.nonce, "nonce-1");
+	assert.equal(restored.state.approval.presented, false);
+
+	const accepted = acceptFastOptimization(optimizing.state, submission({
+		hash: "fast456",
+		approvalNonce: "fast-nonce",
+		stages: [{
+			id: "A", description: "Optimized Part", taskIds: ["A"],
+			parallelExecution: { wave: 1, workerId: "worker-a", sourcePartId: "A", dependencies: [], ownership: "cache implementation" },
+		}],
+		tasks: [{ id: "A", title: "Optimized Part", status: "pending" }],
+	}));
+	assert.equal(accepted.ok, true);
+	assert.equal(accepted.state.mode, "executing_all");
+	assert.equal(accepted.state.approval, null);
+	assert.equal(accepted.state.optimization, null);
+	assert.equal(accepted.state.execution.strategy, "parallel");
+	assert.equal(accepted.state.plan.executionStrategy, "parallel");
+	assert.equal(accepted.state.plan.sequentialStages, false);
 });
 
 test("rejects duplicate, stale, and out-of-order actions deterministically", () => {
@@ -269,6 +333,16 @@ test("restore migrates stage metadata for legacy persisted plans", () => {
 		{ id: "2", description: "Stage 2", taskIds: ["2.1"] },
 	]);
 	assert.deepEqual(restored.plan.tasks, []);
+});
+
+test("restore blocks stale fast optimization records instead of reusing their approval nonce", () => {
+	const optimizing = beginFastOptimization(approvalState(), "nonce-1", ["A", "B"]).state;
+	optimizing.optimization.sourceHash = "stale-source";
+	const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: optimizing }]);
+	assert.equal(restored.mode, "blocked");
+	assert.equal(restored.optimization, null);
+	assert.equal(restored.approval, null);
+	assert.match(restored.blockedReason, /stale/);
 });
 
 test("restore ignores malformed or unsupported state entries", () => {

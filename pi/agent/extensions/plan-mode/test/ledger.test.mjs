@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { immutablePlanHash, synchronizeLedgerMarkdown, updateLedgerMarkdown } from "../ledger.js";
 import { parsePlanDocument, renderPlanDocument, replaceManagedProgressReport, splitManagedProgressReport } from "../plan-document.js";
-import { PART_PLAN, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
+import { PART_PLAN, PART_PLAN_WITH_QUESTIONS, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
 
 test("updates exactly one status and ledger note while preserving canonical parsing", () => {
 	const next = updateLedgerMarkdown(VALID_PLAN, VALID_PLAN, "1", {
@@ -31,6 +31,19 @@ test("persists Part status only in managed metadata and a Part progress report",
 		"☐ Cover boundary behavior",
 	]);
 	assert.equal(immutablePlanHash(next), immutablePlanHash(PART_PLAN));
+});
+
+test("preserves answered clarification records through Part ledger updates", () => {
+	const next = updateLedgerMarkdown(PART_PLAN_WITH_QUESTIONS, PART_PLAN_WITH_QUESTIONS, "A", {
+		status: "completed", note: null, evidence: "contract verified",
+	});
+	assert.match(next, /## Questions & Answers[\s\S]*\| Should failed writes invalidate a valid cache entry\? \| No\. Retain the last valid value\. \|/);
+	assert.deepEqual(parsePlanDocument(next).document.questionsAndAnswers, [
+		{ question: "Should failed writes invalidate a valid cache entry?", answer: "No. Retain the last valid value." },
+		{ question: "Must the public cache interface change?", answer: "No. Preserve compatibility." },
+	]);
+	assert.equal(immutablePlanHash(next), immutablePlanHash(PART_PLAN_WITH_QUESTIONS));
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, ["☑ Define cache consistency", "☐ Implement reliable invalidation"]);
 });
 
 test("serial Part updates preserve headings and immutable approved content", () => {

@@ -26,6 +26,16 @@ test("planning activates only known inspection, research, question, and submissi
 	]);
 });
 
+test("fast optimization removes questions while retaining read-only inspection and submission", () => {
+	assert.deepEqual(getPlanningToolNames(registered, { fastOptimization: true }), [
+		"read", "grep", "find", "ls", "bash", "ketch_search", "submit_plan",
+	]);
+	assert.match(
+		evaluatePlanningToolCall("ask_user_question", {}, registered, { fastOptimization: true }),
+		/blocks tool 'ask_user_question'/,
+	);
+});
+
 test("restoration uses the exact snapshot intersection and reports disappeared tools", () => {
 	assert.deepEqual(getRestorableTools(["custom_mutator", "read", "missing", "read"], registered), {
 		restored: ["custom_mutator", "read", "read"],

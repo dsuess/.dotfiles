@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { VALID_PLAN } from "./fixtures.mjs";
+import { PART_PARALLEL_PLAN, PART_PLAN, VALID_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -19,7 +19,10 @@ const stateModule = await import(new URL("../state.js", import.meta.url));
 
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 
-async function createHarness({ flag = false, mode = "tui", actions = [], editorValues = [], reviewResults = [], confirmValues = [] } = {}) {
+async function createHarness({
+	flag = false, mode = "tui", actions = [], editorValues = [], reviewResults = [], confirmValues = [],
+	initialTools = ["read", "bash", "edit", "write", "custom_tool"], model = undefined,
+} = {}) {
 	const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-plan-dialogs-"));
 	const handlers = new Map();
 	const eventHandlers = new Map();
@@ -32,8 +35,10 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 	const sentMessages = [];
 	const notifications = [];
 	const reviewInvocations = [];
-	let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
+	let activeTools = [...initialTools];
 	const allTools = new Set(activeTools);
+	let activeModel = model;
+	const models = [model, { provider: "openai-codex", id: "gpt-5.6-terra" }].filter(Boolean);
 	let actionIndex = 0;
 	let editorIndex = 0;
 	let reviewIndex = 0;
@@ -41,7 +46,7 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 
 	function nextAction() { return actions[actionIndex++] ?? "cancel"; }
 	function driveSelection(component, action) {
-		const downCounts = { run: 0, staged: 1, change: 2, review: 3, continue: 0, feedback: 1, stop: 3 };
+		const downCounts = { run: 0, fast: 1, staged: 2, change: 3, review: 4, continue: 0, feedback: 1, stop: 3 };
 		if (action === "cancel") { component.handleInput("\x1b"); return; }
 		for (let index = 0; index < (downCounts[action] ?? 0); index += 1) component.handleInput("\x1b[B");
 		component.handleInput("\r");
@@ -68,7 +73,7 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 		setActiveTools(names) { activeTools = [...names]; },
 		getThinkingLevel() { return "high"; },
 		setThinkingLevel() {},
-		async setModel() { return true; },
+		async setModel(nextModel) { activeModel = nextModel; return true; },
 		sendMessage(message, options) {
 			sentMessages.push({ message, options });
 			entries.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
@@ -85,7 +90,11 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 
 	const hasUI = mode === "tui" || mode === "rpc";
 	const ctx = {
-		cwd, mode, hasUI, model: undefined, thinkingLevel: "high", signal: undefined,
+		cwd, mode, hasUI, get model() { return activeModel; }, thinkingLevel: "high", signal: undefined,
+		modelRegistry: {
+			find(provider, id) { return models.find((candidate) => candidate.provider === provider && candidate.id === id); },
+			getAvailable() { return models; },
+		},
 		isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
 		sessionManager: { getBranch: () => entries, getEntries: () => entries, getSessionFile: () => "/sessions/current.jsonl" },
 		ui: {
@@ -102,7 +111,7 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 				timeline.push({ type: "dialog", mode: "rpc" });
 				const action = nextAction();
 				if (action === "cancel") return undefined;
-				const index = { run: 0, staged: 1, change: 2, review: 3, continue: 0, feedback: 1, stop: 3 }[action];
+				const index = { run: 0, fast: 1, staged: 2, change: 3, review: 4, continue: 0, feedback: 1, stop: 3 }[action];
 				return labels[index];
 			},
 			async editor() { return editorValues[editorIndex++]; }, async confirm() { return confirmValues[confirmIndex++] ?? false; }, async input() { return undefined; },
@@ -158,6 +167,65 @@ test("Escape keeps approval pending and manual reopening remains available", asy
 		assert.equal(harness.latestState().approval.consumed, false);
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
+	} finally { await harness.cleanup(); }
+});
+
+test("fast approval starts an equivalent optimizer revision and queues direct parallel execution", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		assert.equal(harness.latestState().mode, "planning");
+		assert.ok(harness.latestState().optimization);
+		assert.equal(harness.sentUserMessages.length, 1);
+		assert.match(harness.sentUserMessages[0].message, /FAST PLAN OPTIMIZATION ACTIVE/);
+		assert.match(harness.sentUserMessages[0].message, /Do not ask questions/);
+		const optimized = await submit(harness, PART_PARALLEL_PLAN);
+		assert.equal(optimized.details.accepted, true);
+		assert.equal(optimized.details.fast, true);
+		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.latestState().approval, null);
+		assert.equal(harness.latestState().execution.strategy, "parallel");
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
+		const contract = harness.entries.filter((entry) => entry.customType === "plan-mode-execution").at(-1).data;
+		assert.equal(contract.executionStrategy, "parallel");
+		assert.equal(contract.workerModel, "openai-codex/gpt-5.6-terra");
+		assert.equal(contract.workerThinkingLevel, "high");
+		assert.equal(harness.sentMessages.length, 1);
+		assert.match(harness.sentMessages[0].message.content, /one sibling tool batch/i);
+	} finally { await harness.cleanup(); }
+});
+
+test("an optimizer that ends before submission restores the original approval", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command"); await submit(harness, PART_PLAN); await harness.emit("agent_settled");
+		assert.equal(harness.latestState().mode, "planning");
+		await harness.emit("agent_settled");
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.latestState().approval.presented, false);
+		assert.equal(harness.latestState().optimization, null);
+	} finally { await harness.cleanup(); }
+});
+
+test("fast approval leaves the source approval pending when subagent support is absent", async () => {
+	const harness = await createHarness({ actions: ["fast"] });
+	try {
+		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.sentUserMessages.length, 0);
+		assert.equal(harness.notifications.some(({ message }) => /requires subagent/.test(message)), true);
 	} finally { await harness.cleanup(); }
 });
 

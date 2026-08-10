@@ -12,7 +12,7 @@ import {
 	restorePlanFile,
 	sanitizeIntentSlug,
 } from "../plan-store.js";
-import { PART_PLAN, VALID_PLAN } from "./fixtures.mjs";
+import { PART_PLAN, PART_PLAN_WITH_QUESTIONS, VALID_PLAN } from "./fixtures.mjs";
 
 async function withProject(run) {
 	const root = await mkdtemp(path.join(os.tmpdir(), "pi-plan-store-"));
@@ -87,6 +87,33 @@ test("persists Part plans with derived stages and extension-owned pending progre
 			persistPlan({ cwd: project, intent: "forged", title: "Add Reliable Cache Invalidation", markdown: authoredLedger }),
 			(error) => error instanceof PlanStoreError && error.details?.some((item) => item.code === "managed_metadata_forbidden"),
 		);
+	});
+});
+
+test("atomically persists and restores answered clarification records without extra stages", async () => {
+	await withProject(async (project) => {
+		const stored = await persistPlan({
+			cwd: project,
+			intent: "Add reliable cache invalidation",
+			title: "Add Reliable Cache Invalidation",
+			markdown: PART_PLAN_WITH_QUESTIONS,
+		});
+		assert.deepEqual(stored.document.questionsAndAnswers, [
+			{ question: "Should failed writes invalidate a valid cache entry?", answer: "No. Retain the last valid value." },
+			{ question: "Must the public cache interface change?", answer: "No. Preserve compatibility." },
+		]);
+		assert.deepEqual(stored.document.stages.map((stage) => stage.id), ["A", "B"]);
+		assert.match(stored.markdown, /## Questions & Answers[\s\S]*\| Question \| Answer \|[\s\S]*## Part Progress/);
+		await rm(stored.path);
+		const restored = await restorePlanFile({
+			cwd: project,
+			path: stored.path,
+			markdown: stored.markdown,
+			expectedHash: stored.hash,
+			title: stored.document.title,
+		});
+		assert.equal(restored.restored, true);
+		assert.equal(await readFile(stored.path, "utf8"), stored.markdown);
 	});
 });
 

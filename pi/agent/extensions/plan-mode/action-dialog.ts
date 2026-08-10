@@ -3,6 +3,7 @@ import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi
 
 export type PlanAction =
 	| { action: "run" }
+	| { action: "fast" }
 	| { action: "staged" }
 	| { action: "change"; text: string }
 	| { action: "review" }
@@ -10,6 +11,7 @@ export type PlanAction =
 
 const BASE_ITEMS: SelectItem[] = [
 	{ value: "run", label: "Implement plan", description: "Execute every stage in the current session" },
+	{ value: "fast", label: "Implement (fast)", description: "Optimize safe Parts for parallel execution, then start automatically" },
 	{ value: "staged", label: "Implement in stages", description: "Pause for review after every stage" },
 	{ value: "change", label: "Change", description: "Send revision instructions to the planner" },
 ];

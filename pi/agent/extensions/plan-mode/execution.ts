@@ -57,6 +57,9 @@ export interface InPlaceExecutionContract {
 	planPath: string;
 	planHash: string;
 	executionMode: "all" | "staged";
+	executionStrategy?: "standard" | "parallel";
+	workerModel?: string;
+	workerThinkingLevel?: "high";
 	originalActiveTools: string[];
 	sessionPath: string | null;
 	boundaryHash: string;

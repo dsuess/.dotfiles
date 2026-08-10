@@ -9,11 +9,21 @@ export type WorkflowMode =
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type ExecutionMode = "all" | "staged";
+export type ExecutionStrategy = "standard" | "parallel";
+
+export interface ParallelExecutionStageV1 {
+	wave: number;
+	workerId: string;
+	sourcePartId: string;
+	dependencies: string[];
+	ownership: string;
+}
 
 export interface PlanStageV1 {
 	id: string;
 	description: string;
 	taskIds: string[];
+	parallelExecution?: ParallelExecutionStageV1;
 }
 
 export interface PlanTaskV1 {
@@ -33,6 +43,7 @@ export interface PlanReferenceV1 {
 	taskIds: string[];
 	tasks: PlanTaskV1[];
 	stages: PlanStageV1[];
+	executionStrategy: ExecutionStrategy;
 }
 
 export interface ApprovalTokenV1 {
@@ -41,6 +52,13 @@ export interface ApprovalTokenV1 {
 	revision: number;
 	consumed: boolean;
 	presented: boolean;
+}
+
+export interface FastOptimizationV1 {
+	sourceHash: string;
+	sourceRevision: number;
+	sourceApproval: ApprovalTokenV1;
+	sourcePartIds: string[];
 }
 
 export interface LedgerItemV1 {
@@ -77,8 +95,10 @@ export interface PlanModeStateV1 {
 	originalActiveTools: string[];
 	plan: PlanReferenceV1 | null;
 	approval: ApprovalTokenV1 | null;
+	optimization: FastOptimizationV1 | null;
 	execution: {
 		mode: ExecutionMode;
+		strategy: ExecutionStrategy;
 		startedAt: string | null;
 		parentSessionPath: string | null;
 		runId: string | null;
@@ -118,7 +138,8 @@ export interface PlanSubmission {
 	intent: string;
 	approvalNonce: string;
 	sequentialStages?: boolean;
-	stages: Array<{ id: string; description: string; taskIds: string[] }>;
+	executionStrategy?: ExecutionStrategy;
+	stages: Array<{ id: string; description: string; taskIds: string[]; parallelExecution?: ParallelExecutionStageV1 }>;
 	tasks: Array<{ id: string; title: string; status: TaskStatus }>;
 }
 
@@ -130,7 +151,9 @@ export {
 	PLAN_MODE_STATE_VERSION,
 	TASK_STATUSES,
 	WORKFLOW_MODES,
+	acceptFastOptimization,
 	approveExecution,
+	beginFastOptimization,
 	blockWorkflow,
 	completeWorkflow,
 	createInitialState,
@@ -146,6 +169,7 @@ export {
 	resetInvalidSubmissions,
 	resolveStageCheckpoint,
 	resumeExecution,
+	restoreFastOptimization,
 	restoreLatestState,
 	submitPlan,
 } from "./state.js";

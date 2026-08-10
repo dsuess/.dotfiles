@@ -6,6 +6,8 @@ import {
 	EXECUTION_ENTRY,
 	buildExecutionBoundaryMessage,
 	buildExecutionKickoff,
+	buildParallelWorkerPrompt,
+	getActiveParallelWave,
 	buildStageInstruction,
 	getExecutionToolNames,
 	isolateExecutionMessages,
@@ -94,6 +96,65 @@ test("in-place kickoff is self-contained and staged instructions enforce a hard 
 	assert.match(buildStageInstruction(state), /only execution stage 2/);
 	assert.match(buildStageInstruction(state), /Do not begin a later stage/);
 	assert.match(buildStageInstruction({ ...state, parallelWorkers: [{ workerId: "worker-1", runId: "run-1" }] }), /Resume an existing worker/);
+});
+
+test("parallel kickoff exposes one ready wave and complete worker contracts", () => {
+	const approvedMarkdown = `# Parallel approved
+
+## Context
+
+The shared context identifies the integration boundary.
+
+## Approach
+
+Run independent work in a safe wave.
+
+### Part A — Update implementation
+
+Change only the implementation boundary. Accept when the focused test passes.
+
+### Part B — Update tests
+
+Change only the test boundary. Accept when the regression test passes.
+
+## Parallel Execution
+
+| Wave | Worker | Part | Source Part | Depends On | Ownership |
+|---|---|---|---|---|---|
+| 1 | worker-a | A | A | — | implementation boundary |
+| 1 | worker-b | B | B | — | test boundary |
+`;
+	const parallelState = {
+		mode: "executing_all",
+		originalActiveTools: ["read", "subagent"],
+		execution: { mode: "all", strategy: "parallel", runId: "parallel-run" },
+		ledger: {
+			A: { status: "pending", note: null, evidence: null },
+			B: { status: "pending", note: null, evidence: null },
+		},
+		plan: {
+			path: "/project/.pi/plans/parallel.md", hash: "parallel-hash",
+			stages: [
+				{ id: "A", description: "Update implementation", taskIds: ["A"], parallelExecution: { wave: 1, workerId: "worker-a", sourcePartId: "A", dependencies: [], ownership: "implementation boundary" } },
+				{ id: "B", description: "Update tests", taskIds: ["B"], parallelExecution: { wave: 1, workerId: "worker-b", sourcePartId: "B", dependencies: [], ownership: "test boundary" } },
+			],
+		},
+	};
+	const parallelContract = {
+		...contract, runId: "parallel-run", planPath: parallelState.plan.path, planHash: parallelState.plan.hash,
+		approvedMarkdown, executionMode: "all", executionStrategy: "parallel", workerModel: "openai-codex/gpt-5.6-terra", workerThinkingLevel: "high",
+	};
+	assert.deepEqual(getActiveParallelWave(parallelState).map((stage) => stage.id), ["A", "B"]);
+	const workerPrompt = buildParallelWorkerPrompt(parallelContract, parallelState, parallelState.plan.stages[0]);
+	assert.match(workerPrompt, /Own only optimized Part A/);
+	assert.match(workerPrompt, /implementation boundary/);
+	assert.match(workerPrompt, /shared context/);
+	assert.match(workerPrompt, /parent ledger/);
+	const kickoff = buildExecutionKickoff(parallelContract, parallelState);
+	assert.match(kickoff, /current ready wave is 1/);
+	assert.match(kickoff, /one subagent call for every Part.*one sibling tool batch/i);
+	assert.match(kickoff, /model: openai-codex\/gpt-5\.6-terra/);
+	assert.match(kickoff, /thinkingLevel: "high"/);
 });
 
 test("execution boundary excludes planning context and retains all later implementation messages", () => {

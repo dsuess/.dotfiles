@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { PART_PLAN } from "./fixtures.mjs";
+import { PART_PLAN_WITH_QUESTIONS } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -94,7 +94,9 @@ try {
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
 	assert.match(planningPrompt.systemPrompt, /ask all currently known blockers together in one ask_user_question call/i);
 	assert.doesNotMatch(planningPrompt.systemPrompt, /Ask unresolved design questions one at a time/i);
-	assert.match(planningPrompt.systemPrompt, /required "Context", required "Approach"/);
+	assert.match(planningPrompt.systemPrompt, /required "Context", optional "Questions & Answers", required "Approach"/);
+	assert.match(planningPrompt.systemPrompt, /Record every answered clarification/);
+	assert.match(planningPrompt.systemPrompt, /Do not add unresolved blockers, invented entries, or a no-questions placeholder/);
 	assert.match(planningPrompt.systemPrompt, /### Part A — Action-oriented title/);
 	assert.match(planningPrompt.systemPrompt, /Do not add an author-written status marker/);
 	assert.match(planningPrompt.systemPrompt, /selective implementation anchors/);
@@ -110,20 +112,21 @@ try {
 	assert.equal(blocked.block, true);
 
 	const submitted = await tools.get("submit_plan").execute("submit-1", {
-		intent: "Add reliable cache invalidation", title: "Add Reliable Cache Invalidation", markdown: PART_PLAN,
+		intent: "Add reliable cache invalidation", title: "Add Reliable Cache Invalidation", markdown: PART_PLAN_WITH_QUESTIONS,
 	}, undefined, undefined, ctx);
 	assert.equal(submitted.details.accepted, true);
 	assert.equal(submitted.terminate, true);
-	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-plan-display").length, 1);
+	const displayEntry = appended.filter((entry) => entry.customType === "plan-mode-plan-display").at(-1);
+	assert.match(displayEntry.data.markdown, /## Questions & Answers[\s\S]*Should failed writes invalidate a valid cache entry\?[\s\S]*No\. Retain the last valid value\./);
 	assert.equal(queued.length, 0, "approval commands are not sent to the model");
 
 	await rm(submitted.details.path);
 	await handlers.get("agent_settled")[0]({}, ctx);
 	const recovered = await readFile(submitted.details.path, "utf8");
 	assert.match(recovered, /# Add Reliable Cache Invalidation/, "approval recovers a missing plan from the durable display entry");
-	assert.match(recovered, /## Context[\s\S]*## Approach[\s\S]*### Part A/);
-	assert.match(recovered, /`src\/cache\.ts`/, "the planner may retain a selective researched anchor");
-	assert.match(recovered, /## Verification[\s\S]*Regression checks[\s\S]*smoke signal[\s\S]*failure signal/);
+	assert.match(recovered, /## Context[\s\S]*## Questions & Answers[\s\S]*## Approach[\s\S]*### Part A/);
+	assert.match(recovered, /\| Must the public cache interface change\? \| No\. Preserve compatibility\. \|/);
+	assert.match(recovered, /## Verification[\s\S]*Exercise successful and failed writes/);
 	assert.match(recovered, /## Part Progress/, "recovery retains the canonical managed progress report");
 	const executionState = appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data;
 	assert.equal(executionState.mode, "executing_all");
@@ -145,7 +148,6 @@ try {
 	assert.deepEqual(ledgerWidget, [
 		"☐ Define cache consistency",
 		"☐ Implement reliable invalidation",
-		"☐ Cover boundary behavior",
 	]);
 
 	const progress = tools.get("plan_progress");
@@ -153,16 +155,13 @@ try {
 	await progress.execute("p2", { itemId: "A", status: "completed", evidence: "contract tests passed" }, undefined, undefined, ctx);
 	await progress.execute("p3", { itemId: "B", status: "in_progress" }, undefined, undefined, ctx);
 	await progress.execute("p4", { itemId: "B", status: "completed", evidence: "implementation test passed" }, undefined, undefined, ctx);
-	await progress.execute("p5", { itemId: "C", status: "in_progress" }, undefined, undefined, ctx);
-	await progress.execute("p6", { itemId: "C", status: "completed", evidence: "edge tests passed" }, undefined, undefined, ctx);
 	assert.deepEqual(ledgerWidget, [
 		"☑ Define cache consistency",
 		"☑ Implement reliable invalidation",
-		"☑ Cover boundary behavior",
 	]);
 	const saved = await readFile(submitted.details.path, "utf8");
-	assert.match(saved, /## Part Progress[\s\S]*- ☑ Define cache consistency[\s\S]*- ☑ Implement reliable invalidation[\s\S]*- ☑ Cover boundary behavior/);
-	assert.doesNotMatch(saved, /Part [A-C] \[(?:pending|in_progress|completed|blocked)\]/);
+	assert.match(saved, /## Questions & Answers[\s\S]*\| Question \| Answer \|[\s\S]*## Part Progress[\s\S]*- ☑ Define cache consistency[\s\S]*- ☑ Implement reliable invalidation/);
+	assert.doesNotMatch(saved, /Part [A-B] \[(?:pending|in_progress|completed|blocked)\]/);
 	const completed = await tools.get("complete_plan").execute("done", {
 		summary: "all stages complete", tests: ["node --test"], allowBlockedStoppingCriterion: false,
 	}, undefined, undefined, ctx);

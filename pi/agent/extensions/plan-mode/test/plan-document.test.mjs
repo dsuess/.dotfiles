@@ -7,12 +7,17 @@ import {
 	renderPlanDocument,
 	replaceManagedProgressReport,
 	splitManagedProgressReport,
+	validateFastPlanRevision,
 	validatePlanDocument,
 } from "../plan-document.js";
 import {
 	LEGACY_PLAN,
+	INVALID_PART_PARALLEL_PLAN,
 	PART_MINIMAL_PLAN,
+	PART_PARALLEL_PLAN,
 	PART_PLAN,
+	PART_PLAN_WITH_QUESTIONS,
+	PART_SPLIT_PARALLEL_PLAN,
 	SMALL_PLAN,
 	VALID_PLAN,
 	VERSION_2_PLAN,
@@ -34,6 +39,53 @@ test("parses Context and Approach Parts into pending one-Part execution stages",
 	assert.deepEqual(result.document.stages.map((stage) => stage.id), ["A", "B", "C"]);
 	assert.deepEqual(result.document.stages.map((stage) => stage.stepIds), [["A"], ["B"], ["C"]]);
 	assert.deepEqual(result.document.stages.map((stage) => stage.description), result.document.parts.map((part) => part.title));
+});
+
+test("parses and round-trips answered clarification records without adding execution stages", () => {
+	const result = parsePlanDocument(PART_PLAN_WITH_QUESTIONS);
+	assert.equal(result.ok, true, JSON.stringify(result.errors));
+	assert.deepEqual(result.document.questionsAndAnswers, [
+		{ question: "Should failed writes invalidate a valid cache entry?", answer: "No. Retain the last valid value." },
+		{ question: "Must the public cache interface change?", answer: "No. Preserve compatibility." },
+	]);
+	assert.deepEqual(result.document.stages.map((stage) => stage.id), ["A", "B"]);
+	assert.equal(renderPlanDocument(result.document), PART_PLAN_WITH_QUESTIONS);
+});
+
+test("rejects empty, malformed, duplicate, and misplaced Questions & Answers sections", () => {
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace(
+		"| Question | Answer |\n|---|---|\n| Should failed writes invalidate a valid cache entry? | No. Retain the last valid value. |\n| Must the public cache interface change? | No. Preserve compatibility. |",
+		"",
+	)).includes("invalid_questions_and_answers"));
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace("| Question | Answer |", "| Prompt | Reply |")).includes("invalid_questions_and_answers"));
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace("| Must the public cache interface change? | No. Preserve compatibility. |", "| Must the public cache interface change? | No. Preserve compatibility. | Extra cell | ")).includes("invalid_question_answer_row"));
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace("| Must the public cache interface change? | No. Preserve compatibility. |", "| Must the public cache interface change? | | ")).includes("invalid_question_answer_row"));
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace("## Questions & Answers\n\n", "").replace("## Approach", "## Approach\n\n## Questions & Answers")).includes("invalid_section_order"));
+	assert.ok(errorCodes(PART_PLAN_WITH_QUESTIONS.replace("## Approach", "## Questions & Answers\n\n| Question | Answer |\n|---|---|\n| Duplicate? | Yes. |\n\n## Approach")).includes("duplicate_section"));
+});
+
+test("parses, renders, and validates a canonical Parallel Execution schedule", () => {
+	const optimized = PART_SPLIT_PARALLEL_PLAN;
+	const parsed = parsePlanDocument(optimized);
+	assert.equal(parsed.ok, true, JSON.stringify(parsed.errors));
+	assert.deepEqual(parsed.document.parallelExecution.map((assignment) => assignment.partId), ["A", "B", "C", "D"]);
+	assert.equal(parsed.document.stages[2].parallelExecution.wave, 2);
+	assert.equal(renderPlanDocument(parsed.document), optimized);
+	assert.equal(validateFastPlanRevision(PART_PLAN, optimized).ok, true);
+});
+
+test("rejects invalid Parallel Execution assignments and changed fast scope", () => {
+	const optimized = PART_PARALLEL_PLAN
+		.replace("cache contract", "contract boundary")
+		.replace("cache implementation", "implementation boundary")
+		.replace("cache tests", "test boundary");
+	assert.equal(validateFastPlanRevision(PART_PLAN, optimized).ok, true);
+	assert.ok(errorCodes(INVALID_PART_PARALLEL_PLAN).includes("duplicate_parallel_worker"));
+	assert.ok(errorCodes(optimized.replace("| 2 | worker-c | C | C | A, B | test boundary |", "| 1 | worker-c | C | C | A | test boundary |")).includes("invalid_parallel_dependency"));
+	assert.ok(errorCodes(optimized.replace("implementation boundary", "contract boundary")).includes("overlapping_parallel_ownership"));
+	assert.equal(validateFastPlanRevision(PART_PLAN, optimized.replace("Invalidate matching entries", "Delete matching entries")).ok, false);
+	assert.equal(validateFastPlanRevision(PART_PLAN, optimized.replace("| 1 | worker-b | B | B | — | implementation boundary |", "| 1 | worker-b | B | A, B | — | implementation boundary |")).ok, false);
+	assert.equal(validateFastPlanRevision(PART_PLAN, optimized.replace("| 1 | worker-a | A | A | — | contract boundary |", "| 1 | worker-a | A | B | — | contract boundary |" )).ok, false);
 });
 
 test("accepts both optional sections independently or omits them cleanly", () => {

@@ -43,9 +43,27 @@ Newly authored Markdown uses document version 4:
 
 1. One concise, action-oriented H1 title.
 2. Required `## Context` explains current behavior, motivation, architectural fit, relevant research, terminology conflicts, assumptions, confirmed decisions, and accepted risks when they matter.
-3. Required `## Approach` explains the solution before one or more ordered `### Part A — Action-oriented title` work items. IDs continue alphabetically without gaps; headings never contain an author-written status.
-4. Optional `## Critical Files` maps only important modification boundaries and read-only references, with each entry's responsibility stated.
-5. Optional `## Verification` distinguishes regression checks from new-feature scenarios and records observable smoke/canary, success, and failure signals. It is required by the authoring guidance whenever the result can be meaningfully checked; explanatory or investigative plans may omit it when no meaningful verification exists.
+3. Optional `## Questions & Answers` follows `Context` and precedes `Approach`. Include it only for user clarifications that have answers. It contains one table with this exact shape:
+
+   ```markdown
+   | Question | Answer |
+   |---|---|
+   | Does this change the public interface? | No. Keep the existing interface. |
+   ```
+
+   Add one non-empty row for each answered clarification. Record the question and answer so they preserve the decision. Do not add unresolved questions. Do not invent entries or add a placeholder when no questions were asked.
+4. Required `## Approach` explains the solution before one or more ordered `### Part A — Action-oriented title` work items. IDs continue alphabetically without gaps; headings never contain an author-written status.
+5. Optional `## Parallel Execution` follows `Approach` and precedes `Critical Files`. Normal plans omit this section. A fast revision contains one strict table:
+
+   ```markdown
+   | Wave | Worker | Part | Source Part | Depends On | Ownership |
+   |---|---|---|---|---|---|
+   | 1 | worker-a | A | A | — | parser boundary |
+   ```
+
+   Each optimized Part has one row and one worker. Waves start at 1 and have no gaps. A dependency names a Part in an earlier wave. Ownership names an exclusive mutation boundary.
+6. Optional `## Critical Files` maps only important modification boundaries and read-only references, with each entry's responsibility stated.
+7. Optional `## Verification` distinguishes regression checks from new-feature scenarios and records observable smoke/canary, success, and failure signals. It is required by the authoring guidance whenever the result can be meaningfully checked; explanatory or investigative plans may omit it when no meaningful verification exists.
 
 Each Part describes one coherent behavior boundary: dependencies, scope, edge cases, guardrails, rationale, and acceptance outcomes. A Part is also one ledger item and one derived execution stage, so staged execution pauses after every Part while full execution advances through Parts in order without ordinary pauses.
 
@@ -61,6 +79,12 @@ Representative behavior-changing plan:
 ## Context
 
 Successful writes can leave stale cache entries. Research confirmed that `src/cache.ts` owns expiry keys; this anchor matters because invalidation must use the same identity.
+
+## Questions & Answers
+
+| Question | Answer |
+|---|---|
+| Must the public cache interface change? | No. Preserve compatibility. |
 
 ## Approach
 
@@ -91,11 +115,16 @@ A documentation-only or investigative plan uses the same `Context` and `Approach
 The complete saved plan is rendered as a durable transcript block, then the action dialog opens directly after the planning turn settles without injecting a `/plan-actions` user message. The dialog offers:
 
 - **Implement plan** — execute all stages without ordinary stage pauses.
+- **Implement (fast)** — create a source-equivalent parallel revision, then start it without another approval dialog.
 - **Implement in stages** — hard pause after every derived stage (one Part per stage for version 4).
 - **Change** — send exact free-form revision feedback while remaining gated.
 - **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
-Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
+**Implement plan** remains first and is the default action. Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
+
+The fast action reads and hash-checks the approved source before it starts. It requires a version-4 Part plan and `subagent` in the original tool snapshot. The optimizer uses the planning profile and cannot ask questions. It can inspect the repository, split a source Part, and add the schedule. It cannot change approved scope or combine source Parts.
+
+Before the extension writes a fast revision, it compares the title, Context, answers, Approach preamble, Critical Files, and Verification. For each source Part, mapped Part bodies must join to the same normalized text. The source Part order stays unchanged. If the optimizer stops, fails validation, or reaches its retry limit, the extension restores the original unconsumed approval. It never executes the source plan on this failure path.
 
 Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--file`, `--theme`, and `review` CLI interfaces, gives each round private data/cache/state storage, and copies the user's normal tuicr configuration into that isolated round. Plan review applies a bundled neutral-additions theme because tuicr models file annotation as an all-added diff; this removes the otherwise full-screen green addition highlighting without changing normal tuicr reviews. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `submit_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Change** is the supported fallback.
 
@@ -113,7 +142,9 @@ The original active tools are restored by registered-name intersection, with exe
 - `complete_plan` — terminal whole-plan validation.
 - `complete_stage` — current-stage validation and mandatory checkpoint.
 
-Ledger writes are serialized through Pi's file mutation queue. For version 4 they atomically update only a Part's managed `Ledger` line and the trailing generated report; the approved Part heading and authored body remain immutable. Legacy plans retain their status-bearing heading behavior. Any other plan-content drift stops the update. The live widget and saved report list every plan item in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent; the parent is the only ledger writer.
+Ledger writes are serialized through Pi's file mutation queue. For version 4 they atomically update only a Part's managed `Ledger` line and the trailing generated report. The approved Part heading and authored body remain immutable. Legacy plans retain their status-bearing heading behavior. Any other plan-content drift stops the update. The live widget and saved report list every plan item in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent. The parent is the only ledger writer.
+
+A fast run stays in `executing_all`. Its schedule controls the derived stages. The parent starts every ready Part in a wave. Then it sends one sibling `subagent` call for each Part. Each worker receives its Part, ownership boundary, approved context, acceptance outcomes, and predecessor evidence. Workers use the persisted inference model at high thinking. The parent waits for every worker, records terminal evidence, checks integration, and then starts the next wave. A later wave cannot start before every earlier-wave Part and declared dependency is terminal.
 
 Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Feedback explicitly reopens affected plan items. Stop remains resumable in the same implementation session. Worker run/session IDs are retained in state for dependent later work.
 

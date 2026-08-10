@@ -37,6 +37,7 @@ export function createInitialState() {
 		originalActiveTools: [],
 		plan: null,
 		approval: null,
+		optimization: null,
 		execution: null,
 		ledger: {},
 		currentStageId: null,
@@ -107,6 +108,7 @@ export function enterPlanning(state, activeTools) {
 		// requestRevision() and therefore retain their current plan metadata.
 		next.plan = null;
 		next.approval = null;
+		next.optimization = null;
 		next.execution = null;
 		next.ledger = {};
 		next.currentStageId = null;
@@ -125,6 +127,7 @@ export function exitPlanning(state) {
 	return apply(state, "exit_planning", (next) => {
 		next.mode = "off";
 		next.approval = null;
+		next.optimization = null;
 		next.execution = null;
 		next.currentStageId = null;
 		next.checkpoint = null;
@@ -201,7 +204,12 @@ export function submitPlan(state, submission) {
 			}
 			assignedTaskIds.add(taskId);
 		}
-		stages.push({ id: stage.id, description, taskIds: mappedTaskIds });
+		stages.push({
+			id: stage.id,
+			description,
+			taskIds: mappedTaskIds,
+			...(stage.parallelExecution ? { parallelExecution: clone(stage.parallelExecution) } : {}),
+		});
 	}
 	if (assignedTaskIds.size !== taskIds.size) {
 		return rejection(state, "invalid_plan_metadata", "Every plan item must belong to exactly one execution stage");
@@ -218,6 +226,7 @@ export function submitPlan(state, submission) {
 			title: submission.title,
 			intent: submission.intent,
 			revision,
+			executionStrategy: submission.executionStrategy === "parallel" ? "parallel" : "standard",
 			stageIds: [...stageIds],
 			taskIds: [...taskIds],
 			tasks,
@@ -230,6 +239,7 @@ export function submitPlan(state, submission) {
 			consumed: false,
 			presented: false,
 		};
+		next.optimization = null;
 		next.execution = null;
 		next.ledger = ledger;
 		next.currentStageId = null;
@@ -239,6 +249,60 @@ export function submitPlan(state, submission) {
 		next.parallelWorkers = [];
 		next.counters.invalidSubmissions = 0;
 		next.blockedReason = null;
+	});
+}
+
+export function beginFastOptimization(state, nonce, sourcePartIds) {
+	const approvalError = requireApproval(state, nonce, "beginFastOptimization");
+	if (approvalError) return approvalError;
+	if (!Array.isArray(sourcePartIds) || sourcePartIds.length === 0 || sourcePartIds.some((id) => typeof id !== "string" || !id)) {
+		return rejection(state, "invalid_fast_optimization", "Fast optimization requires the approved source Part identities");
+	}
+	return apply(state, "begin_fast_optimization", (next) => {
+		next.mode = "planning";
+		next.optimization = {
+			sourceHash: next.plan.hash,
+			sourceRevision: next.plan.revision,
+			sourceApproval: clone(next.approval),
+			sourcePartIds: [...sourcePartIds],
+		};
+		next.approval = null;
+		next.counters.invalidSubmissions = 0;
+	});
+}
+
+export function restoreFastOptimization(state) {
+	const invalidMode = requireMode(state, ["planning"], "restoreFastOptimization");
+	if (invalidMode) return invalidMode;
+	const optimization = state.optimization;
+	if (!optimization || !state.plan || state.plan.hash !== optimization.sourceHash || state.plan.revision !== optimization.sourceRevision) {
+		return rejection(state, "stale_fast_optimization", "Fast optimization no longer matches its approved source plan");
+	}
+	return apply(state, "restore_fast_optimization", (next) => {
+		next.mode = "approval";
+		next.approval = { ...clone(optimization.sourceApproval), consumed: false, presented: false };
+		next.optimization = null;
+		next.counters.invalidSubmissions = 0;
+	});
+}
+
+export function acceptFastOptimization(state, submission) {
+	const invalidMode = requireMode(state, ["planning"], "acceptFastOptimization");
+	if (invalidMode) return invalidMode;
+	const optimization = state.optimization;
+	if (!optimization || !state.plan || state.plan.hash !== optimization.sourceHash || state.plan.revision !== optimization.sourceRevision) {
+		return rejection(state, "stale_fast_optimization", "Fast optimization no longer matches its approved source plan");
+	}
+	const submitted = submitPlan(state, { ...submission, executionStrategy: "parallel", sequentialStages: false });
+	if (!submitted.ok) return submitted;
+	const approved = approveExecution(submitted.state, submission.approvalNonce, "all");
+	if (!approved.ok) return approved;
+	return apply(approved.state, "accept_fast_optimization", (next) => {
+		next.approval = null;
+		next.optimization = null;
+		next.plan.executionStrategy = "parallel";
+		next.plan.sequentialStages = false;
+		next.execution.strategy = "parallel";
 	});
 }
 
@@ -267,6 +331,7 @@ export function approveExecution(state, nonce, executionMode) {
 		next.approval.consumed = true;
 		next.execution = {
 			mode: executionMode,
+			strategy: next.plan.executionStrategy ?? "standard",
 			startedAt: null,
 			parentSessionPath: null,
 			runId: null,
@@ -302,6 +367,22 @@ export function recordTaskProgress(state, update) {
 			.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
 		if (unfinishedPrior.length > 0) {
 			return rejection(state, "future_stage", `Plan item ${itemId} cannot begin before earlier Parts are terminal: ${unfinishedPrior.join(", ")}`);
+		}
+	}
+	if (state.mode === "executing_all" && state.plan?.executionStrategy === "parallel" && update.status === "in_progress") {
+		const stage = state.plan.stages.find((candidate) => candidate.taskIds.includes(itemId));
+		const schedule = stage?.parallelExecution;
+		if (!schedule) return rejection(state, "missing_parallel_schedule", `Plan item ${itemId} has no parallel execution assignment`);
+		const unfinishedEarlierWaves = state.plan.stages
+			.filter((candidate) => (candidate.parallelExecution?.wave ?? Number.POSITIVE_INFINITY) < schedule.wave)
+			.flatMap((candidate) => candidate.taskIds)
+			.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
+		if (unfinishedEarlierWaves.length > 0) {
+			return rejection(state, "future_wave", `Plan item ${itemId} cannot begin before earlier waves are terminal: ${unfinishedEarlierWaves.join(", ")}`);
+		}
+		const unfinishedDependencies = schedule.dependencies.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
+		if (unfinishedDependencies.length > 0) {
+			return rejection(state, "unmet_dependency", `Plan item ${itemId} cannot begin before dependencies are terminal: ${unfinishedDependencies.join(", ")}`);
 		}
 	}
 	const allowed = {
@@ -445,6 +526,23 @@ export function migrateState(value) {
 	}
 	if (migrated.plan && !Array.isArray(migrated.plan.tasks)) migrated.plan.tasks = [];
 	if (migrated.plan && typeof migrated.plan.sequentialStages !== "boolean") migrated.plan.sequentialStages = false;
+	if (migrated.plan && !["standard", "parallel"].includes(migrated.plan.executionStrategy)) migrated.plan.executionStrategy = "standard";
+	if (migrated.execution && !["standard", "parallel"].includes(migrated.execution.strategy)) migrated.execution.strategy = migrated.plan?.executionStrategy ?? "standard";
+	if (!migrated.optimization) migrated.optimization = null;
+	if (migrated.optimization) {
+		const optimization = migrated.optimization;
+		const matchingSource = migrated.mode === "planning" && migrated.plan &&
+			migrated.plan.hash === optimization.sourceHash && migrated.plan.revision === optimization.sourceRevision &&
+			optimization.sourceApproval?.nonce && optimization.sourceApproval?.planHash === optimization.sourceHash &&
+			optimization.sourceApproval?.revision === optimization.sourceRevision;
+		if (!matchingSource) {
+			migrated.mode = "blocked";
+			migrated.approval = null;
+			migrated.optimization = null;
+			migrated.blockedReason = "Fast optimization state is stale and cannot safely restore its source approval.";
+			migrated.lastAction = "stale_fast_optimization";
+		}
+	}
 	return migrated;
 }
 

@@ -40,15 +40,17 @@ import {
 	type ModelProfile,
 	type ModelRoutingState,
 } from "./model-routing.ts";
-import { parsePlanDocument } from "./plan-document.js";
+import { parsePlanDocument, validateFastPlanRevision } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
 import { buildProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
-import { buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
+import { buildFastOptimizationPrompt, buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
 import { showStageDialog } from "./stage-dialog.ts";
 import {
 	PLAN_MODE_STATE_ENTRY,
+	acceptFastOptimization,
 	approveExecution,
+	beginFastOptimization,
 	completeWorkflow,
 	createInitialState,
 	enterPlanning,
@@ -59,6 +61,7 @@ import {
 	resetInvalidSubmissions,
 	resolveStageCheckpoint,
 	resumeExecution,
+	restoreFastOptimization,
 	restoreLatestState,
 	submitPlan,
 } from "./state.js";
@@ -172,7 +175,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	}
 
 	function planningToolNames(): string[] {
-		const names = getPlanningToolNames(allToolNames());
+		const names = getPlanningToolNames(allToolNames(), { fastOptimization: state.optimization !== null });
 		return state.mode === "planning" && state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS
 			? names.filter((name) => name !== "submit_plan")
 			: names;
@@ -258,6 +261,16 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	}
 
 	async function stopPlanning(ctx: ExtensionContext): Promise<void> {
+		if (state.optimization) {
+			const restored = restoreFastOptimization(state) as TransitionResult;
+			if (restored.ok) {
+				commitTransition(restored);
+				applyPlanningGate();
+				updateStatus(ctx);
+				if (ctx.hasUI) ctx.ui.notify("Fast optimization stopped. The original approval is available again.", "info");
+				return;
+			}
+		}
 		const result = exitPlanning(state) as TransitionResult;
 		if (!result.ok) {
 			if (ctx.hasUI) ctx.ui.notify(result.error.message, "warning");
@@ -323,40 +336,35 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 	}
 
-	async function handoffExecution(ctx: ExtensionContext, nonce: string, mode: "all" | "staged"): Promise<void> {
-		if (!state.plan) return;
-		let approvedMarkdown: string;
-		try {
-			approvedMarkdown = await readApprovedPlan(ctx);
-		} catch (error) {
-			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
-			return;
-		}
-		const transition = approveExecution(state, nonce, mode) as TransitionResult;
-		if (!transition.ok) { ctx.ui.notify(transition.error.message, "warning"); return; }
-		const next = structuredClone(transition.state);
+	async function queueInPlaceExecution(
+		ctx: ExtensionContext,
+		next: PlanModeState,
+		approvedMarkdown: string,
+		mode: "all" | "staged",
+	): Promise<void> {
+		if (!next.plan) return;
 		const runId = randomBytes(18).toString("base64url");
 		if (next.execution) {
 			next.execution.startedAt = new Date().toISOString();
 			next.execution.parentSessionPath = null;
 			next.execution.runId = runId;
 		}
+		const workerProfile = modelRouting?.inference ?? captureModelProfile(ctx.model, pi.getThinkingLevel());
 		const contract: InPlaceExecutionContract = {
 			version: 2,
 			handoff: "in_place",
 			runId,
 			approvedMarkdown,
-			planPath: state.plan.path,
-			planHash: state.plan.hash,
+			planPath: next.plan.path,
+			planHash: next.plan.hash,
 			executionMode: mode,
-			originalActiveTools: [...state.originalActiveTools],
+			executionStrategy: next.execution?.strategy ?? "standard",
+			...(workerProfile ? { workerModel: `${workerProfile.provider}/${workerProfile.modelId}`, workerThinkingLevel: "high" as const } : {}),
+			originalActiveTools: [...next.originalActiveTools],
 			sessionPath: ctx.sessionManager.getSessionFile() ?? null,
 			boundaryHash: "",
 		};
 		contract.boundaryHash = hashExecutionBoundary(buildExecutionKickoff(contract, next));
-
-		// Persist the contract before the executing state. If the hidden marker is
-		// interrupted, context isolation reconstructs only this approved contract.
 		pi.appendEntry(EXECUTION_ENTRY, contract);
 		executionContract = contract;
 		commitState(next);
@@ -372,8 +380,56 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				details: boundary.details,
 			}, { triggerTurn: true, deliverAs: "followUp" });
 		} catch (error) {
-			ctx.ui.notify(`Execution boundary delivery was interrupted; the persisted approved contract will be restored on the next turn: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			if (ctx.hasUI) ctx.ui.notify(`Execution boundary delivery was interrupted; the persisted approved contract will be restored on the next turn: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
+	}
+
+	async function handoffExecution(ctx: ExtensionContext, nonce: string, mode: "all" | "staged"): Promise<void> {
+		if (!state.plan) return;
+		let approvedMarkdown: string;
+		try {
+			approvedMarkdown = await readApprovedPlan(ctx);
+		} catch (error) {
+			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			return;
+		}
+		const transition = approveExecution(state, nonce, mode) as TransitionResult;
+		if (!transition.ok) { ctx.ui.notify(transition.error.message, "warning"); return; }
+		await queueInPlaceExecution(ctx, structuredClone(transition.state), approvedMarkdown, mode);
+	}
+
+	async function startFastOptimization(ctx: ExtensionContext, nonce: string): Promise<void> {
+		if (!state.plan) return;
+		if (!state.originalActiveTools.includes("subagent")) {
+			if (ctx.hasUI) ctx.ui.notify("Implement (fast) requires subagent in the original active-tool snapshot. The approval remains pending.", "error");
+			return;
+		}
+		if (!modelRouting?.inference && !ctx.model) {
+			if (ctx.hasUI) ctx.ui.notify("Implement (fast) requires a concrete inference model for worker routing. The approval remains pending.", "error");
+			return;
+		}
+		let sourceMarkdown: string;
+		try {
+			sourceMarkdown = await readApprovedPlan(ctx);
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			return;
+		}
+		const parsed = parsePlanDocument(sourceMarkdown);
+		if (!parsed.ok || parsed.document.version !== 4) {
+			if (ctx.hasUI) ctx.ui.notify("Implement (fast) requires a current version-4 Part plan. The approval remains pending.", "error");
+			return;
+		}
+		const transition = beginFastOptimization(state, nonce, parsed.document.parts.map((part) => part.id)) as TransitionResult;
+		if (!transition.ok) {
+			if (ctx.hasUI) ctx.ui.notify(transition.error.message, "warning");
+			return;
+		}
+		commitTransition(transition);
+		applyPlanningGate();
+		updateStatus(ctx);
+		await applyModelProfile(ctx, modelRouting?.planning, "planning");
+		pi.sendUserMessage(buildFastOptimizationPrompt(state, sourceMarkdown));
 	}
 
 	async function requestPlanChange(ctx: ExtensionContext, nonce: string, text: string): Promise<void> {
@@ -441,6 +497,10 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			if (choice.action === "cancel") return;
 			if (choice.action === "run" || choice.action === "staged") {
 				await handoffExecution(ctx, nonce, choice.action === "run" ? "all" : "staged");
+				return;
+			}
+			if (choice.action === "fast") {
+				await startFastOptimization(ctx, nonce);
 				return;
 			}
 			if (choice.action === "change") { await requestPlanChange(ctx, nonce, choice.text); return; }
@@ -578,6 +638,25 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			}
 
 			try {
+				const optimizing = state.optimization !== null;
+				let sourceMarkdown: string;
+				if (optimizing) {
+					try {
+						sourceMarkdown = await readApprovedPlan(ctx);
+					} catch (error) {
+						const restored = restoreFastOptimization(state) as TransitionResult;
+						if (restored.ok) commitTransition(restored);
+						applyPlanningGate();
+						return {
+							content: [{ type: "text", text: `Fast optimization lost its approved source: ${formatStoreError(error)}. The original approval was restored without execution.` }],
+							details: { accepted: false, fast: true, restoredApproval: restored.ok },
+						};
+					}
+					const equivalent = validateFastPlanRevision(sourceMarkdown, params.markdown);
+					if (!equivalent.ok) {
+						throw new PlanStoreError("fast_revision_invalid", "Fast revision changed approved scope or has an invalid parallel schedule", equivalent.errors);
+					}
+				}
 				const stored = await persistPlan({
 					cwd: ctx.cwd,
 					configDirName: CONFIG_DIR_NAME,
@@ -591,10 +670,19 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					id: stage.id,
 					description: stage.description,
 					taskIds: stage.stepIds,
+					...(stage.parallelExecution ? {
+						parallelExecution: {
+							wave: stage.parallelExecution.wave,
+							workerId: stage.parallelExecution.worker,
+							sourcePartId: stage.parallelExecution.sourcePartId,
+							dependencies: stage.parallelExecution.dependencies,
+							ownership: stage.parallelExecution.ownership,
+						},
+					} : {}),
 				}));
 				const tasks = getDocumentProgressTasks(stored.document)
 					.map((task) => ({ id: task.id, title: task.title, status: task.status }));
-				const result = submitPlan(state, {
+				const submission = {
 					path: stored.path,
 					slug: stored.slug,
 					hash: stored.hash,
@@ -604,19 +692,30 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					sequentialStages: stored.document.version === 4,
 					stages,
 					tasks,
-				}) as TransitionResult;
+				};
+				const result = (optimizing
+					? acceptFastOptimization(state, submission)
+					: submitPlan(state, submission)) as TransitionResult;
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
-				commitTransition(result);
 				approvedPlanMarkdown = stored.markdown;
-				applyPlanningGate();
-				updateStatus(ctx);
 				pi.appendEntry(PLAN_DISPLAY_ENTRY, {
 					markdown: stored.markdown,
 					path: stored.path,
 					revision: result.state.plan?.revision ?? 1,
 					hash: stored.hash,
 				});
+				if (optimizing) {
+					await queueInPlaceExecution(ctx, structuredClone(result.state), stored.markdown, "all");
+					return {
+						content: [{ type: "text", text: `Validated fast revision and saved it to ${stored.path}. Parallel execution has started without another approval dialog.` }],
+						details: { accepted: true, fast: true, path: stored.path, hash: stored.hash, revision: result.state.plan?.revision },
+						terminate: true,
+					};
+				}
+				commitTransition(result);
+				applyPlanningGate();
+				updateStatus(ctx);
 				return {
 					content: [{
 						type: "text",
@@ -633,17 +732,27 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					terminate: true,
 				};
 			} catch (error) {
+				const optimizing = state.optimization !== null;
 				const transition = recordInvalidSubmission(state) as TransitionResult;
 				if (transition.ok) commitTransition(transition);
-				applyPlanningGate();
 				const attempts = state.counters.invalidSubmissions;
 				const retryLimitReached = attempts >= MAX_INVALID_SUBMISSIONS;
+				if (optimizing && retryLimitReached) {
+					const restored = restoreFastOptimization(state) as TransitionResult;
+					if (restored.ok) commitTransition(restored);
+					applyPlanningGate();
+					return {
+						content: [{ type: "text", text: `${formatStoreError(error)}\nFast optimization reached its invalid-submission limit. The original approval was restored without execution.` }],
+						details: { accepted: false, fast: true, attempts, restoredApproval: restored.ok },
+					};
+				}
+				applyPlanningGate();
 				return {
 					content: [{
 						type: "text",
 						text: `${formatStoreError(error)}\nSubmission rejected; planning mode remains active. Attempt ${attempts}/${MAX_INVALID_SUBMISSIONS}.${retryLimitReached ? " Wait for user input before retrying." : " Correct the errors and resubmit the complete plan."}`,
 					}],
-					details: { accepted: false, attempts, retryLimitReached },
+					details: { accepted: false, attempts, retryLimitReached, fast: optimizing },
 				};
 			}
 		},
@@ -675,7 +784,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	pi.on("tool_call", async (event) => {
 		if (!isGated(state)) return;
-		const reason = evaluatePlanningToolCall(event.toolName, event.input, allToolNames());
+		const reason = evaluatePlanningToolCall(event.toolName, event.input, allToolNames(), { fastOptimization: state.optimization !== null });
 		if (reason) return { block: true, reason };
 	});
 
@@ -705,7 +814,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	pi.on("before_agent_start", async (event) => {
 		if (isGated(state)) {
 			applyPlanningGate();
-			if (state.mode === "planning") return { systemPrompt: `${event.systemPrompt}\n\n${buildPlanningPrompt(state)}` };
+			if (state.mode === "planning") return { systemPrompt: `${event.systemPrompt}\n\n${state.optimization ? "Fast optimization is active. Follow its dedicated source-preserving prompt." : buildPlanningPrompt(state)}` };
 			return;
 		}
 		if (state.mode === "executing_all" || state.mode === "executing_staged") applyExecutionTools();
@@ -744,6 +853,16 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	let handlingEarlyIdle = false;
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (await presentPendingWorkflowDecision(ctx)) return;
+		if (state.mode === "planning" && state.optimization && !ctx.hasPendingMessages()) {
+			const restored = restoreFastOptimization(state) as TransitionResult;
+			if (restored.ok) {
+				commitTransition(restored);
+				applyPlanningGate();
+				updateStatus(ctx);
+				if (ctx.hasUI) ctx.ui.notify("Fast optimization ended without an equivalent schedule. The original approval was restored.", "warning");
+			}
+			return;
+		}
 		if (handlingEarlyIdle || (state.mode !== "executing_all" && state.mode !== "executing_staged") || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
 		const relevant = state.mode === "executing_staged"
 			? Object.entries(state.ledger).filter(([id]) => getStageTaskIds(state, state.currentStageId).includes(id))

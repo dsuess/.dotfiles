@@ -23,8 +23,10 @@ Planning workflow:
 
 Canonical Markdown contract:
 - Start with one non-empty H1 title that is concise and action-oriented.
-- Use these H2 sections in this exact order: required "Context", required "Approach", optional "Critical Files", then optional "Verification". Do not add other H2 sections.
-- "Context" explains the current behavior and motivation, how the work fits the repository architecture or workflow, and relevant research. Record terminology conflicts, material assumptions, confirmed decisions, and accepted risks when they affect the approach; unresolved blockers must be resolved before submission.
+- Use these H2 sections in this exact order: required "Context", optional "Questions & Answers", required "Approach", optional "Parallel Execution", optional "Critical Files", then optional "Verification". Do not add other H2 sections.
+- Omit "Parallel Execution" during ordinary planning. It is reserved for the fast optimizer, where it contains one strict Wave, Worker, Part, Source Part, Depends On, Ownership table.
+- "Context" explains the current behavior and motivation, how the work fits the repository architecture or workflow, and relevant research. Record terminology conflicts, material assumptions, confirmed decisions, and accepted risks when they affect the approach. All blockers must be resolved before submission.
+- Add "Questions & Answers" only when you asked a user clarification and received an answer. Use only this table shape: | Question | Answer |, |---|---|, then one or more rows with both cells non-empty. Record every answered clarification verbatim enough to retain the question, decision, and answer. Do not add unresolved blockers, invented entries, or a no-questions placeholder.
 - "Approach" first explains the proposed solution and architectural shape, then contains one or more ordered headings using "### Part A — Action-oriented title", continuing alphabetically without gaps (A, B, ... Z, AA, AB, ...). Do not add an author-written status marker.
 - Each Part is one coherent executable and staged-delivery boundary. Its body should cover the intended behavior, dependencies, scope boundaries, relevant edge cases, guardrails, rationale, and observable acceptance outcomes. Do not add a second Step or task hierarchy, and do not split Parts merely by file or API.
 - Preserve selective implementation anchors such as important paths, symbols, flags, external interfaces, or data shapes when research established a constraint or the anchor materially reduces ambiguity. Explain why the anchor matters. Do not produce exhaustive implementation inventories, mandatory file or tool lists, internal call-by-call recipes, or tool-call instructions.
@@ -33,4 +35,25 @@ Canonical Markdown contract:
 - Omit optional sections cleanly when inapplicable or empty. Include at least one Part and keep the complete document at or below 256 KiB.
 
 ${retryGuidance}`;
+}
+
+export function buildFastOptimizationPrompt(state: PlanModeState, sourceMarkdown: string): string {
+	const optimization = state.optimization;
+	return `[PI FAST PLAN OPTIMIZATION ACTIVE]
+You are optimizing an already approved version-4 Part plan for safe parallel execution. Do not ask questions, implement, edit files, change configuration, or request user approval. Repository inspection is allowed only to identify dependencies and exclusive mutation boundaries.
+
+You may only split existing source Parts into ordered optimized Parts and add the required Parallel Execution schedule. Do not combine source Parts. Do not add, remove, reorder, or rewrite approved requirements. Keep the title, Context, answered Questions & Answers, Approach preamble, Critical Files, and Verification unchanged. For each source Part, concatenate the bodies of its mapped optimized Parts in source order so that the normalized text is exactly the source body. If a coherent split is unsafe, keep that source Part intact.
+
+The optimized document must include ## Parallel Execution after Approach and before Critical Files. Its only content is this table with one row for every optimized Part:
+| Wave | Worker | Part | Source Part | Depends On | Ownership |
+|---|---|---|---|---|---|
+Waves start at 1, are contiguous and ordered. Workers and Parts are unique. Dependencies name only Parts in earlier waves. Ownership names an exclusive mutation boundary; sibling ownership must not overlap. Use — when a Part has no dependencies. Assign one worker per optimized Part and put all safe, independent workers in the same wave.
+
+Finish only by calling submit_plan with the complete optimized Markdown. Its successful submission starts execution directly; there is no second approval dialog.
+
+Source approval: hash ${optimization?.sourceHash ?? "unknown"}, revision ${optimization?.sourceRevision ?? "unknown"}, source Parts ${optimization?.sourcePartIds.join(", ") ?? "unknown"}.
+
+Approved source Markdown:
+
+${sourceMarkdown}`;
 }

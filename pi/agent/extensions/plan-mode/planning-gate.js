@@ -29,9 +29,12 @@ export function snapshotActiveTools(activeTools) {
 	return activeTools.filter((name) => !WORKFLOW_TOOLS.has(name));
 }
 
-export function getPlanningToolNames(allToolNames) {
+export function getPlanningToolNames(allToolNames, options = {}) {
 	const available = new Set(allToolNames);
-	return [...INSPECTION_TOOLS, "submit_plan"].filter((name) => available.has(name));
+	const inspectionTools = options.fastOptimization === true
+		? INSPECTION_TOOLS.filter((name) => name !== "ask_user_question")
+		: INSPECTION_TOOLS;
+	return [...inspectionTools, "submit_plan"].filter((name) => available.has(name));
 }
 
 export function getRestorableTools(snapshot, allToolNames) {
@@ -42,9 +45,9 @@ export function getRestorableTools(snapshot, allToolNames) {
 	};
 }
 
-export function evaluatePlanningToolCall(toolName, input, allToolNames) {
+export function evaluatePlanningToolCall(toolName, input, allToolNames, options = {}) {
 	if (DIRECT_MUTATION_TOOLS.has(toolName)) return `Planning mode blocks direct mutation tool '${toolName}'.`;
-	const allowed = new Set(getPlanningToolNames(allToolNames));
+	const allowed = new Set(getPlanningToolNames(allToolNames, options));
 	if (!allowed.has(toolName)) return `Planning mode blocks tool '${toolName}'.`;
 	if (toolName === "bash") {
 		const analysis = analyzeBashMutation(input?.command);

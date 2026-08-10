@@ -30,6 +30,66 @@ Exercise misses, repeated invalidation, and expiry races after Part B. Accept th
 Regression checks preserve failed-write values and the existing public cache behavior. New-feature scenarios cover successful writes, hits, misses, repeated invalidation, and expiry races. A successful-write read returning fresh data is the smoke signal; any stale read or key-identity mismatch is a failure signal that invalidates the shared-key assumption.
 `;
 
+export const PART_PLAN_WITH_QUESTIONS = `# Add Reliable Cache Invalidation
+
+## Context
+
+Successful writes leave stale entries in the repository cache. The cache remains the read-path authority, so invalidation must preserve the public data-access contract.
+
+## Questions & Answers
+
+| Question | Answer |
+|---|---|
+| Should failed writes invalidate a valid cache entry? | No. Retain the last valid value. |
+| Must the public cache interface change? | No. Preserve compatibility. |
+
+## Approach
+
+Make successful-write invalidation part of the cache lifecycle while preserving compatibility.
+
+### Part A — Define cache consistency
+
+Clarify ownership and invalidation outcomes for successful and failed writes.
+
+### Part B — Implement reliable invalidation
+
+Invalidate matching entries after successful writes and retain valid entries after failed writes.
+
+## Verification
+
+Exercise successful and failed writes, cache hits and misses, and repeated invalidation.
+`;
+
+export const PART_PARALLEL_PLAN = PART_PLAN.replace("## Critical Files", `## Parallel Execution
+
+| Wave | Worker | Part | Source Part | Depends On | Ownership |
+|---|---|---|---|---|---|
+| 1 | worker-a | A | A | — | cache contract |
+| 1 | worker-b | B | B | — | cache implementation |
+| 2 | worker-c | C | C | A, B | cache tests |
+
+## Critical Files`);
+
+export const PART_SPLIT_PARALLEL_PLAN = PART_PLAN
+	.replace(
+		"Clarify ownership, expiry, and invalidation outcomes for successful and failed writes. This establishes the behavioral boundary required by Part B and is accepted when every write outcome has one unambiguous cache result.",
+		"Clarify ownership, expiry, and invalidation outcomes for successful and failed writes.\n\n### Part B — Finish cache consistency\n\nThis establishes the behavioral boundary required by Part B and is accepted when every write outcome has one unambiguous cache result.",
+	)
+	.replace("### Part B — Implement reliable invalidation", "### Part C — Implement reliable invalidation")
+	.replace("### Part C — Cover boundary behavior", "### Part D — Cover boundary behavior")
+	.replace("## Critical Files", `## Parallel Execution
+
+| Wave | Worker | Part | Source Part | Depends On | Ownership |
+|---|---|---|---|---|---|
+| 1 | worker-a | A | A | — | contract wording |
+| 1 | worker-b | B | A | — | acceptance wording |
+| 2 | worker-c | C | B | A, B | cache implementation |
+| 3 | worker-d | D | C | C | cache tests |
+
+## Critical Files`);
+
+export const INVALID_PART_PARALLEL_PLAN = PART_PARALLEL_PLAN.replace("| 1 | worker-b | B | B | — | cache implementation |", "| 1 | worker-a | B | B | — | cache implementation |");
+
 export const PART_MINIMAL_PLAN = `# Clarify Cache Documentation
 
 ## Context

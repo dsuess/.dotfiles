@@ -106,7 +106,7 @@ const VERSION_3_H2 = [
 	"Stages",
 ];
 const VERSION_3_REQUIRED_H2 = ["Background", "Changes"];
-const VERSION_4_H2 = ["Context", "Approach", "Critical Files", "Verification"];
+const VERSION_4_H2 = ["Context", "Questions & Answers", "Approach", "Parallel Execution", "Critical Files", "Verification"];
 const VERSION_4_REQUIRED_H2 = ["Context", "Approach"];
 const LEGACY_REQUIRED_H2 = [
 	"Objective / Goal Statement",
@@ -282,6 +282,137 @@ function parseStagesTable(content, startLine, steps, errors) {
 		if (!assignedSteps.has(step.id)) errors.push(error("unassigned_step", `Step ${step.id} is not assigned to a stage`, step.line));
 	}
 	return stages;
+}
+
+function parseQuestionsAndAnswersTable(content, startLine, errors) {
+	const tableBlocks = unfencedTableBlocks(content, startLine);
+	const nonemptyRows = unfencedLineRows(content, startLine).filter((row) => row.line.trim());
+	if (
+		tableBlocks.length !== 1 || tableBlocks[0].length < 3 ||
+		nonemptyRows.length !== tableBlocks[0].length
+	) {
+		errors.push(error(
+			"invalid_questions_and_answers",
+			"Questions & Answers must contain exactly one contiguous, unfenced Markdown table with at least one row",
+			startLine,
+		));
+		return [];
+	}
+	const tableRows = tableBlocks[0];
+	const header = splitTableRow(tableRows[0].line);
+	if (!header || header.map((cell) => cell.toLowerCase()).join("|") !== "question|answer") {
+		errors.push(error("invalid_questions_and_answers", "Questions & Answers table header must be Question, Answer", tableRows[0].number));
+	}
+	const separator = splitTableRow(tableRows[1].line);
+	if (!separator || separator.length !== 2 || separator.some((cell) => !/^:?-{3,}:?$/.test(cell))) {
+		errors.push(error("invalid_questions_and_answers", "Questions & Answers table separator is malformed", tableRows[1].number));
+	}
+	const questionsAndAnswers = [];
+	for (const row of tableRows.slice(2)) {
+		const cells = splitTableRow(row.line);
+		if (!cells || cells.length !== 2 || !cells[0] || !cells[1]) {
+			errors.push(error("invalid_question_answer_row", "Each Questions & Answers row needs a non-empty question and answer", row.number));
+			continue;
+		}
+		questionsAndAnswers.push({ question: cells[0], answer: cells[1] });
+	}
+	return questionsAndAnswers;
+}
+
+function ownershipPathTokens(value) {
+	return new Set(value.toLowerCase().match(/[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*\.[a-z0-9_-]+/g) ?? []);
+}
+
+function parseParallelExecutionTable(content, startLine, parts, errors) {
+	const tableBlocks = unfencedTableBlocks(content, startLine);
+	const nonemptyRows = unfencedLineRows(content, startLine).filter((row) => row.line.trim());
+	if (
+		tableBlocks.length !== 1 || tableBlocks[0].length < 3 ||
+		nonemptyRows.length !== tableBlocks[0].length
+	) {
+		errors.push(error(
+			"invalid_parallel_execution",
+			"Parallel Execution must contain exactly one contiguous, unfenced Markdown table with at least one assignment",
+			startLine,
+		));
+		return [];
+	}
+	const tableRows = tableBlocks[0];
+	const header = splitTableRow(tableRows[0].line);
+	if (!header || header.map((cell) => cell.toLowerCase()).join("|") !== "wave|worker|part|source part|depends on|ownership") {
+		errors.push(error("invalid_parallel_execution", "Parallel Execution table header must be Wave, Worker, Part, Source Part, Depends On, Ownership", tableRows[0].number));
+	}
+	const separator = splitTableRow(tableRows[1].line);
+	if (!separator || separator.length !== 6 || separator.some((cell) => !/^:?-{3,}:?$/.test(cell))) {
+		errors.push(error("invalid_parallel_execution", "Parallel Execution table separator is malformed", tableRows[1].number));
+	}
+
+	const knownParts = new Set(parts.map((part) => part.id));
+	const assignments = [];
+	const assignedParts = new Set();
+	const workers = new Set();
+	const ownerships = new Map();
+	let previousWave = 0;
+	for (const row of tableRows.slice(2)) {
+		const cells = splitTableRow(row.line);
+		if (!cells || cells.length !== 6) {
+			errors.push(error("invalid_parallel_execution_row", "Each Parallel Execution row needs six cells", row.number));
+			continue;
+		}
+		const [rawWave, worker, partId, sourcePartId, rawDependencies, ownership] = cells;
+		const wave = Number(rawWave);
+		if (!Number.isInteger(wave) || wave < 1) {
+			errors.push(error("invalid_parallel_wave", "Wave must be a positive integer", row.number));
+		}
+		if (wave > previousWave + 1) {
+			errors.push(error("parallel_wave_gap", `Wave ${wave} follows Wave ${previousWave}; waves must be contiguous`, row.number));
+		}
+		if (wave < previousWave) {
+			errors.push(error("parallel_wave_order", "Parallel Execution rows must be ordered by wave", row.number));
+		}
+		previousWave = Math.max(previousWave, wave);
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(worker)) {
+			errors.push(error("invalid_parallel_worker", "Worker must be a non-empty identifier", row.number));
+		}
+		if (workers.has(worker)) errors.push(error("duplicate_parallel_worker", `Worker ${worker} owns more than one Part`, row.number));
+		workers.add(worker);
+		if (!knownParts.has(partId)) errors.push(error("unknown_parallel_part", `Parallel Execution references unknown Part ${partId}`, row.number));
+		if (assignedParts.has(partId)) errors.push(error("duplicate_parallel_part", `Part ${partId} has more than one worker assignment`, row.number));
+		assignedParts.add(partId);
+		if (!/^[A-Z]+$/.test(sourcePartId)) {
+			errors.push(error("invalid_source_part", "Source Part must be an uppercase Part identity", row.number));
+		}
+		const dependencies = rawDependencies === "—" ? [] : rawDependencies.split(",").map((value) => value.trim()).filter(Boolean);
+		if (rawDependencies !== "—" && dependencies.length === 0) {
+			errors.push(error("invalid_parallel_dependencies", "Depends On must be — or a comma-separated Part list", row.number));
+		}
+		if (!ownership) errors.push(error("missing_parallel_ownership", "Ownership must name an exclusive mutation boundary", row.number));
+		const ownershipKey = ownership.toLowerCase().replace(/\s+/g, " ").trim();
+		const paths = ownershipPathTokens(ownership);
+		const overlap = [...ownerships.entries()].find(([key, prior]) =>
+			key === ownershipKey || [...paths].some((path) => prior.paths.has(path)),
+		);
+		if (ownershipKey && overlap) {
+			errors.push(error("overlapping_parallel_ownership", `Ownership overlaps Part ${overlap[1].partId}`, row.number));
+		}
+		if (ownershipKey) ownerships.set(ownershipKey, { partId, paths });
+		assignments.push({ wave, worker, partId, sourcePartId, dependencies, ownership });
+	}
+	for (const part of parts) {
+		if (!assignedParts.has(part.id)) errors.push(error("unassigned_parallel_part", `Part ${part.id} has no worker assignment`));
+	}
+	const assignmentByPart = new Map(assignments.map((assignment) => [assignment.partId, assignment]));
+	for (const assignment of assignments) {
+		for (const dependency of assignment.dependencies) {
+			const predecessor = assignmentByPart.get(dependency);
+			if (!predecessor) {
+				errors.push(error("unknown_parallel_dependency", `Part ${assignment.partId} depends on unknown Part ${dependency}`));
+			} else if (predecessor.wave >= assignment.wave) {
+				errors.push(error("invalid_parallel_dependency", `Part ${assignment.partId} must depend only on an earlier wave`, undefined));
+			}
+		}
+	}
+	return assignments;
 }
 
 function parseVersion2Document(lines, headings, titleHeading, errors) {
@@ -581,6 +712,17 @@ function parseVersion4Document(lines, headings, titleHeading, errors, options) {
 	const context = sectionContent("Context");
 	if (!context) errors.push(error("empty_section", "Required section cannot be empty: Context", contextHeading.line));
 
+	const optionalContent = {};
+	const questionsAndAnswersHeading = sectionByName.get("Questions & Answers");
+	if (questionsAndAnswersHeading) {
+		const questionsAndAnswers = parseQuestionsAndAnswersTable(
+			sectionContent("Questions & Answers"),
+			questionsAndAnswersHeading.index + 2,
+			errors,
+		);
+		if (questionsAndAnswers.length > 0) optionalContent.questionsAndAnswers = questionsAndAnswers;
+	}
+
 	const partHeadings = headings.filter(
 		(heading) => heading.level === 3 && heading.index > approachHeading.index && heading.index < approachEnd,
 	);
@@ -626,7 +768,17 @@ function parseVersion4Document(lines, headings, titleHeading, errors, options) {
 		parts.push({ id, status, title, body });
 	}
 
-	const optionalContent = {};
+	const parallelExecutionHeading = sectionByName.get("Parallel Execution");
+	if (parallelExecutionHeading) {
+		const assignments = parseParallelExecutionTable(
+			sectionContent("Parallel Execution"),
+			parallelExecutionHeading.index + 2,
+			parts,
+			errors,
+		);
+		if (assignments.length > 0) optionalContent.parallelExecution = assignments;
+	}
+
 	for (const [name, property] of [["Critical Files", "criticalFiles"], ["Verification", "verification"]]) {
 		if (!sectionByName.has(name)) continue;
 		const value = sectionContent(name);
@@ -635,6 +787,7 @@ function parseVersion4Document(lines, headings, titleHeading, errors, options) {
 	}
 	if (errors.length > 0) return { ok: false, errors };
 
+	const assignmentByPart = new Map(optionalContent.parallelExecution?.map((assignment) => [assignment.partId, assignment]));
 	return {
 		ok: true,
 		document: {
@@ -649,6 +802,7 @@ function parseVersion4Document(lines, headings, titleHeading, errors, options) {
 				description: part.title,
 				stepIds: [part.id],
 				tasks: [part],
+				...(assignmentByPart.get(part.id) ? { parallelExecution: assignmentByPart.get(part.id) } : {}),
 			})),
 		},
 	};
@@ -887,15 +1041,26 @@ function renderVersion4Document(document) {
 		"## Context",
 		"",
 		document.context.trim(),
-		"",
-		"## Approach",
 	];
+	if (document.questionsAndAnswers?.length) {
+		lines.push("", "## Questions & Answers", "", "| Question | Answer |", "|---|---|");
+		for (const { question, answer } of document.questionsAndAnswers) {
+			lines.push(`| ${escapeTableCell(question)} | ${escapeTableCell(answer)} |`);
+		}
+	}
+	lines.push("", "## Approach");
 	if (document.approach?.trim()) lines.push("", document.approach.trim());
 	for (const part of document.parts) {
 		const body = part.body.trim();
 		lines.push("", `### Part ${part.id} — ${part.title}`);
 		if (body.startsWith("- **Ledger:**")) lines.push(body);
 		else lines.push("", body);
+	}
+	if (document.parallelExecution?.length) {
+		lines.push("", "## Parallel Execution", "", "| Wave | Worker | Part | Source Part | Depends On | Ownership |", "|---|---|---|---|---|---|");
+		for (const assignment of document.parallelExecution) {
+			lines.push(`| ${assignment.wave} | ${escapeTableCell(assignment.worker)} | ${assignment.partId} | ${assignment.sourcePartId} | ${assignment.dependencies.length ? assignment.dependencies.join(", ") : "—"} | ${escapeTableCell(assignment.ownership)} |`);
+		}
 	}
 	for (const [heading, property] of [["Critical Files", "criticalFiles"], ["Verification", "verification"]]) {
 		if (document[property]?.trim()) lines.push("", `## ${heading}`, "", document[property].trim());
@@ -940,6 +1105,72 @@ export function renderPlanDocument(document) {
 	return document.managedProgressReport
 		? replaceManagedProgressReport(rendered, buildDocumentProgressRows(document))
 		: rendered;
+}
+
+function normalizeEquivalentContent(value) {
+	return value
+		.replaceAll("\r\n", "\n")
+		.replaceAll("\r", "\n")
+		.split("\n")
+		.filter((line) => !/^- \*\*Ledger:\*\*/.test(line))
+		.join("\n")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function equivalentValue(value) {
+	if (Array.isArray(value)) return JSON.stringify(value);
+	return normalizeEquivalentContent(value ?? "");
+}
+
+export function validateFastPlanRevision(sourceMarkdown, optimizedMarkdown) {
+	const source = parsePlanDocument(sourceMarkdown);
+	const optimized = parsePlanDocument(optimizedMarkdown);
+	const errors = [];
+	if (!source.ok) errors.push(...source.errors.map((item) => ({ ...item, code: `invalid_source_${item.code}` })));
+	if (!optimized.ok) errors.push(...optimized.errors.map((item) => ({ ...item, code: `invalid_optimized_${item.code}` })));
+	if (errors.length > 0) return { ok: false, errors };
+	if (source.document.version !== PLAN_DOCUMENT_VERSION || optimized.document.version !== PLAN_DOCUMENT_VERSION) {
+		return { ok: false, errors: [error("fast_revision_requires_version_4", "Fast revisions require version-4 Part plans")] };
+	}
+	if (!optimized.document.parallelExecution?.length) {
+		return { ok: false, errors: [error("missing_parallel_execution", "Fast revisions must include a Parallel Execution schedule")] };
+	}
+	for (const property of ["title", "context", "questionsAndAnswers", "approach", "criticalFiles", "verification"]) {
+		if (equivalentValue(source.document[property]) !== equivalentValue(optimized.document[property])) {
+			errors.push(error("fast_revision_scope_changed", `Fast revision changed ${property}`));
+		}
+	}
+	const sourcePartOrder = new Map(source.document.parts.map((part, index) => [part.id, index]));
+	const optimizedBySource = new Map();
+	let previousSourceIndex = -1;
+	for (const part of optimized.document.parts) {
+		const assignment = optimized.document.parallelExecution.find((candidate) => candidate.partId === part.id);
+		if (!assignment || !sourcePartOrder.has(assignment.sourcePartId)) {
+			errors.push(error("unknown_fast_revision_source_part", `Part ${part.id} must map to one source Part`));
+			continue;
+		}
+		const sourceIndex = sourcePartOrder.get(assignment.sourcePartId);
+		if (sourceIndex < previousSourceIndex) {
+			errors.push(error("fast_revision_source_order", "Optimized Parts must remain in source Part order"));
+		}
+		previousSourceIndex = Math.max(previousSourceIndex, sourceIndex);
+		const mapped = optimizedBySource.get(assignment.sourcePartId) ?? [];
+		mapped.push(part);
+		optimizedBySource.set(assignment.sourcePartId, mapped);
+	}
+	for (const sourcePart of source.document.parts) {
+		const mapped = optimizedBySource.get(sourcePart.id);
+		if (!mapped?.length) {
+			errors.push(error("missing_fast_revision_source_part", `Source Part ${sourcePart.id} has no mapped optimized Part`));
+			continue;
+		}
+		const optimizedBody = mapped.map((part) => part.body).join("\n\n");
+		if (normalizeEquivalentContent(sourcePart.body) !== normalizeEquivalentContent(optimizedBody)) {
+			errors.push(error("fast_revision_part_scope_changed", `Mapped Parts changed the approved body of source Part ${sourcePart.id}`));
+		}
+	}
+	return errors.length > 0 ? { ok: false, errors } : { ok: true, source: source.document, optimized: optimized.document };
 }
 
 export function validatePlanDocument(markdown, options) {
