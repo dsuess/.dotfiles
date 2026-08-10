@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -54,7 +54,7 @@ function compatibleSpawn(scenario = {}) {
 		calls.push({ args: [...args], options });
 		if (args[0] === "--version") return scenario.version ?? processResult({ stdout: "tuicr 0.19.1\n" });
 		if (args.length === 1 && args[0] === "--help") {
-			return scenario.rootHelp ?? processResult({ stdout: "--file --no-update-check review" });
+			return scenario.rootHelp ?? processResult({ stdout: "--file --theme --no-update-check review" });
 		}
 		if (args.join(" ") === "review list --help") return processResult({ stdout: "--all" });
 		if (args.join(" ") === "review comments --help") return processResult({ stdout: "--session" });
@@ -114,10 +114,16 @@ test("runs a compatible tuicr review in isolated storage and restores Pi's termi
 	const fake = compatibleSpawn({
 		onLaunch(args, options) {
 			reviewedSnapshot = args[1];
+			assert.deepEqual(args.slice(2), ["--theme", "pi-plan-review-neutral-additions", "--no-update-check"]);
 			assert.equal(options.cwd, path.dirname(args[1]));
-			assert.equal(options.env.XDG_CONFIG_HOME, process.env.XDG_CONFIG_HOME || path.join(process.env.HOME, ".config"));
+			assert.match(options.env.XDG_CONFIG_HOME, /pi-plan-tuicr-/);
+			assert.notEqual(options.env.XDG_CONFIG_HOME, process.env.XDG_CONFIG_HOME || path.join(process.env.HOME, ".config"));
 			assert.notEqual(options.env.HOME, process.env.HOME);
 			assert.match(options.env.XDG_DATA_HOME, /pi-plan-tuicr-/);
+			const theme = readFileSync(path.join(options.env.XDG_CONFIG_HOME, "tuicr", "themes", "pi-plan-review-neutral-additions.toml"), "utf8");
+			assert.match(theme, /^diff_add = "#ffffff"$/m);
+			assert.match(theme, /^diff_add_bg = "#18181c"$/m);
+			assert.match(theme, /^syntax_add_bg = "#18181c"$/m);
 		},
 	});
 	try {

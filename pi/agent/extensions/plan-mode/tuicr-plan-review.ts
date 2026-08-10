@@ -1,12 +1,14 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MINIMUM_TUICR_VERSION = [0, 19, 1] as const;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
+const PLAN_REVIEW_THEME_NAME = "pi-plan-review-neutral-additions";
+const PLAN_REVIEW_THEME_SOURCE = new URL("./tuicr-plan-review-theme.toml", import.meta.url);
 
 export type TuicrCommentLocation =
 	| { kind: "review"; path: null; startLine: null; endLine: null; side: null }
@@ -87,7 +89,7 @@ function checkCompatibility(spawn: Spawn): ProcessOutcome {
 	}
 
 	const checks: Array<{ args: string[]; label: string; required: string[] }> = [
-		{ args: ["--help"], label: "tuicr --help", required: ["--file", "--no-update-check", "review"] },
+		{ args: ["--help"], label: "tuicr --help", required: ["--file", "--theme", "--no-update-check", "review"] },
 		{ args: ["review", "list", "--help"], label: "tuicr review list --help", required: ["--all"] },
 		{ args: ["review", "comments", "--help"], label: "tuicr review comments --help", required: ["--session"] },
 	];
@@ -203,9 +205,26 @@ export function normalizeTuicrComments(values: unknown[], canonicalPlanPath: str
 	return comments;
 }
 
-function isolatedEnvironment(reviewRoot: string): NodeJS.ProcessEnv {
-	const originalHome = process.env.HOME;
-	const configHome = process.env.XDG_CONFIG_HOME || (originalHome ? path.join(originalHome, ".config") : undefined);
+async function prepareIsolatedConfiguration(configHome: string): Promise<void> {
+	const originalConfigHome = process.env.XDG_CONFIG_HOME || (process.env.HOME ? path.join(process.env.HOME, ".config") : undefined);
+	const target = path.join(configHome, "tuicr");
+	await mkdir(configHome, { recursive: true, mode: 0o700 });
+	if (originalConfigHome) {
+		try {
+			await cp(path.join(originalConfigHome, "tuicr"), target, { recursive: true, force: false, errorOnExist: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	const themes = path.join(target, "themes");
+	await mkdir(themes, { recursive: true, mode: 0o700 });
+	await writeFile(path.join(themes, `${PLAN_REVIEW_THEME_NAME}.toml`), await readFile(PLAN_REVIEW_THEME_SOURCE, "utf8"), {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+}
+
+function isolatedEnvironment(reviewRoot: string, configHome: string): NodeJS.ProcessEnv {
 	return {
 		...process.env,
 		HOME: path.join(reviewRoot, "home"),
@@ -243,12 +262,14 @@ export async function runTuicrPlanReview(
 		await verifyUnchanged(canonicalPlanPath, expectedHash, "The canonical plan");
 		reviewRoot = await mkdtemp(path.join(os.tmpdir(), "pi-plan-tuicr-"));
 		const home = path.join(reviewRoot, "home");
+		const configHome = path.join(reviewRoot, "config");
 		const snapshotDir = path.join(reviewRoot, "snapshot");
 		await Promise.all([mkdir(home, { recursive: true, mode: 0o700 }), mkdir(snapshotDir, { recursive: true, mode: 0o700 })]);
+		await prepareIsolatedConfiguration(configHome);
 		const snapshotPath = path.join(snapshotDir, path.basename(canonicalPlanPath));
 		await writeFile(snapshotPath, validatedPlan, { encoding: "utf8", flag: "wx", mode: 0o600 });
 		await verifyUnchanged(snapshotPath, expectedHash, "The review snapshot");
-		const env = isolatedEnvironment(reviewRoot);
+		const env = isolatedEnvironment(reviewRoot, configHome);
 
 		let launch: ProcessOutcome | undefined;
 		try {
@@ -256,7 +277,7 @@ export async function runTuicrPlanReview(
 				let processOutcome: ProcessOutcome;
 				tui.stop();
 				try {
-					const result = spawn("tuicr", ["--file", snapshotPath, "--no-update-check"], {
+					const result = spawn("tuicr", ["--file", snapshotPath, "--theme", PLAN_REVIEW_THEME_NAME, "--no-update-check"], {
 						cwd: snapshotDir,
 						env,
 						encoding: "utf8",
