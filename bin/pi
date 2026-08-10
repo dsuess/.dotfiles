@@ -495,7 +495,77 @@ set +e
     builtin cd -- "$SANDBOX_POLICY_ROOT" || exit 1
     /usr/bin/env -i "${safe_env[@]}" \
         "$HOST_NODE" "$SRT_UNRESTRICTED_NETWORK" --settings "$EFFECTIVE_POLICY" -- \
-        /bin/bash -c 'builtin cd -- "$1" || exit 1; shift; exec "$@"' \
+        /bin/bash -c '
+            builtin cd -- "$1" || exit 1
+            shift
+            real_pi="$1"
+            shift
+
+            # Explicit CLI model scopes take precedence. Keep --list-models
+            # unfiltered while bypassing settings-based no-match warnings.
+            has_explicit_model=false
+            has_explicit_thinking=false
+            for arg in "$@"; do
+                case "$arg" in
+                    --models|--models=*) exec "$real_pi" "$@" ;;
+                    --model|--model=*) has_explicit_model=true ;;
+                    --thinking|--thinking=*) has_explicit_thinking=true ;;
+                    --list-models) exec "$real_pi" --models "*" "$@" ;;
+                esac
+            done
+
+            # enabledModels contains exact provider/model IDs. Discover the
+            # authenticated catalog first, then pass Pi only the configured
+            # IDs that are available on this machine.
+            configured_models="$(node -e "
+                const fs = require(\"node:fs\");
+                const settings = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\"));
+                for (const model of settings.enabledModels ?? []) {
+                    if (typeof model === \"string\") console.log(model);
+                }
+            " "$HOME/.pi/agent/settings.json")" || exec "$real_pi" "$@"
+            default_selection="$(node -e "
+                const fs = require(\"node:fs\");
+                const settings = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\"));
+                if (typeof settings.defaultProvider === \"string\" &&
+                    typeof settings.defaultModel === \"string\") {
+                    console.log(
+                        settings.defaultProvider + \"/\" + settings.defaultModel,
+                        typeof settings.defaultThinkingLevel === \"string\"
+                            ? settings.defaultThinkingLevel
+                            : \"\",
+                    );
+                }
+            " "$HOME/.pi/agent/settings.json")" || exec "$real_pi" "$@"
+            read -r default_model default_thinking <<<"$default_selection"
+            available_models="$(set -o pipefail; "$real_pi" --models "*" --list-models |
+                awk "NR > 1 && NF >= 2 { print \$1 \"/\" \$2 }")" || exec "$real_pi" "$@"
+
+            scoped_models=()
+            while IFS= read -r configured_model; do
+                [[ -n "$configured_model" ]] || continue
+                model_id="${configured_model%:*}"
+                if grep -Fqx -- "$model_id" <<<"$available_models"; then
+                    scoped_models+=("$configured_model")
+                fi
+            done <<<"$configured_models"
+
+            # If no configured model is available, preserve normal Pi
+            # authentication guidance instead of hiding a real configuration error.
+            ((${#scoped_models[@]})) || exec "$real_pi" "$@"
+
+            launch_args=(--models "$(IFS=,; printf "%s" "${scoped_models[*]}")")
+            default_model_available=false
+            for scoped_model in "${scoped_models[@]}"; do
+                [[ "$scoped_model" == "$default_model" ]] && default_model_available=true
+            done
+            if [[ "$has_explicit_model" == false && "$default_model_available" == true ]]; then
+                launch_args+=(--model "$default_model")
+                [[ "$has_explicit_thinking" == true || -z "$default_thinking" ]] ||
+                    launch_args+=(--thinking "$default_thinking")
+            fi
+            exec "$real_pi" "${launch_args[@]}" "$@"
+        ' \
         pi-sandbox-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"}
 )
 status=$?
