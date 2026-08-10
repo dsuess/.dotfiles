@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parsePlanDocument, replaceManagedProgressReport } from "./plan-document.js";
-import { buildDocumentStepProgressRows } from "./progress-widget.js";
+import { buildDocumentProgressRows } from "./progress-widget.js";
 
 export const MAX_INTENT_BYTES = 16 * 1024;
 export const MAX_SLUG_LENGTH = 64;
@@ -213,7 +213,7 @@ export async function persistPlan(options) {
 	if (typeof title !== "string" || !title.trim()) throw new PlanStoreError("invalid_title", "Plan title cannot be empty");
 	if (typeof intent !== "string" || !intent.trim()) throw new PlanStoreError("invalid_intent", "Plan intent cannot be empty");
 
-	const parsed = parsePlanDocument(markdown);
+	const parsed = parsePlanDocument(markdown, { allowManagedMetadata: false });
 	if (!parsed.ok) {
 		throw new PlanStoreError("validation_failed", "Plan Markdown does not match the canonical schema", parsed.errors);
 	}
@@ -222,7 +222,7 @@ export async function persistPlan(options) {
 	}
 	let persistedMarkdown;
 	try {
-		persistedMarkdown = replaceManagedProgressReport(markdown, buildDocumentStepProgressRows(parsed.document));
+		persistedMarkdown = replaceManagedProgressReport(markdown, buildDocumentProgressRows(parsed.document));
 	} catch (error) {
 		throw new PlanStoreError(
 			"validation_failed",

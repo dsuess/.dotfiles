@@ -12,17 +12,21 @@ export function getDocumentProgressTasks(document) {
 	return tasks.map((task) => ({ id: task.id, title: task.title, status: task.status }));
 }
 
-export function buildStepProgressRows(source) {
+export function buildProgressRows(source) {
 	const tasks = source?.plan?.tasks ?? source?.tasks ?? [];
 	return tasks.map((task) => {
 		const status = source?.ledger?.[task.id]?.status ?? task.status ?? "pending";
 		const icon = STATUS_ICON[status];
-		if (!icon) throw new Error(`Unknown task status '${status}' for ${task.id}`);
+		if (!icon) throw new Error(`Unknown plan-item status '${status}' for ${task.id}`);
 		return `${icon} ${task.title}`;
 	});
 }
 
-export function buildDocumentStepProgressRows(document) {
+export function buildDocumentProgressRows(document) {
 	const tasks = getDocumentProgressTasks(document);
-	return buildStepProgressRows({ tasks });
+	return buildProgressRows({ tasks });
 }
+
+// Compatibility aliases for extensions and active sessions using the version 3 names.
+export const buildStepProgressRows = buildProgressRows;
+export const buildDocumentStepProgressRows = buildDocumentProgressRows;

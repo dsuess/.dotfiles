@@ -87,10 +87,11 @@ test("in-place kickoff is self-contained and staged instructions enforce a hard 
 	const kickoff = buildExecutionKickoff(contract, state);
 	assert.match(kickoff, /current visible session/);
 	assert.match(kickoff, /earlier planning messages are excluded/i);
-	assert.match(kickoff, /Execute only Stage 2/);
+	assert.match(kickoff, /Execute only execution stage 2/);
+	assert.match(kickoff, /every execution stage corresponds to exactly one Part/);
 	assert.match(kickoff, /# Approved/);
 	assert.match(buildExecutionKickoff(legacyContract, { ...state, mode: "executing_all" }), /fresh implementation session/);
-	assert.match(buildStageInstruction(state), /only Stage 2/);
+	assert.match(buildStageInstruction(state), /only execution stage 2/);
 	assert.match(buildStageInstruction(state), /Do not begin a later stage/);
 	assert.match(buildStageInstruction({ ...state, parallelWorkers: [{ workerId: "worker-1", runId: "run-1" }] }), /Resume an existing worker/);
 });

@@ -1,3 +1,50 @@
+export const PART_PLAN = `# Add Reliable Cache Invalidation
+
+## Context
+
+Successful writes leave stale entries in the repository cache. The cache remains the read-path authority, so invalidation must preserve the public data-access contract and the last valid value after failed writes. Research confirmed that \`src/cache.ts\` owns key expiry; this selective anchor matters because invalidation and expiry must share key identity.
+
+## Approach
+
+Make successful-write invalidation part of the cache lifecycle while preserving compatibility and exposing uncertainty through observable checks.
+
+### Part A — Define cache consistency
+
+Clarify ownership, expiry, and invalidation outcomes for successful and failed writes. This establishes the behavioral boundary required by Part B and is accepted when every write outcome has one unambiguous cache result.
+
+### Part B — Implement reliable invalidation
+
+Invalidate matching entries after successful writes, retain valid entries after failed writes, and keep repeated invalidation idempotent. Preserve the existing public interface and stop if cache-key identity cannot be shared with expiry.
+
+### Part C — Cover boundary behavior
+
+Exercise misses, repeated invalidation, and expiry races after Part B. Accept the Part when compatibility and consistency hold at the cache boundary.
+
+## Critical Files
+
+- \`src/cache.ts\` — modification boundary that owns key expiry and invalidation.
+- \`docs/cache-lifecycle.md\` — read-only terminology reference for the public lifecycle.
+
+## Verification
+
+Regression checks preserve failed-write values and the existing public cache behavior. New-feature scenarios cover successful writes, hits, misses, repeated invalidation, and expiry races. A successful-write read returning fresh data is the smoke signal; any stale read or key-identity mismatch is a failure signal that invalidates the shared-key assumption.
+`;
+
+export const PART_MINIMAL_PLAN = `# Clarify Cache Documentation
+
+## Context
+
+The cache lifecycle is difficult for maintainers to understand in the wider data-access flow.
+
+## Approach
+
+Explain the existing behavior without changing runtime behavior.
+
+### Part A — Clarify the cache lifecycle
+
+Describe writes, expiry, and ownership using repository terminology. The work is accepted when the documentation explains the lifecycle without introducing a new contract.
+`;
+
 export const VALID_PLAN = `# Add Reliable Cache Invalidation
 
 ## Background

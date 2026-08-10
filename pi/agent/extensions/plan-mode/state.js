@@ -162,7 +162,7 @@ export function submitPlan(state, submission) {
 		return rejection(state, "invalid_plan_metadata", "stages must contain at least one stage");
 	}
 	if (!Array.isArray(submission.tasks) || submission.tasks.length === 0) {
-		return rejection(state, "invalid_plan_metadata", "tasks must contain at least one task");
+		return rejection(state, "invalid_plan_metadata", "tasks must contain at least one plan item");
 	}
 	const taskIds = new Set();
 	const tasks = [];
@@ -172,7 +172,7 @@ export function submitPlan(state, submission) {
 			!task || typeof task.id !== "string" || !task.id || taskIds.has(task.id) ||
 			typeof task.title !== "string" || !task.title.trim() || !STATUS_SET.has(task.status)
 		) {
-			return rejection(state, "invalid_plan_metadata", "tasks must have unique IDs, non-empty titles, and valid statuses");
+			return rejection(state, "invalid_plan_metadata", "Plan items must have unique IDs, non-empty titles, and valid statuses");
 		}
 		taskIds.add(task.id);
 		tasks.push({ id: task.id, title: task.title.trim() });
@@ -193,18 +193,18 @@ export function submitPlan(state, submission) {
 			? [...stage.taskIds]
 			: [...taskIds].filter((taskId) => taskId.startsWith(`${stage.id}.`));
 		if (mappedTaskIds.length === 0) {
-			return rejection(state, "invalid_plan_metadata", `Stage ${stage.id} must contain at least one task`);
+			return rejection(state, "invalid_plan_metadata", `Execution stage ${stage.id} must contain at least one plan item`);
 		}
 		for (const taskId of mappedTaskIds) {
 			if (!taskIds.has(taskId) || assignedTaskIds.has(taskId)) {
-				return rejection(state, "invalid_plan_metadata", "Every task must belong to exactly one valid stage");
+				return rejection(state, "invalid_plan_metadata", "Every plan item must belong to exactly one valid execution stage");
 			}
 			assignedTaskIds.add(taskId);
 		}
 		stages.push({ id: stage.id, description, taskIds: mappedTaskIds });
 	}
 	if (assignedTaskIds.size !== taskIds.size) {
-		return rejection(state, "invalid_plan_metadata", "Every task must belong to exactly one stage");
+		return rejection(state, "invalid_plan_metadata", "Every plan item must belong to exactly one execution stage");
 	}
 	const priorRevision = state.plan?.path === submission.path ? state.plan.revision : 0;
 	const revision = priorRevision + 1;
@@ -212,6 +212,7 @@ export function submitPlan(state, submission) {
 		next.mode = "approval";
 		next.plan = {
 			path: submission.path,
+			sequentialStages: submission.sequentialStages === true,
 			slug: submission.slug,
 			hash: submission.hash,
 			title: submission.title,
@@ -286,11 +287,22 @@ export function getStageTaskIds(state, stageId) {
 export function recordTaskProgress(state, update) {
 	const invalidMode = requireMode(state, ["executing_all", "executing_staged"], "recordTaskProgress");
 	if (invalidMode) return invalidMode;
-	const current = state.ledger[update?.taskId];
-	if (!current) return rejection(state, "unknown_task", `Unknown plan task: ${update?.taskId ?? ""}`);
-	if (!STATUS_SET.has(update?.status)) return rejection(state, "invalid_status", "Task status is invalid");
-	if (state.mode === "executing_staged" && !getStageTaskIds(state, state.currentStageId).includes(update.taskId)) {
-		return rejection(state, "future_stage", `Task ${update.taskId} is outside current stage ${state.currentStageId}`);
+	const itemId = update?.itemId ?? update?.taskId;
+	const current = state.ledger[itemId];
+	if (!current) return rejection(state, "unknown_task", `Unknown plan item: ${itemId ?? ""}`);
+	if (!STATUS_SET.has(update?.status)) return rejection(state, "invalid_status", "Plan-item status is invalid");
+	if (state.mode === "executing_staged" && !getStageTaskIds(state, state.currentStageId).includes(itemId)) {
+		return rejection(state, "future_stage", `Plan item ${itemId} is outside current execution stage ${state.currentStageId}`);
+	}
+	if (state.mode === "executing_all" && state.plan?.sequentialStages) {
+		const itemStageIndex = state.plan.stages.findIndex((stage) => stage.taskIds.includes(itemId));
+		const unfinishedPrior = state.plan.stages
+			.slice(0, Math.max(itemStageIndex, 0))
+			.flatMap((stage) => stage.taskIds)
+			.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
+		if (unfinishedPrior.length > 0) {
+			return rejection(state, "future_stage", `Plan item ${itemId} cannot begin before earlier Parts are terminal: ${unfinishedPrior.join(", ")}`);
+		}
 	}
 	const allowed = {
 		pending: ["in_progress"],
@@ -299,19 +311,19 @@ export function recordTaskProgress(state, update) {
 		completed: ["in_progress"],
 	};
 	if (!allowed[current.status].includes(update.status)) {
-		return rejection(state, "invalid_task_transition", `${current.status} → ${update.status} is not allowed for ${update.taskId}`);
+		return rejection(state, "invalid_task_transition", `${current.status} → ${update.status} is not allowed for plan item ${itemId}`);
 	}
 	if (["completed", "blocked"].includes(update.status) && (typeof update.evidence !== "string" || !update.evidence.trim())) {
-		return rejection(state, "missing_evidence", `Evidence is required when marking ${update.taskId} ${update.status}`);
+		return rejection(state, "missing_evidence", `Evidence is required when marking plan item ${itemId} ${update.status}`);
 	}
 	if (update.status === "blocked" && (typeof update.note !== "string" || !update.note.trim())) {
-		return rejection(state, "missing_note", `A blocker note is required for ${update.taskId}`);
+		return rejection(state, "missing_note", `A blocker note is required for plan item ${itemId}`);
 	}
 	if (current.status === "completed" && update.status === "in_progress" && (typeof update.reopenReason !== "string" || !update.reopenReason.trim())) {
-		return rejection(state, "missing_reopen_reason", `A user-feedback reopen reason is required for ${update.taskId}`);
+		return rejection(state, "missing_reopen_reason", `A user-feedback reopen reason is required for plan item ${itemId}`);
 	}
-	return apply(state, `task_${update.taskId}_${update.status}`, (next) => {
-		next.ledger[update.taskId] = {
+	return apply(state, `task_${itemId}_${update.status}`, (next) => {
+		next.ledger[itemId] = {
 			status: update.status,
 			note: update.note?.trim() || update.reopenReason?.trim() || null,
 			evidence: update.evidence?.trim() || null,
@@ -327,7 +339,7 @@ export function recordStageCheckpoint(state, payload) {
 	if (typeof payload.nonce !== "string" || !payload.nonce) return rejection(state, "invalid_checkpoint", "Checkpoint nonce is required");
 	const taskIds = getStageTaskIds(state, payload.stageId);
 	const nonterminal = taskIds.filter((id) => !["completed", "blocked"].includes(state.ledger[id]?.status));
-	if (nonterminal.length > 0) return rejection(state, "nonterminal_stage", `Stage tasks are nonterminal: ${nonterminal.join(", ")}`);
+	if (nonterminal.length > 0) return rejection(state, "nonterminal_stage", `Execution-stage plan items are nonterminal: ${nonterminal.join(", ")}`);
 	return apply(state, `complete_stage_${payload.stageId}`, (next) => {
 		next.completedStages = next.completedStages.filter((item) => item.stageId !== payload.stageId);
 		next.completedStages.push({
@@ -398,7 +410,7 @@ export function completeWorkflow(state, options = {}) {
 		return rejection(
 			state,
 			"nonterminal_tasks",
-			`Cannot complete while tasks are nonterminal: ${nonterminal.map(([id]) => id).join(", ")}`,
+			`Cannot complete while plan items are nonterminal: ${nonterminal.map(([id]) => id).join(", ")}`,
 		);
 	}
 	return apply(state, "complete_workflow", (next) => {
@@ -432,6 +444,7 @@ export function migrateState(value) {
 		}));
 	}
 	if (migrated.plan && !Array.isArray(migrated.plan.tasks)) migrated.plan.tasks = [];
+	if (migrated.plan && typeof migrated.plan.sequentialStages !== "boolean") migrated.plan.sequentialStages = false;
 	return migrated;
 }
 

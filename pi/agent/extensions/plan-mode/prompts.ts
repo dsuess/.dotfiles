@@ -22,18 +22,15 @@ Planning workflow:
 8. Finish only by calling submit_plan with the intent, exact H1 title, and the complete canonical Markdown. Do not merely print the plan as prose.
 
 Canonical Markdown contract:
-- Start with one non-empty H1 title.
-- Keep the plan high-level and outcome-oriented. Explain behavior, responsibilities, dependencies, constraints, and verification without prescribing the implementation inventory. Do not list target files, internal symbol names, tools, or API call details.
-- Use these H2 sections in this order when they apply: "Background", "Changes", "Breaking Changes", "Testing Plan", "Assumptions / Decisions", "Stages". Do not add other H2 sections.
-- "Background" is required. Explain the user's request, why the work is needed, and how it fits the repository's larger architecture or workflow.
-- "Changes" is required. Summarize the proposed solution, then represent the work as globally ordered stable headings: "### Step N [pending] Title", numbered from 1 without gaps. Allowed statuses are pending, in_progress, completed, blocked; new plans normally use pending.
-- Step bodies describe detailed but high-level changes. Include relevant behavior, scope boundaries, dependencies, acceptance outcomes, edge cases, and guardrails naturally; do not force fixed metadata fields or split work merely by file or API.
-- Add "Breaking Changes" only when the proposal introduces an actual compatibility break within the codebase. Describe affected behavior and migration impact; omit the section rather than writing "None".
-- Add "Testing Plan" when verification is applicable. Describe the test strategy, important scenarios, and success signals at a behavioral level rather than listing exact commands unless a command itself is a material requirement.
-- Add "Assumptions / Decisions" only for material assumptions or decisions the user made during questioning. Distinguish assumptions from confirmed decisions, and never place unresolved blockers there.
-- Add "Stages" only for a larger change that benefits from staged delivery. It contains one table with exact columns Stage, Description, Steps. Stage IDs start at 1 without gaps; Steps lists comma-separated step IDs and maps every step exactly once. Descriptions explain which work is grouped, ordering dependencies, and what can proceed in parallel.
-- Omit every optional section that is inapplicable or empty. Small changes should normally omit "Stages".
-- Include at least one high-level step and keep the complete document at or below 256 KiB.
+- Start with one non-empty H1 title that is concise and action-oriented.
+- Use these H2 sections in this exact order: required "Context", required "Approach", optional "Critical Files", then optional "Verification". Do not add other H2 sections.
+- "Context" explains the current behavior and motivation, how the work fits the repository architecture or workflow, and relevant research. Record terminology conflicts, material assumptions, confirmed decisions, and accepted risks when they affect the approach; unresolved blockers must be resolved before submission.
+- "Approach" first explains the proposed solution and architectural shape, then contains one or more ordered headings using "### Part A — Action-oriented title", continuing alphabetically without gaps (A, B, ... Z, AA, AB, ...). Do not add an author-written status marker.
+- Each Part is one coherent executable and staged-delivery boundary. Its body should cover the intended behavior, dependencies, scope boundaries, relevant edge cases, guardrails, rationale, and observable acceptance outcomes. Do not add a second Step or task hierarchy, and do not split Parts merely by file or API.
+- Preserve selective implementation anchors such as important paths, symbols, flags, external interfaces, or data shapes when research established a constraint or the anchor materially reduces ambiguity. Explain why the anchor matters. Do not produce exhaustive implementation inventories, mandatory file or tool lists, internal call-by-call recipes, or tool-call instructions.
+- Add "Critical Files" only when a short map of important boundaries adds useful cross-file or integration context. Identify only the most important modification boundaries and read-only references, and state each entry's responsibility. It is not an exhaustive target-file inventory; omit it when it would be ceremonial.
+- Add "Verification" whenever the planned result can be meaningfully checked. Distinguish regression checks from new-feature scenarios, and define observable success signals, smoke or canary cases, and failure signals for uncertain assumptions. Exact commands are appropriate only when the command itself is a material project requirement. Purely explanatory or investigative plans may omit this section when no meaningful verification applies.
+- Omit optional sections cleanly when inapplicable or empty. Include at least one Part and keep the complete document at or below 256 KiB.
 
 ${retryGuidance}`;
 }

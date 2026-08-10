@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { immutablePlanHash, synchronizeLedgerMarkdown, updateLedgerMarkdown } from "../ledger.js";
-import { parsePlanDocument, replaceManagedProgressReport, splitManagedProgressReport } from "../plan-document.js";
-import { VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
+import { parsePlanDocument, renderPlanDocument, replaceManagedProgressReport, splitManagedProgressReport } from "../plan-document.js";
+import { PART_PLAN, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
 
 test("updates exactly one status and ledger note while preserving canonical parsing", () => {
 	const next = updateLedgerMarkdown(VALID_PLAN, VALID_PLAN, "1", {
@@ -12,6 +12,43 @@ test("updates exactly one status and ledger note while preserving canonical pars
 	assert.match(next, /- \*\*Ledger:\*\* \{"status":"in_progress","note":"started","evidence":null\}/);
 	assert.equal(parsePlanDocument(next).ok, true);
 	assert.equal(immutablePlanHash(next), immutablePlanHash(VALID_PLAN));
+});
+
+test("persists Part status only in managed metadata and a Part progress report", () => {
+	const next = updateLedgerMarkdown(PART_PLAN, PART_PLAN, "A", {
+		status: "in_progress", note: "started", evidence: null,
+	});
+	assert.match(next, /### Part A — Define cache consistency\n- \*\*Ledger:\*\* \{"status":"in_progress"/);
+	assert.doesNotMatch(next, /Part A \[in_progress\]/);
+	const parsed = parsePlanDocument(next);
+	assert.equal(parsed.ok, true, JSON.stringify(parsed.errors));
+	assert.equal(parsed.document.parts[0].status, "in_progress");
+	assert.equal(renderPlanDocument(parsed.document), next);
+	assert.equal(splitManagedProgressReport(next).report.heading, "## Part Progress");
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, [
+		"▶ Define cache consistency",
+		"☐ Implement reliable invalidation",
+		"☐ Cover boundary behavior",
+	]);
+	assert.equal(immutablePlanHash(next), immutablePlanHash(PART_PLAN));
+});
+
+test("serial Part updates preserve headings and immutable approved content", () => {
+	const next = synchronizeLedgerMarkdown(PART_PLAN, PART_PLAN, {
+		A: { status: "completed", note: null, evidence: "contract verified" },
+		B: { status: "in_progress", note: null, evidence: null },
+		C: { status: "blocked", note: "race unresolved", evidence: "canary failed" },
+	});
+	assert.match(next, /### Part A — Define cache consistency/);
+	assert.match(next, /### Part B — Implement reliable invalidation/);
+	assert.match(next, /### Part C — Cover boundary behavior/);
+	assert.equal((next.match(/- \*\*Ledger:\*\*/g) ?? []).length, 3);
+	assert.deepEqual(splitManagedProgressReport(next).report.rows, [
+		"☑ Define cache consistency",
+		"▶ Implement reliable invalidation",
+		"⛔ Cover boundary behavior",
+	]);
+	assert.equal(immutablePlanHash(next), immutablePlanHash(PART_PLAN));
 });
 
 test("uses the shared Step projection for the trailing report", () => {

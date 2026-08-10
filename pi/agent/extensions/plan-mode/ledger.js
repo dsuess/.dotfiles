@@ -4,7 +4,7 @@ import {
 	replaceManagedProgressReport,
 	splitManagedProgressReport,
 } from "./plan-document.js";
-import { buildDocumentStepProgressRows } from "./progress-widget.js";
+import { buildDocumentProgressRows } from "./progress-widget.js";
 
 function outsideFenceLines(lines) {
 	const outside = [];
@@ -50,28 +50,34 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 	if (immutablePlanHash(currentMarkdown) !== immutablePlanHash(approvedMarkdown)) {
 		throw new Error("Plan content drifted outside ledger fields; status update refused");
 	}
-	const parsed = parsePlanDocument(currentMarkdown);
+	const currentCore = splitManagedProgressReport(currentMarkdown).coreMarkdown;
+	const parsed = parsePlanDocument(currentCore);
 	if (!parsed.ok) throw new Error("Current plan is no longer valid canonical Markdown");
 	if (!parsed.document.stages.flatMap((stage) => stage.tasks).some((task) => task.id === taskId)) {
-		throw new Error(`Unknown task ID ${taskId}`);
+		throw new Error(`Unknown plan-item ID ${taskId}`);
 	}
 
+	const partBased = parsed.document.version === 4;
 	const escapedId = escapeRegExp(taskId);
-	const headingPatterns = [
-		new RegExp(`^(### Step ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
-		new RegExp(`^(#### ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
-	];
+	const headingPatterns = partBased
+		? [new RegExp(`^### Part ${escapedId} — (.+)$`)]
+		: [
+			new RegExp(`^(### Step ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
+			new RegExp(`^(#### ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
+		];
 	const { coreMarkdown } = splitManagedProgressReport(currentMarkdown);
 	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
 	let outside = outsideFenceLines(lines);
 	const headingIndex = lines.findIndex((line, index) => outside[index] && headingPatterns.some((pattern) => pattern.test(line)));
-	if (headingIndex < 0) throw new Error(`Task heading not found for ${taskId}`);
-	const headingPattern = headingPatterns.find((pattern) => pattern.test(lines[headingIndex]));
-	lines[headingIndex] = lines[headingIndex].replace(headingPattern, `$1 [${ledgerItem.status}] $3`);
+	if (headingIndex < 0) throw new Error(`Plan-item heading not found for ${taskId}`);
+	if (!partBased) {
+		const headingPattern = headingPatterns.find((pattern) => pattern.test(lines[headingIndex]));
+		lines[headingIndex] = lines[headingIndex].replace(headingPattern, `$1 [${ledgerItem.status}] $3`);
+	}
 
 	let taskEnd = lines.length;
 	for (let index = headingIndex + 1; index < lines.length; index += 1) {
-		if (outside[index] && (/^### Step \d+ \[/.test(lines[index]) || /^#### \d+\.\d+ \[/.test(lines[index]) || /^### Stage /.test(lines[index]) || /^## /.test(lines[index]))) {
+		if (outside[index] && (/^### Part [A-Z]+ — /.test(lines[index]) || /^### Step \d+ \[/.test(lines[index]) || /^#### \d+\.\d+ \[/.test(lines[index]) || /^### Stage /.test(lines[index]) || /^## /.test(lines[index]))) {
 			taskEnd = index;
 			break;
 		}
@@ -89,8 +95,8 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 		note: ledgerItem.note ?? null,
 		evidence: ledgerItem.evidence ?? null,
 	});
-	// Version 1/2 plans keep the ledger beside their metadata. Metadata-free
-	// version 3 plans place it directly below the stable step heading so
+	// Versions 1/2 keep the ledger beside their metadata. Metadata-free
+	// versions 3/4 place it directly below the stable work-item heading so
 	// stripping the ledger restores the approved Markdown byte-for-byte.
 	lines.splice(toolsIndex >= 0 ? toolsIndex + 1 : headingIndex + 1, 0, `- **Ledger:** ${ledger}`);
 	const updatedCore = lines.join("\n");
@@ -98,7 +104,7 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 	if (!updated.ok) {
 		throw new Error(`Updated plan is no longer valid canonical Markdown: ${updated.errors.map((item) => item.message).join("; ")}`);
 	}
-	return replaceManagedProgressReport(updatedCore, buildDocumentStepProgressRows(updated.document));
+	return replaceManagedProgressReport(updatedCore, buildDocumentProgressRows(updated.document));
 }
 
 export function synchronizeLedgerMarkdown(currentMarkdown, approvedMarkdown, ledger) {

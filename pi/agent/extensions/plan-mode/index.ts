@@ -32,10 +32,10 @@ import {
 	WORKFLOW_TOOLS,
 } from "./planning-gate.js";
 import { synchronizeLedgerMarkdown } from "./ledger.js";
-import { parsePlanDocument, splitManagedProgressReport } from "./plan-document.js";
+import { parsePlanDocument } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
-import { buildStepProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
+import { buildProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
 import { buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
 import { parseReviewAnnotations } from "./review-annotations.js";
 import { showStageDialog } from "./stage-dialog.ts";
@@ -153,7 +153,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const total = Object.keys(state.ledger).length;
 			const paused = state.execution?.paused ? ":paused" : "";
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `plan:${completed}/${total}${paused}`));
-			ctx.ui.setWidget("plan-mode-ledger", buildStepProgressRows(state));
+			ctx.ui.setWidget("plan-mode-ledger", buildProgressRows(state));
 			return;
 		} else {
 			ctx.ui.setStatus("plan-mode", undefined);
@@ -550,6 +550,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					title: stored.document.title,
 					intent: params.intent.trim(),
 					approvalNonce: nonce,
+					sequentialStages: stored.document.version === 4,
 					stages,
 					tasks,
 				}) as TransitionResult;
@@ -748,7 +749,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					current = approvedMarkdown;
 					missing = true;
 				}
-				if (!missing && splitManagedProgressReport(current).report) return;
+				if (!missing) {
+					const parsed = parsePlanDocument(current);
+					if (parsed.ok && parsed.document.managedProgressReport) return;
+				}
 				const next = synchronizeLedgerMarkdown(current, approvedMarkdown, state.ledger);
 				await atomicReplaceFile(state.plan!.path, next);
 			});

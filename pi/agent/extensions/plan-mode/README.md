@@ -33,22 +33,59 @@ Validated plans are saved under:
 
 The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
 
-Current Markdown is high-level and outcome-oriented:
+Newly authored Markdown uses document version 4:
 
-1. One H1 title.
-2. Required `## Background` explains the request, motivation, and place in the wider repository.
-3. Required `## Changes` summarizes the proposal and contains globally numbered `### Step N [status] Title` work items.
-4. Optional `## Breaking Changes`, `## Testing Plan`, and `## Assumptions / Decisions` sections are included only when applicable and non-empty.
-5. Optional `## Stages` uses a `Stage | Description | Steps` table for larger changes, grouping every step exactly once and identifying ordering or parallel work.
+1. One concise, action-oriented H1 title.
+2. Required `## Context` explains current behavior, motivation, architectural fit, relevant research, terminology conflicts, assumptions, confirmed decisions, and accepted risks when they matter.
+3. Required `## Approach` explains the solution before one or more ordered `### Part A — Action-oriented title` work items. IDs continue alphabetically without gaps; headings never contain an author-written status.
+4. Optional `## Critical Files` maps only important modification boundaries and read-only references, with each entry's responsibility stated.
+5. Optional `## Verification` distinguishes regression checks from new-feature scenarios and records observable smoke/canary, success, and failure signals. It is required by the authoring guidance whenever the result can be meaningfully checked; explanatory or investigative plans may omit it when no meaningful verification exists.
 
-Plans deliberately omit target-file and tool/API inventories. Step bodies retain enough behavioral detail, constraints, dependencies, outcomes, edge cases, and guardrails to execute without becoming implementation recipes. Small plans omit `Stages`; the runtime gives them one implicit execution group so the ledger and approval flow remain consistent. Statuses are `pending`, `in_progress`, `completed`, and `blocked`. A clearly delimited, extension-managed `Step Progress` report is generated at the end of each saved plan and regenerated from the ledger; it is not user-authored plan content. Version 1 stage-grouped and version 2 `Why`/`What` plans remain readable so active older execution sessions can finish.
+Each Part describes one coherent behavior boundary: dependencies, scope, edge cases, guardrails, rationale, and acceptance outcomes. A Part is also one ledger item and one derived execution stage, so staged execution pauses after every Part while full execution advances through Parts in order without ordinary pauses.
+
+Concrete anchors such as paths, symbols, flags, external interfaces, and data shapes are welcome when research established a constraint or they materially reduce ambiguity. They should be selective and rationale-driven. `Critical Files` is not an exhaustive inventory, and plans still reject mandatory target/tool metadata, exhaustive file lists, and tool-call recipes.
+
+New Parts initialize `pending`. Runtime statuses are `pending`, `in_progress`, `completed`, and `blocked`, persisted only in extension-managed `Ledger` metadata. A delimited `Part Progress` report is generated from that metadata without changing approved Part headings or authored content. Document versions 1–3—including status-bearing Step headings, explicit stage mappings, and `Step Progress` reports—remain readable, renderable, recoverable, and executable without destructive migration.
+
+Representative behavior-changing plan:
+
+```markdown
+# Add Reliable Cache Invalidation
+
+## Context
+
+Successful writes can leave stale cache entries. Research confirmed that `src/cache.ts` owns expiry keys; this anchor matters because invalidation must use the same identity.
+
+## Approach
+
+Make invalidation part of the existing cache lifecycle without changing the public interface.
+
+### Part A — Define cache consistency
+
+Establish successful-write, failed-write, expiry, and idempotency outcomes. This Part is accepted when every write outcome has one unambiguous cache result.
+
+### Part B — Implement reliable invalidation
+
+Invalidate after successful writes, preserve valid values after failures, and stop if expiry and invalidation cannot share key identity.
+
+## Critical Files
+
+- `src/cache.ts` — modification boundary that owns expiry and invalidation.
+- `docs/cache-lifecycle.md` — read-only terminology reference.
+
+## Verification
+
+Regression checks preserve failed-write values and the public interface. New-feature scenarios cover successful writes, misses, and expiry races. Fresh data after a successful write is the smoke and success signal; any stale read or key mismatch is the assumption-failure signal.
+```
+
+A documentation-only or investigative plan uses the same `Context` and `Approach` shape but may omit both optional sections when no file map or meaningful verification applies.
 
 ## Approval actions
 
 The complete saved plan is rendered as a durable transcript block, then the action dialog opens directly after the planning turn settles without injecting a `/plan-actions` user message. The dialog offers:
 
 - **Implement plan** — execute all stages without ordinary stage pauses.
-- **Implement in stages** — hard pause after every stage.
+- **Implement in stages** — hard pause after every derived stage (one Part per stage for version 4).
 - **Change** — send exact free-form revision feedback while remaining gated.
 - **Review** — edit the actual plan in the configured external editor (or Pi editor fallback).
 
@@ -68,9 +105,9 @@ The original active tools are restored by registered-name intersection, with exe
 - `complete_plan` — terminal whole-plan validation.
 - `complete_stage` — current-stage validation and mandatory checkpoint.
 
-Ledger writes are serialized through Pi's file mutation queue and atomically update a Step heading, its `Ledger` line, and the trailing generated report. Any other plan-content drift stops the update. The live widget and saved report both list every Step in plan order with the same status icon and title-only label. Optional Stages remain execution-order and checkpoint groups only; they do not become progress rows. Parallel workers report to the parent implementation agent; the parent is the only ledger writer.
+Ledger writes are serialized through Pi's file mutation queue. For version 4 they atomically update only a Part's managed `Ledger` line and the trailing generated report; the approved Part heading and authored body remain immutable. Legacy plans retain their status-bearing heading behavior. Any other plan-content drift stops the update. The live widget and saved report list every plan item in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent; the parent is the only ledger writer.
 
-Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Feedback explicitly reopens affected tasks. Stop remains resumable in the same implementation session. Worker run/session IDs are retained in state for dependent later work.
+Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Feedback explicitly reopens affected plan items. Stop remains resumable in the same implementation session. Worker run/session IDs are retained in state for dependent later work.
 
 ## Lifecycle and host behavior
 
@@ -80,7 +117,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 - TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
 - RPC uses host select/editor primitives.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
-- Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed older executions reconstruct missing Step titles and backfill a missing generated report from the durable approved plan and ledger.
+- Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the version-appropriate Part or Step report from the durable approved plan and ledger.
 - Plan files are durable and are never deleted on shutdown.
 - `.pi/plans/` is not automatically ignored or committed; each project owns that policy.
 

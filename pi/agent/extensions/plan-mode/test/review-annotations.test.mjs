@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseReviewAnnotations } from "../review-annotations.js";
+import { PART_MINIMAL_PLAN } from "./fixtures.mjs";
 
 const ORIGINAL = `# Plan
 
@@ -24,6 +25,17 @@ test("parses directives, questions, continuations, and section context", () => {
 	assert.equal(result.questions[0].text, "should this remain synchronous?\nConsider callers in api/.");
 	assert.equal(result.questions[0].context, "1.1 [pending] Task");
 	assert.equal(result.hasAnnotations, true);
+	assert.doesNotMatch(result.cleanedMarkdown, /^[ \t]*[!?]/m);
+});
+
+test("retains Part identity as review context and strips annotations cleanly", () => {
+	const edited = PART_MINIMAL_PLAN.replace(
+		"Describe writes, expiry, and ownership",
+		"! retain the repository's expiry term\n? does the public guide define ownership?\nDescribe writes, expiry, and ownership",
+	);
+	const result = parseReviewAnnotations(PART_MINIMAL_PLAN, edited);
+	assert.equal(result.directives[0].context, "Part A — Clarify the cache lifecycle");
+	assert.equal(result.questions[0].context, "Part A — Clarify the cache lifecycle");
 	assert.doesNotMatch(result.cleanedMarkdown, /^[ \t]*[!?]/m);
 });
 

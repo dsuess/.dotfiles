@@ -9,11 +9,102 @@ import {
 	splitManagedProgressReport,
 	validatePlanDocument,
 } from "../plan-document.js";
-import { LEGACY_PLAN, SMALL_PLAN, VALID_PLAN, VERSION_2_PLAN } from "./fixtures.mjs";
+import {
+	LEGACY_PLAN,
+	PART_MINIMAL_PLAN,
+	PART_PLAN,
+	SMALL_PLAN,
+	VALID_PLAN,
+	VERSION_2_PLAN,
+} from "./fixtures.mjs";
 
 function errorCodes(markdown) {
 	return validatePlanDocument(markdown).map((item) => item.code);
 }
+
+test("parses Context and Approach Parts into pending one-Part execution stages", () => {
+	const result = parsePlanDocument(PART_PLAN);
+	assert.equal(result.ok, true, JSON.stringify(result.errors));
+	assert.equal(result.document.version, 4);
+	assert.match(result.document.context, /src\/cache\.ts/);
+	assert.match(result.document.criticalFiles, /read-only terminology reference/);
+	assert.match(result.document.verification, /failure signal/);
+	assert.deepEqual(result.document.parts.map((part) => part.id), ["A", "B", "C"]);
+	assert.deepEqual(result.document.parts.map((part) => part.status), ["pending", "pending", "pending"]);
+	assert.deepEqual(result.document.stages.map((stage) => stage.id), ["A", "B", "C"]);
+	assert.deepEqual(result.document.stages.map((stage) => stage.stepIds), [["A"], ["B"], ["C"]]);
+	assert.deepEqual(result.document.stages.map((stage) => stage.description), result.document.parts.map((part) => part.title));
+});
+
+test("accepts both optional sections independently or omits them cleanly", () => {
+	for (const markdown of [
+		PART_MINIMAL_PLAN,
+		PART_PLAN.replace(/\n## Critical Files[\s\S]*?(?=\n## Verification)/, ""),
+		PART_PLAN.replace(/\n## Verification[\s\S]*$/, "\n"),
+	]) {
+		const result = parsePlanDocument(markdown);
+		assert.equal(result.ok, true, JSON.stringify(result.errors));
+		assert.doesNotMatch(renderPlanDocument(result.document), /\n## undefined/);
+	}
+});
+
+test("uses a canonical Part progress report for version 4", () => {
+	const managed = replaceManagedProgressReport(PART_PLAN, [
+		"☐ Define cache consistency",
+		"☐ Implement reliable invalidation",
+		"☐ Cover boundary behavior",
+	]);
+	assert.equal(splitManagedProgressReport(managed).report.heading, "## Part Progress");
+	const parsed = parsePlanDocument(managed);
+	assert.equal(parsed.ok, true, JSON.stringify(parsed.errors));
+	assert.equal(renderPlanDocument(parsed.document), managed);
+	const wrongHeading = managed.replace("## Part Progress", "## Step Progress");
+	assert.ok(errorCodes(wrongHeading).includes("invalid_progress_heading"));
+});
+
+test("round-trips version 4 while preserving selective paths and interfaces as content", () => {
+	const first = parsePlanDocument(PART_PLAN);
+	assert.equal(first.ok, true);
+	const rendered = renderPlanDocument(first.document);
+	assert.match(rendered, /`src\/cache\.ts`/);
+	assert.match(rendered, /public interface/);
+	const second = parsePlanDocument(rendered);
+	assert.equal(second.ok, true, JSON.stringify(second.errors));
+	assert.deepEqual(second.document, first.document);
+});
+
+test("continues stable Part identities beyond Z", () => {
+	const headings = Array.from({ length: 27 }, (_, index) => {
+		const id = index < 26 ? String.fromCharCode(65 + index) : "AA";
+		return `### Part ${id} — Handle boundary ${index + 1}\n\nDescribe and accept boundary ${index + 1}.`;
+	}).join("\n\n");
+	const result = parsePlanDocument(`# Handle Many Boundaries\n\n## Context\n\nThe change has many independently reviewable boundaries.\n\n## Approach\n\nHandle every boundary in stable order.\n\n${headings}\n`);
+	assert.equal(result.ok, true, JSON.stringify(result.errors));
+	assert.equal(result.document.parts.at(-1).id, "AA");
+});
+
+test("rejects malformed version 4 ordering, identities, hierarchy, and empty content", () => {
+	assert.ok(errorCodes(PART_PLAN.replace("## Critical Files", "## Unsupported")).includes("unsupported_heading"));
+	assert.ok(errorCodes(PART_PLAN.replace("## Critical Files", "## Verification\n\nDuplicate check\n\n## Critical Files")).includes("invalid_section_order"));
+	assert.ok(errorCodes(PART_PLAN.replace("### Part B —", "### Part C —")).includes("part_order"));
+	assert.ok(errorCodes(PART_PLAN.replace("### Part B —", "### Part A —")).includes("duplicate_part"));
+	assert.ok(errorCodes(PART_PLAN.replace("### Part B —", "### Part 2 —")).includes("malformed_part_heading"));
+	assert.ok(errorCodes(PART_PLAN.replace("### Part B —", "### Part B [pending] —")).includes("malformed_part_heading"));
+	assert.ok(errorCodes(PART_PLAN.replace("### Part B — Implement reliable invalidation", "#### Part B — Implement reliable invalidation")).includes("unsupported_heading"));
+	assert.ok(errorCodes(PART_MINIMAL_PLAN.replace("The cache lifecycle is difficult for maintainers to understand in the wider data-access flow.", "")).includes("empty_section"));
+	assert.ok(errorCodes(PART_MINIMAL_PLAN.replace("Explain the existing behavior without changing runtime behavior.\n\n", "")).includes("empty_section"));
+	assert.ok(errorCodes(PART_MINIMAL_PLAN.replace("Describe writes, expiry, and ownership using repository terminology. The work is accepted when the documentation explains the lifecycle without introducing a new contract.", "")).includes("empty_part"));
+	assert.ok(errorCodes(PART_MINIMAL_PLAN.replace(/\n### Part A[\s\S]*$/, "")).includes("no_parts"));
+});
+
+test("rejects legacy inventory metadata but accepts rationale-driven anchors", () => {
+	assert.equal(parsePlanDocument(PART_PLAN).ok, true);
+	const targets = PART_MINIMAL_PLAN.replace(
+		"Describe writes, expiry, and ownership",
+		"- **Targets:** `src/cache.ts`\n\nDescribe writes, expiry, and ownership",
+	);
+	assert.ok(errorCodes(targets).includes("disallowed_metadata"));
+});
 
 test("parses high-level changes independently from their optional stage mapping", () => {
 	const result = parsePlanDocument(VALID_PLAN);

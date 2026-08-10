@@ -12,7 +12,7 @@ import {
 	restorePlanFile,
 	sanitizeIntentSlug,
 } from "../plan-store.js";
-import { VALID_PLAN } from "./fixtures.mjs";
+import { PART_PLAN, VALID_PLAN } from "./fixtures.mjs";
 
 async function withProject(run) {
 	const root = await mkdtemp(path.join(os.tmpdir(), "pi-plan-store-"));
@@ -59,6 +59,30 @@ test("persists validated plans atomically and allocates collision suffixes", asy
 		);
 		const retry = await persistPlan({ cwd: project, ...baseOptions, intent: "Transient failure" });
 		assert.equal(retry.slug, "transient-failure", "failed atomic writes must release their filename reservation");
+	});
+});
+
+test("persists Part plans with derived stages and extension-owned pending progress", async () => {
+	await withProject(async (project) => {
+		const stored = await persistPlan({
+			cwd: project,
+			intent: "Add reliable cache invalidation",
+			title: "Add Reliable Cache Invalidation",
+			markdown: PART_PLAN,
+		});
+		assert.equal(stored.document.version, 4);
+		assert.deepEqual(stored.document.stages.map((stage) => stage.id), ["A", "B", "C"]);
+		assert.match(stored.markdown, /## Part Progress[\s\S]*- ☐ Define cache consistency/);
+		assert.doesNotMatch(stored.markdown, /Part A \[pending\]/);
+
+		const authoredLedger = PART_PLAN.replace(
+			"### Part A — Define cache consistency",
+			"### Part A — Define cache consistency\n- **Ledger:** {\"status\":\"completed\"}",
+		);
+		await assert.rejects(
+			persistPlan({ cwd: project, intent: "forged", title: "Add Reliable Cache Invalidation", markdown: authoredLedger }),
+			(error) => error instanceof PlanStoreError && error.details?.some((item) => item.code === "managed_metadata_forbidden"),
+		);
 	});
 });
 

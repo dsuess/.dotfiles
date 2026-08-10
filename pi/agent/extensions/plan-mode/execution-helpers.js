@@ -55,15 +55,15 @@ export function buildExecutionKickoff(contract, state) {
 ${handoffDescription}
 
 Execution rules:
-- Read the saved plan before acting and execute dependencies in stage order.
-- Before work on each task, call plan_progress to move it pending → in_progress.
+- Read the saved plan before acting and execute its Parts or legacy work items in derived execution-stage order.
+- Before work on each plan item, call plan_progress with its stable ID to move it pending → in_progress.
 - After work, call plan_progress with completed evidence, or blocked with a reason and evidence.
 - The parent implementation agent is the only plan-ledger writer. Parallel workers report results; they never edit the plan ledger.
 - Use parallel subagents only where the plan explicitly says work is safe, only if subagent was in the restored tool snapshot, and preserve worker IDs for dependent later work.
 - Run the specified tests. Do not claim completion without ledger evidence.
 ${staged
-	? `- Execute only Stage ${state.currentStageId}. Call complete_stage when every task in that stage is completed or blocked, then stop for the mandatory user checkpoint.`
-	: "- Continue across ordinary stage boundaries. Call complete_plan only when every task is terminal and required tests have evidence."}
+	? `- Execute only execution stage ${state.currentStageId}. In Part-based plans, every execution stage corresponds to exactly one Part. Call complete_stage when its plan item is completed or blocked, then stop for the mandatory user checkpoint.`
+	: "- Continue across ordinary stage boundaries. Call complete_plan only when every plan item is terminal and any applicable verification has evidence."}
 
 Saved plan: ${contract.planPath}
 
@@ -114,5 +114,5 @@ export function buildStageInstruction(state) {
 		`${worker.workerId}${worker.runId ? ` run=${worker.runId}` : ""}${worker.sessionId ? ` session=${worker.sessionId}` : ""}`,
 	).join(", ");
 	return `[STAGED EXECUTION CONTINUE]
-Execute only Stage ${state.currentStageId}. Re-read the saved plan and current ledger. Update every task through plan_progress, run the stage tests, then call complete_stage. Do not begin a later stage before the user checkpoint.${workers ? `\nReusable parallel workers: ${workers}. Resume an existing worker for dependent follow-up; create a fresh worker only for explicitly independent work.` : ""}`;
+Execute only execution stage ${state.currentStageId}; in Part-based plans, every execution stage corresponds to exactly one Part. Re-read the saved plan and current ledger. Update every plan item through plan_progress, run the stage checks, then call complete_stage. Do not begin a later stage before the user checkpoint.${workers ? `\nReusable parallel workers: ${workers}. Resume an existing worker for dependent follow-up; create a fresh worker only for explicitly independent work.` : ""}`;
 }

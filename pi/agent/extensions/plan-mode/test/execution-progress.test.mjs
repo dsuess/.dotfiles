@@ -13,7 +13,7 @@ import {
 	enterPlanning,
 	submitPlan,
 } from "../state.js";
-import { SMALL_PLAN } from "./fixtures.mjs";
+import { PART_MINIMAL_PLAN, SMALL_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -32,6 +32,62 @@ function expectedRows(state) {
 async function fileRows(planPath) {
 	return splitManagedProgressReport(await readFile(planPath, "utf8")).report.rows;
 }
+
+test("Part IDs drive plan_progress while status remains managed metadata", async () => {
+	const project = await mkdtemp(path.join(os.tmpdir(), "pi-part-progress-"));
+	try {
+		const stored = await persistPlan({
+			cwd: project,
+			intent: "Clarify cache documentation",
+			title: "Clarify Cache Documentation",
+			markdown: PART_MINIMAL_PLAN,
+		});
+		let state = enterPlanning(createInitialState(), ["read"]).state;
+		state = submitPlan(state, {
+			path: stored.path,
+			slug: stored.slug,
+			hash: stored.hash,
+			title: stored.document.title,
+			intent: "Clarify cache documentation",
+			approvalNonce: "approval",
+			stages: stored.document.stages.map((stage) => ({
+				id: stage.id, description: stage.description, taskIds: stage.stepIds,
+			})),
+			tasks: getDocumentProgressTasks(stored.document),
+		}).state;
+		state = approveExecution(state, "approval", "all").state;
+		const contract = {
+			version: 1,
+			approvedMarkdown: stored.markdown,
+			planPath: stored.path,
+			planHash: stored.hash,
+			executionMode: "all",
+			originalActiveTools: ["read"],
+			parentSessionPath: null,
+		};
+		const tools = new Map();
+		registerExecutionTools({ registerTool(definition) { tools.set(definition.name, definition); } }, {
+			getState: () => state,
+			getContract: () => contract,
+			commit() {},
+			commitState(next) { state = next; },
+			refreshUI() {},
+		});
+		const progress = tools.get("plan_progress");
+		assert.deepEqual(progress.prepareArguments({ taskId: "A", status: "in_progress" }), {
+			taskId: "A", status: "in_progress", itemId: "A",
+		});
+		await progress.execute("start", { itemId: "A", status: "in_progress" }, undefined, undefined, {});
+		await rm(stored.path);
+		await progress.execute("finish", { itemId: "A", status: "completed", evidence: "documentation reviewed" }, undefined, undefined, {});
+		const markdown = await readFile(stored.path, "utf8");
+		assert.match(markdown, /### Part A — Clarify the cache lifecycle\n- \*\*Ledger:\*\* \{"status":"completed"/);
+		assert.doesNotMatch(markdown, /Part A \[completed\]/);
+		assert.deepEqual(await fileRows(stored.path), ["☑ Clarify the cache lifecycle"]);
+	} finally {
+		await rm(project, { recursive: true, force: true });
+	}
+});
 
 test("accepted progress transitions atomically synchronize widget and saved Step rows", async () => {
 	const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-progress-"));

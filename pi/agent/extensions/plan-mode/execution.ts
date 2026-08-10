@@ -76,20 +76,28 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 	pi.registerTool({
 		name: "plan_progress",
 		label: "Plan Progress",
-		description: "Update exactly one approved plan task through a legal status transition and atomically persist its ledger evidence.",
-		promptSnippet: "Update one approved plan task status and evidence",
+		description: "Update exactly one approved plan item through a legal status transition and atomically persist its ledger evidence.",
+		promptSnippet: "Update one approved plan-item status and evidence",
 		parameters: Type.Object({
-			taskId: Type.String({ description: "Stable task ID such as 2.1" }),
+			itemId: Type.String({ description: "Stable Part or legacy work-item ID, such as A or 2.1" }),
 			status: StringEnum(["in_progress", "completed", "blocked"] as const),
 			note: Type.Optional(Type.String()),
 			evidence: Type.Optional(Type.String()),
-			reopenReason: Type.Optional(Type.String({ description: "Required to reopen a completed task after user feedback" })),
+			reopenReason: Type.Optional(Type.String({ description: "Required to reopen a completed plan item after user feedback" })),
 		}),
+		prepareArguments(args) {
+			if (!args || typeof args !== "object") return args;
+			const input = args as { itemId?: string; taskId?: string };
+			return input.itemId === undefined && typeof input.taskId === "string"
+				? { ...input, itemId: input.taskId }
+				: args;
+		},
 		async execute(_id, params, _signal, _update, ctx) {
 			const contract = runtime.getContract();
 			if (!contract) throw new Error("Execution contract is missing");
+			const itemId = params.itemId ?? (params as { taskId?: string }).taskId;
 			return withFileMutationQueue(contract.planPath, async () => {
-				const transition = recordTaskProgress(runtime.getState(), params) as TransitionResult;
+				const transition = recordTaskProgress(runtime.getState(), { ...params, itemId }) as TransitionResult;
 				if (!transition.ok) throw new Error(transition.error.message);
 				let current: string;
 				try {
@@ -105,8 +113,8 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 				runtime.commitState(accepted);
 				runtime.refreshUI(ctx);
 				return {
-					content: [{ type: "text", text: `Task ${params.taskId} is now ${params.status}.` }],
-					details: { taskId: params.taskId, ledger: accepted.ledger[params.taskId] },
+					content: [{ type: "text", text: `Plan item ${itemId} is now ${params.status}.` }],
+					details: { itemId, ledger: accepted.ledger[itemId] },
 				};
 			});
 		},
@@ -118,7 +126,7 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 		description: "Validate terminal ledger state and finish approved-plan execution with summaries and test evidence.",
 		parameters: Type.Object({
 			summary: Type.String({ minLength: 1 }),
-			tests: Type.Array(Type.String(), { minItems: 1 }),
+			tests: Type.Array(Type.String(), { description: "Verification evidence; may be empty only when the approved plan has no meaningful Verification" }),
 			allowBlockedStoppingCriterion: Type.Optional(Type.Boolean()),
 			blockedReason: Type.Optional(Type.String()),
 		}),
@@ -148,7 +156,7 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 			stageId: Type.String(),
 			summary: Type.String({ minLength: 1 }),
 			changedFiles: Type.Array(Type.String()),
-			tests: Type.Array(Type.String(), { minItems: 1 }),
+			tests: Type.Array(Type.String(), { description: "Stage verification evidence; may be empty only when no meaningful check applies" }),
 			blockers: Type.Array(Type.String()),
 			parallelWorkers: Type.Optional(Type.Array(Type.Object({
 				workerId: Type.String(),

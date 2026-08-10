@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { VALID_PLAN } from "./fixtures.mjs";
+import { PART_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -72,18 +72,23 @@ try {
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
 	assert.match(planningPrompt.systemPrompt, /ask all currently known blockers together in one ask_user_question call/i);
 	assert.doesNotMatch(planningPrompt.systemPrompt, /Ask unresolved design questions one at a time/i);
-	assert.match(planningPrompt.systemPrompt, /"Background" is required/);
-	assert.match(planningPrompt.systemPrompt, /"Changes" is required/);
-	assert.match(planningPrompt.systemPrompt, /Add "Testing Plan" when verification is applicable/);
-	assert.match(planningPrompt.systemPrompt, /Add "Assumptions \/ Decisions" only for material assumptions or decisions the user made/);
-	assert.match(planningPrompt.systemPrompt, /Add "Stages" only for a larger change/);
-	assert.match(planningPrompt.systemPrompt, /Do not list target files, internal symbol names, tools, or API call details/);
+	assert.match(planningPrompt.systemPrompt, /required "Context", required "Approach"/);
+	assert.match(planningPrompt.systemPrompt, /### Part A — Action-oriented title/);
+	assert.match(planningPrompt.systemPrompt, /Do not add an author-written status marker/);
+	assert.match(planningPrompt.systemPrompt, /selective implementation anchors/);
+	assert.match(planningPrompt.systemPrompt, /not an exhaustive target-file inventory/);
+	assert.match(planningPrompt.systemPrompt, /Add "Verification" whenever the planned result can be meaningfully checked/);
+	assert.match(planningPrompt.systemPrompt, /Omit optional sections cleanly/); // small fixes and documentation-only work
+	assert.match(planningPrompt.systemPrompt, /cross-file or integration context/); // cross-file refactors
+	assert.match(planningPrompt.systemPrompt, /external interfaces/); // uncertain integrations
+	assert.match(planningPrompt.systemPrompt, /failure signals for uncertain assumptions/);
+	assert.match(planningPrompt.systemPrompt, /every execution stage corresponds to exactly one Part|Each Part is one coherent executable and staged-delivery boundary/); // multi-Part staged work
 	assert.doesNotMatch(planningPrompt.systemPrompt, /Stages Overview/);
 	const blocked = await handlers.get("tool_call")[0]({ toolName: "edit", input: {}, toolCallId: "edit-1" }, ctx);
 	assert.equal(blocked.block, true);
 
 	const submitted = await tools.get("submit_plan").execute("submit-1", {
-		intent: "Add reliable cache invalidation", title: "Add Reliable Cache Invalidation", markdown: VALID_PLAN,
+		intent: "Add reliable cache invalidation", title: "Add Reliable Cache Invalidation", markdown: PART_PLAN,
 	}, undefined, undefined, ctx);
 	assert.equal(submitted.details.accepted, true);
 	assert.equal(submitted.terminate, true);
@@ -94,7 +99,10 @@ try {
 	await handlers.get("agent_settled")[0]({}, ctx);
 	const recovered = await readFile(submitted.details.path, "utf8");
 	assert.match(recovered, /# Add Reliable Cache Invalidation/, "approval recovers a missing plan from the durable display entry");
-	assert.match(recovered, /pi-plan-mode:progress:start/, "recovery retains the canonical managed progress report");
+	assert.match(recovered, /## Context[\s\S]*## Approach[\s\S]*### Part A/);
+	assert.match(recovered, /`src\/cache\.ts`/, "the planner may retain a selective researched anchor");
+	assert.match(recovered, /## Verification[\s\S]*Regression checks[\s\S]*smoke signal[\s\S]*failure signal/);
+	assert.match(recovered, /## Part Progress/, "recovery retains the canonical managed progress report");
 	const executionState = appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data;
 	assert.equal(executionState.mode, "executing_all");
 	assert.equal(executionState.approval.consumed, true);
@@ -111,24 +119,26 @@ try {
 	assert.ok(activeTools.includes("complete_plan"));
 	assert.equal(activeTools.includes("complete_stage"), false);
 	assert.deepEqual(ledgerWidget, [
-		"☐ Define the cache behavior",
-		"▶ Add reliable invalidation",
-		"⛔ Cover boundary conditions",
+		"☐ Define cache consistency",
+		"☐ Implement reliable invalidation",
+		"☐ Cover boundary behavior",
 	]);
 
 	const progress = tools.get("plan_progress");
-	await progress.execute("p1", { taskId: "1", status: "in_progress" }, undefined, undefined, ctx);
-	await progress.execute("p2", { taskId: "1", status: "completed", evidence: "contract tests passed" }, undefined, undefined, ctx);
-	await progress.execute("p3", { taskId: "2", status: "completed", evidence: "implementation test passed" }, undefined, undefined, ctx);
-	await progress.execute("p4", { taskId: "3", status: "in_progress", note: "retrying blocker" }, undefined, undefined, ctx);
-	await progress.execute("p5", { taskId: "3", status: "completed", evidence: "edge tests passed" }, undefined, undefined, ctx);
+	await progress.execute("p1", { itemId: "A", status: "in_progress" }, undefined, undefined, ctx);
+	await progress.execute("p2", { itemId: "A", status: "completed", evidence: "contract tests passed" }, undefined, undefined, ctx);
+	await progress.execute("p3", { itemId: "B", status: "in_progress" }, undefined, undefined, ctx);
+	await progress.execute("p4", { itemId: "B", status: "completed", evidence: "implementation test passed" }, undefined, undefined, ctx);
+	await progress.execute("p5", { itemId: "C", status: "in_progress" }, undefined, undefined, ctx);
+	await progress.execute("p6", { itemId: "C", status: "completed", evidence: "edge tests passed" }, undefined, undefined, ctx);
 	assert.deepEqual(ledgerWidget, [
-		"☑ Define the cache behavior",
-		"☑ Add reliable invalidation",
-		"☑ Cover boundary conditions",
+		"☑ Define cache consistency",
+		"☑ Implement reliable invalidation",
+		"☑ Cover boundary behavior",
 	]);
 	const saved = await readFile(submitted.details.path, "utf8");
-	assert.match(saved, /## Step Progress[\s\S]*- ☑ Define the cache behavior[\s\S]*- ☑ Add reliable invalidation[\s\S]*- ☑ Cover boundary conditions/);
+	assert.match(saved, /## Part Progress[\s\S]*- ☑ Define cache consistency[\s\S]*- ☑ Implement reliable invalidation[\s\S]*- ☑ Cover boundary behavior/);
+	assert.doesNotMatch(saved, /Part [A-C] \[(?:pending|in_progress|completed|blocked)\]/);
 	const completed = await tools.get("complete_plan").execute("done", {
 		summary: "all stages complete", tests: ["node --test"], allowBlockedStoppingCriterion: false,
 	}, undefined, undefined, ctx);

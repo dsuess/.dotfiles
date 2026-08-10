@@ -90,6 +90,35 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 	assert.equal(executing.state.currentStageId, "1");
 });
 
+test("alphabetic Part IDs pause at one derived execution stage per Part", () => {
+	const partSubmission = {
+		sequentialStages: true,
+		stages: [
+			{ id: "A", description: "Define behavior", taskIds: ["A"] },
+			{ id: "B", description: "Implement behavior", taskIds: ["B"] },
+		],
+		tasks: [
+			{ id: "A", title: "Define behavior", status: "pending" },
+			{ id: "B", title: "Implement behavior", status: "pending" },
+		],
+	};
+	const approved = approvalState(partSubmission);
+	let state = approveExecution(approved, "nonce-1", "staged").state;
+	assert.equal(state.currentStageId, "A");
+	assert.equal(recordTaskProgress(state, { itemId: "B", status: "in_progress" }).error.code, "future_stage");
+	state = recordTaskProgress(state, { itemId: "A", status: "in_progress" }).state;
+	state = recordTaskProgress(state, { itemId: "A", status: "completed", evidence: "contract checked" }).state;
+	state = recordStageCheckpoint(state, { stageId: "A", nonce: "part-a", tests: [] }).state;
+	state = resolveStageCheckpoint(state, "part-a", "continue").state;
+	assert.equal(state.currentStageId, "B");
+
+	let full = approveExecution(approvalState(partSubmission), "nonce-1", "all").state;
+	assert.equal(recordTaskProgress(full, { itemId: "B", status: "in_progress" }).error.code, "future_stage");
+	full = recordTaskProgress(full, { itemId: "A", status: "in_progress" }).state;
+	full = recordTaskProgress(full, { itemId: "A", status: "completed", evidence: "contract checked" }).state;
+	assert.equal(recordTaskProgress(full, { itemId: "B", status: "in_progress" }).ok, true);
+});
+
 test("rejects duplicate, stale, and out-of-order actions deterministically", () => {
 	const initial = createInitialState();
 	const first = enterPlanning(initial, ["read"]);
