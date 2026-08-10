@@ -87,6 +87,25 @@ assert.equal(widgetCalls.at(-1)[1], undefined, "shared widget clears when no run
 manager.clear();
 assert.equal(widgetCalls.at(-1)[1], undefined);
 
+const longTask = "Inspect the deliberately long delegated task so its summary must be truncated before the selected model ".repeat(4).trim();
+manager.start("call-model-priority", {
+	ordinal: 3,
+	model: "openai-codex/gpt-5.6-sol",
+	prompt: longTask,
+});
+const priorityWidgetFactory = widgetCalls.at(-1)[1];
+const priorityWidget = priorityWidgetFactory({ requestRender() {} }, theme);
+for (const width of [56, 80, 120]) {
+	const lines = priorityWidget.render(width);
+	assert.equal(lines.length, 2, "long-task run keeps one row plus the footer spacer");
+	assert.equal(lines.at(-1), "");
+	assert.ok(lines.every((line) => tuiPackage.visibleWidth(line) <= width), `model-priority row exceeded width ${width}`);
+	assert.match(lines[0], /openai-codex\/gpt-5\.6-sol/, `selected model remains visible at width ${width}`);
+}
+const priorityRow = priorityWidget.render(80)[0];
+assert.match(priorityRow, /🔎.*scout.*subagent #3.*openai-codex\/gpt-5\.6-sol.*Inspect the deliberately/);
+manager.clear();
+
 const callComponent = uiModule.renderSubagentCall({
 	prompt: "Inspect a very long repository path and report concise findings without changing files ".repeat(4),
 	model: "anthropic/claude-sonnet",

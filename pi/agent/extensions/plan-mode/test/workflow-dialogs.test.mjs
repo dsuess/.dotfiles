@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,7 +19,7 @@ const stateModule = await import(new URL("../state.js", import.meta.url));
 
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 
-async function createHarness({ flag = false, mode = "tui", actions = [], editorValues = [] } = {}) {
+async function createHarness({ flag = false, mode = "tui", actions = [], editorValues = [], reviewResults = [], confirmValues = [] } = {}) {
 	const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-plan-dialogs-"));
 	const handlers = new Map();
 	const eventHandlers = new Map();
@@ -30,10 +31,13 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 	const sentUserMessages = [];
 	const sentMessages = [];
 	const notifications = [];
+	const reviewInvocations = [];
 	let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 	const allTools = new Set(activeTools);
 	let actionIndex = 0;
 	let editorIndex = 0;
+	let reviewIndex = 0;
+	let confirmIndex = 0;
 
 	function nextAction() { return actions[actionIndex++] ?? "cancel"; }
 	function driveSelection(component, action) {
@@ -62,6 +66,9 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 		getActiveTools() { return [...activeTools]; },
 		getAllTools() { return [...allTools].map((name) => ({ name })); },
 		setActiveTools(names) { activeTools = [...names]; },
+		getThinkingLevel() { return "high"; },
+		setThinkingLevel() {},
+		async setModel() { return true; },
 		sendMessage(message, options) {
 			sentMessages.push({ message, options });
 			entries.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
@@ -69,7 +76,12 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 		},
 		sendUserMessage(message, options) { sentUserMessages.push({ message, options }); },
 	};
-	extension.default(pi);
+	extension.default(pi, {
+		async runPlanReview(_ctx, planPath, validatedPlan) {
+			reviewInvocations.push({ planPath, validatedPlan });
+			return reviewResults[reviewIndex++] ?? { ok: false, error: "No fake review result", level: "warning" };
+		},
+	});
 
 	const hasUI = mode === "tui" || mode === "rpc";
 	const ctx = {
@@ -93,13 +105,13 @@ async function createHarness({ flag = false, mode = "tui", actions = [], editorV
 				const index = { run: 0, staged: 1, change: 2, review: 3, continue: 0, feedback: 1, stop: 3 }[action];
 				return labels[index];
 			},
-			async editor() { return editorValues[editorIndex++]; }, async confirm() { return false; }, async input() { return undefined; },
+			async editor() { return editorValues[editorIndex++]; }, async confirm() { return confirmValues[confirmIndex++] ?? false; }, async input() { return undefined; },
 		},
 	};
 	async function emit(name, event = {}) { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); }
 	await emit("session_start", { reason: "startup" });
 	return {
-		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, ctx, emit,
+		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, reviewInvocations, ctx, emit,
 		getActiveTools: () => [...activeTools],
 		latestState: () => entries.filter((entry) => entry.customType === "plan-mode-state").at(-1)?.data,
 		async cleanup() { await rm(cwd, { recursive: true, force: true }); },
@@ -158,6 +170,96 @@ test("requested changes can be resubmitted and receive one fresh approval", asyn
 		await submit(harness, revised); await harness.emit("agent_settled");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 		assert.equal(harness.latestState().plan.revision, 2);
+	} finally { await harness.cleanup(); }
+});
+
+test("failed tuicr attempts remain pending and a later valid comment set consumes approval once", async () => {
+	const comments = [
+		{ id: "review", location: { kind: "review", path: null, startLine: null, endLine: null, side: null }, commentType: null, lifecycleState: "local_draft", content: "Clarify the overall outcome." },
+		{ id: "file", location: { kind: "file", path: "/plan.md", startLine: null, endLine: null, side: null }, commentType: "note", lifecycleState: "local_draft", content: "Keep terminology consistent." },
+		{ id: "line", location: { kind: "line", path: "/plan.md", startLine: 8, endLine: 8, side: "new" }, commentType: "issue", lifecycleState: "local_draft", content: "Support this claim with repository evidence." },
+		{ id: "range", location: { kind: "range", path: "/plan.md", startLine: 12, endLine: 15, side: "new" }, commentType: "suggestion", lifecycleState: "local_draft", content: "Combine these acceptance outcomes." },
+	];
+	const harness = await createHarness({
+		actions: ["review", "review"],
+		reviewResults: [
+			{ ok: false, error: "No saved tuicr comments were found; approval remains pending", level: "info" },
+			{ ok: true, comments },
+		],
+	});
+	try {
+		await enterThrough(harness, "command");
+		const submitted = await submit(harness);
+		await harness.emit("agent_settled");
+		const state = harness.latestState();
+		assert.equal(state.mode, "planning");
+		assert.equal(state.counters.reviewRounds, 1);
+		assert.equal(harness.reviewInvocations.length, 2);
+		assert.equal(harness.reviewInvocations[0].planPath, submitted.details.path);
+		assert.equal(harness.reviewInvocations[0].validatedPlan, await readFile(submitted.details.path, "utf8"));
+		assert.match(harness.reviewInvocations[0].validatedPlan, /# Add Reliable Cache Invalidation/);
+		assert.equal(harness.sentUserMessages.length, 1);
+		const prompt = harness.sentUserMessages[0].message;
+		assert.match(prompt, /\[PLAN REVIEW COMMENTS\]/);
+		assert.match(prompt, /Clarify the overall outcome/);
+		assert.match(prompt, /"kind": "range"/);
+		assert.match(prompt, /types are advisory context/i);
+		assert.match(prompt, /collect-then-batch clarification workflow/i);
+		assert.match(prompt, /submit_plan exactly once/i);
+		assert.doesNotMatch(prompt, /resolve every \?|cleaned edited draft|direct edits present/i);
+		assert.equal(harness.notifications.some(({ message, level }) => level === "info" && /approval remains pending/.test(message)), true);
+		const revised = VALID_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");
+		const resubmitted = await submit(harness, revised);
+		assert.equal(resubmitted.details.accepted, true);
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().plan.revision, 2);
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.latestState().counters.reviewRounds, 1);
+	} finally { await harness.cleanup(); }
+});
+
+test("RPC approval omits the TUI-only Review action", async () => {
+	const harness = await createHarness({ mode: "rpc", actions: ["review"] });
+	try {
+		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.reviewInvocations.length, 0);
+	} finally { await harness.cleanup(); }
+});
+
+test("review confirmation beyond ten rounds leaves approval pending until explicitly accepted", async () => {
+	const harness = await createHarness({
+		actions: ["review", "cancel", "review"],
+		confirmValues: [false, true],
+		reviewResults: [{ ok: true, comments: [{
+			id: "late", location: { kind: "review", path: null, startLine: null, endLine: null, side: null },
+			commentType: null, lifecycleState: "local_draft", content: "One final refinement.",
+		}] }],
+	});
+	try {
+		const planPath = path.join(harness.cwd, ".pi/plans/late.md");
+		await mkdir(path.dirname(planPath), { recursive: true });
+		await writeFile(planPath, VALID_PLAN, "utf8");
+		const hash = createHash("sha256").update(VALID_PLAN).digest("hex");
+		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
+		const approval = stateModule.submitPlan(planning, {
+			path: planPath, slug: "late", hash, title: "Late", intent: "Late", approvalNonce: "approval",
+			stages: [{ id: "1", description: "Only", taskIds: ["1"] }],
+			tasks: [{ id: "1", title: "Only task", status: "pending" }],
+		}).state;
+		approval.counters.reviewRounds = 10;
+		approval.approval.presented = true;
+		harness.entries.push({ type: "custom", customType: "plan-mode-state", data: approval });
+		await harness.emit("session_tree");
+		await harness.commands.get("plan-actions").handler("", harness.ctx);
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().counters.reviewRounds, 10);
+		assert.equal(harness.reviewInvocations.length, 0);
+		await harness.commands.get("plan-actions").handler("", harness.ctx);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.equal(harness.latestState().counters.reviewRounds, 11);
+		assert.equal(harness.reviewInvocations.length, 1);
 	} finally { await harness.cleanup(); }
 });
 

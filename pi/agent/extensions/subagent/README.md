@@ -53,6 +53,6 @@ The below-editor row infers one fixed presentation role from the delegated promp
 4. `🔎 scout` — inspect, investigate, explore, search, find, research, analyze, locate
 5. `🤖 general` — no matching word
 
-Matching is case-insensitive and word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The displayed task is the whitespace-normalized delegated prompt, shortened only for terminal width. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
+Matching is case-insensitive and word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The active row displays role, ordinal, and the provider-qualified selected model before the whitespace-normalized task, so terminal-width truncation shortens the task first. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
 
 Role icons appear only in the below-editor active-run row. Conversation tool-call and activity lines are plain text, while running, completed, failed, and cancelled result headers retain their status icons.

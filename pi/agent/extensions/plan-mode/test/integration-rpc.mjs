@@ -10,7 +10,11 @@ const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-plan-rpc-"));
 const proc = spawn(process.env.PI_BIN || "pi", [
 	"--no-extensions", "--no-skills", "--no-prompt-templates", "--offline",
 	"-e", entrypoint, "--mode", "rpc", "--no-session",
-], { cwd, stdio: ["pipe", "pipe", "pipe"] });
+], {
+	cwd,
+	env: { ...process.env, PI_CODING_AGENT_DIR: path.join(cwd, ".pi-agent") },
+	stdio: ["pipe", "pipe", "pipe"],
+});
 let stdoutBuffer = "";
 let stderr = "";
 const pending = new Map();

@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 export interface SubagentRole {
 	name: "reviewer" | "planner" | "worker" | "scout" | "general";
@@ -94,9 +94,9 @@ function activeRow(run: Required<Pick<RunPresentation, "ordinal" | "model" | "pr
 	const ordinal = theme.fg("muted", `subagent #${run.ordinal}`);
 	const task = theme.fg("text", run.taskSummary || "(no task)");
 	const model = theme.fg("dim", run.model);
-	const withoutModel = `${role} ${theme.fg("dim", "·")} ${ordinal} ${theme.fg("dim", "·")} ${task}`;
-	const withModel = `${withoutModel} ${theme.fg("dim", "·")} ${model}`;
-	return truncateToWidth(visibleWidth(withModel) <= width ? withModel : withoutModel, Math.max(0, width));
+	const identity = `${role} ${theme.fg("dim", "·")} ${ordinal} ${theme.fg("dim", "·")} ${model}`;
+	const row = `${identity} ${theme.fg("dim", "·")} ${task}`;
+	return truncateToWidth(row, Math.max(0, width));
 }
 
 export function createRunUiManager(ui: WidgetUi, widgetKey = "subagent-active") {

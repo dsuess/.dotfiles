@@ -144,6 +144,7 @@ Key files:
 ## Pi Extension Invariants
 
 - `git-tree-checkpoints`: **Keep current code** must remain the first/default restore-dialog choice. Restoring checkpointed code is always an explicit opt-in.
+- `subagent`: Keep tool identity, model, role, and task on the tool-call row. Result headers show only icon-bearing status so adjacent call/result rows do not duplicate metadata.
 - `bin/pi`: Keep Ketch on its upstream direct-spawn path. Do not add a Ketch broker or network/domain allowlist; sandboxed Pi intentionally has unrestricted host network and Unix-socket traffic.
 
 ## Machine-Specific Overrides

@@ -20,6 +20,13 @@ const tools = new Map();
 const appended = [];
 const queued = [];
 const boundaryMessages = [];
+const models = [
+	{ provider: "openai-codex", id: "gpt-5.6-sol" },
+	{ provider: "openai-codex", id: "gpt-5.6-terra" },
+];
+let activeModel = models[0];
+let thinkingLevel = "high";
+let modelSwitchAllowed = true;
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
 const pi = {
@@ -32,6 +39,13 @@ const pi = {
 	getActiveTools() { return [...activeTools]; },
 	getAllTools() { return [...allTools].map((name) => ({ name })); },
 	setActiveTools(names) { activeTools = [...names]; },
+	getThinkingLevel() { return thinkingLevel; },
+	setThinkingLevel(level) { thinkingLevel = level; },
+	async setModel(model) {
+		if (!modelSwitchAllowed) return false;
+		activeModel = model;
+		return true;
+	},
 	sendMessage(message, options) {
 		boundaryMessages.push({ message, options });
 		appended.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
@@ -44,7 +58,13 @@ const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-mock-"));
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 let ledgerWidget;
 const ctx = {
-	cwd: project, mode: "tui", hasUI: true, model: undefined, thinkingLevel: "high",
+	cwd: project, mode: "tui", hasUI: true,
+	get model() { return activeModel; },
+	get thinkingLevel() { return thinkingLevel; },
+	modelRegistry: {
+		find(provider, id) { return models.find((model) => model.provider === provider && model.id === id); },
+		getAvailable() { return models; },
+	},
 	isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
 	sessionManager: { getBranch: () => appended, getSessionFile: () => "/sessions/planning.jsonl" },
 	ui: {
@@ -67,6 +87,8 @@ try {
 	await commands.get("plan").handler("", ctx);
 	assert.deepEqual(appended.at(-1).data.originalActiveTools, ["read", "bash", "edit", "write", "custom_tool"]);
 	assert.equal(appended.at(-1).data.mode, "planning");
+	assert.equal(activeModel.id, "gpt-5.6-sol");
+	assert.equal(thinkingLevel, "high");
 	assert.equal(activeTools.includes("edit"), false);
 	const planningPrompt = await handlers.get("before_agent_start")[0]({ systemPrompt: "base" }, ctx);
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
@@ -106,6 +128,8 @@ try {
 	const executionState = appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data;
 	assert.equal(executionState.mode, "executing_all");
 	assert.equal(executionState.approval.consumed, true);
+	assert.equal(activeModel.id, "gpt-5.6-terra");
+	assert.equal(thinkingLevel, "high");
 	assert.ok(executionState.execution.runId);
 	const contract = appended.filter((entry) => entry.customType === "plan-mode-execution").at(-1).data;
 	assert.equal(contract.version, 2);
@@ -144,6 +168,20 @@ try {
 	}, undefined, undefined, ctx);
 	assert.equal(completed.terminate, true);
 	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.mode, "completed");
+
+	await commands.get("plan").handler("", ctx);
+	assert.equal(activeModel.id, "gpt-5.6-sol", "a new planning run restores the planner model");
+	assert.equal(thinkingLevel, "high", "a new planning run restores planner thinking");
+	await commands.get("plan").handler("off", ctx);
+	assert.equal(activeModel.id, "gpt-5.6-terra", "/plan off restores the inference model");
+	assert.equal(thinkingLevel, "high", "/plan off restores inference thinking");
+
+	modelSwitchAllowed = false;
+	await commands.get("plan").handler("", ctx);
+	assert.equal(activeModel.id, "gpt-5.6-terra", "an unavailable planner leaves the active model unchanged");
+	const routing = appended.filter((entry) => entry.customType === "plan-mode-model-routing").at(-1).data;
+	assert.equal(routing.planning.modelId, "gpt-5.6-sol", "a failed restore does not overwrite the saved planner");
+	await commands.get("plan").handler("off", ctx);
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

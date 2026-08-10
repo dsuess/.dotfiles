@@ -17,6 +17,12 @@ State transitions are persisted as non-context custom session entries:
 
 `off → planning → approval → executing_all | executing_staged → completed | blocked`
 
+## Model profiles
+
+Plan mode persists separate planning and inference model profiles on the active session branch. The first planning entry captures the exact model and thinking level already selected for the session; planning and approval never reinterpret that choice. Handoff to implementation and `/plan off` switch to the inference profile, while a later planning entry restores the saved planning profile.
+
+The initial inference profile follows the semantic routing in `AGENTS.md`: GPT-5.6 Terra at high thinking for OpenAI/OpenAI Codex, or the latest authenticated Sonnet at high thinking for Anthropic. Other providers keep the planning model at high thinking and emit a fallback warning. Manual model or thinking changes update the profile for the active mode. Missing models or credentials leave the current model unchanged and warn rather than blocking the workflow.
+
 ## Planning gate
 
 Planning and approval expose only registered inspection/research/question tools plus `submit_plan`. Unknown custom tools and implementation workflow tools are hidden. Direct mutation tools are blocked again at `tool_call` as defense in depth.
@@ -87,11 +93,13 @@ The complete saved plan is rendered as a durable transcript block, then the acti
 - **Implement plan** — execute all stages without ordinary stage pauses.
 - **Implement in stages** — hard pause after every derived stage (one Part per stage for version 4).
 - **Change** — send exact free-form revision feedback while remaining gated.
-- **Review** — edit the actual plan in the configured external editor (or Pi editor fallback).
+- **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
 Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
 
-Review annotations use a leading `!` for directives and `?` for blocking questions. Fenced-code and inline-code examples are ignored. The planner must acknowledge parsed feedback, resolve every question, reconcile conflicts, strip markers, and only then resubmit. External-editor failures restore the last validated plan.
+Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--file` and `review` CLI interfaces, gives each round private data/cache/state storage, and preserves the user's normal tuicr configuration and themes. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `submit_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Change** is the supported fallback.
+
+Saved review-, file-, line-, and range-level comments are returned as one structured planner turn with stable IDs, anchors, side, lifecycle state, content, and optional advisory types. Types do not create a directive/question protocol. The planner acknowledges and reconciles every comment against repository evidence, batches only genuinely unresolved user decisions through the normal clarification workflow, and resubmits one complete canonical revision through `submit_plan` without implementing.
 
 ## Execution and ledger
 
@@ -115,7 +123,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 - After an agent turn settles—or immediately after restoring an idle branch—any unconsumed approval or mandatory checkpoint whose persisted `presented` flag is false opens through the current TUI or RPC context, regardless of whether planning began by command, flag, shortcut, or palette.
 - A decision is marked presented before the extension awaits input, preventing duplicate dialogs. Escape leaves it pending, and `/plan-actions` or `/plan-stage-actions` reopens it manually.
 - TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
-- RPC uses host select/editor primitives.
+- RPC uses host select/editor primitives and omits the TUI-only tuicr Review action.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
 - Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the version-appropriate Part or Step report from the durable approved plan and ledger.
 - Plan files are durable and are never deleted on shutdown.
@@ -126,7 +134,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 There are three distinct layers:
 
 1. **Workflow gate:** hides model mutation tools and rejects known shell mutations during planning.
-2. **Trusted writes:** this extension and the user's editor may write the active plan/ledger only.
+2. **Trusted writes:** this extension writes the active plan/ledger; tuicr receives only a disposable isolated snapshot.
 3. **Whole-process sandbox:** the separate Pi sandbox policy constrains Pi and descendants at the OS level.
 
 Because unknown Bash commands are allowed, planning mode cannot promise that the workspace is absolutely read-only. Treat the extension as workflow enforcement; treat the OS sandbox as the security boundary.

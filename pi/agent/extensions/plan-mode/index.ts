@@ -10,7 +10,6 @@ import { Type } from "typebox";
 import { showPlanActionDialog } from "./action-dialog.ts";
 import { analyzeBashMutation } from "./bash-policy.js";
 import { PLAN_MODE_DIRECT_TOGGLE_EVENT, PLAN_MODE_WORKFLOW_STATE_EVENT } from "./events.ts";
-import { editPlanForReview } from "./external-editor.ts";
 import {
 	EXECUTION_ENTRY,
 	buildExecutionBoundaryMessage,
@@ -32,12 +31,20 @@ import {
 	WORKFLOW_TOOLS,
 } from "./planning-gate.js";
 import { synchronizeLedgerMarkdown } from "./ledger.js";
+import {
+	PLAN_MODE_MODEL_ROUTING_ENTRY,
+	captureModelProfile,
+	createModelRoutingState,
+	resolveInferenceProfile,
+	restoreLatestModelRouting,
+	type ModelProfile,
+	type ModelRoutingState,
+} from "./model-routing.ts";
 import { parsePlanDocument } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
 import { buildProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
 import { buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
-import { parseReviewAnnotations } from "./review-annotations.js";
 import { showStageDialog } from "./stage-dialog.ts";
 import {
 	PLAN_MODE_STATE_ENTRY,
@@ -56,6 +63,7 @@ import {
 	submitPlan,
 } from "./state.js";
 import type { PlanModeState, TransitionResult } from "./state.ts";
+import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-review.ts";
 
 const GATED_MODES = new Set(["planning", "approval"]);
 const MAX_INVALID_SUBMISSIONS = 3;
@@ -79,9 +87,15 @@ function formatStoreError(error: unknown): string {
 	return `${error.code}: ${error.message}`;
 }
 
-export default function planModeExtension(pi: ExtensionAPI): void {
+interface PlanModeDependencies {
+	runPlanReview?: (ctx: ExtensionContext, canonicalPlanPath: string, validatedPlan: string) => Promise<TuicrPlanReviewResult>;
+}
+
+export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies = {}): void {
 	let state = createInitialState() as PlanModeState;
 	let executionContract: ExecutionContract | null = null;
+	let modelRouting: ModelRoutingState | null = null;
+	let applyingModelProfile = false;
 	let lastContext: ExtensionContext | undefined;
 	let approvedPlanMarkdown: string | null = null;
 	let presentingApproval = false;
@@ -107,6 +121,46 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (!result.ok) return false;
 		commitState(result.state);
 		return true;
+	}
+
+	function persistModelRouting(): void {
+		if (modelRouting) pi.appendEntry(PLAN_MODE_MODEL_ROUTING_ENTRY, modelRouting);
+	}
+
+	function notifyRoutingFallback(ctx: ExtensionContext, fallback?: string): void {
+		if (fallback && ctx.hasUI) ctx.ui.notify(`Plan mode: ${fallback}.`, "warning");
+	}
+
+	function initializeModelRouting(ctx: ExtensionContext): void {
+		if (modelRouting) return;
+		const planning = captureModelProfile(ctx.model, pi.getThinkingLevel());
+		if (!planning) return;
+		const resolved = createModelRoutingState(planning, ctx.modelRegistry);
+		modelRouting = resolved.state;
+		persistModelRouting();
+		notifyRoutingFallback(ctx, resolved.fallback);
+	}
+
+	async function applyModelProfile(ctx: ExtensionContext, profile: ModelProfile | undefined, label: string): Promise<void> {
+		if (!profile) return;
+		const model = ctx.modelRegistry.find(profile.provider, profile.modelId);
+		if (!model) {
+			if (ctx.hasUI) ctx.ui.notify(`Plan mode: ${label} model ${profile.provider}/${profile.modelId} is unavailable; keeping the current model.`, "warning");
+			return;
+		}
+		applyingModelProfile = true;
+		try {
+			if (ctx.model?.provider !== model.provider || ctx.model.id !== model.id) {
+				const changed = await pi.setModel(model);
+				if (!changed) {
+					if (ctx.hasUI) ctx.ui.notify(`Plan mode: no credentials for ${profile.provider}/${profile.modelId}; keeping the current model.`, "warning");
+					return;
+				}
+			}
+			pi.setThinkingLevel(profile.thinkingLevel);
+		} finally {
+			applyingModelProfile = false;
+		}
 	}
 
 	function allToolNames(): string[] {
@@ -181,9 +235,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		refreshUI: refreshWorkflowUI,
 	});
 
-	function startPlanning(ctx: ExtensionContext, goal: string): void {
+	async function startPlanning(ctx: ExtensionContext, goal: string): Promise<void> {
+		initializeModelRouting(ctx);
 		if (state.mode === "planning") {
 			applyPlanningGate();
+			await applyModelProfile(ctx, modelRouting?.planning, "planning");
 			if (goal) pi.sendUserMessage(`Planning goal: ${goal}`);
 			else if (ctx.hasUI) ctx.ui.notify("Planning mode is already active.", "info");
 			return;
@@ -196,11 +252,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		commitTransition(result);
 		applyPlanningGate();
 		updateStatus(ctx);
+		await applyModelProfile(ctx, modelRouting?.planning, "planning");
 		if (ctx.hasUI) ctx.ui.notify("Planning mode enabled. Mutation tools are gated.", "info");
 		if (goal) pi.sendUserMessage(`Planning goal: ${goal}`);
 	}
 
-	function stopPlanning(ctx: ExtensionContext): void {
+	async function stopPlanning(ctx: ExtensionContext): Promise<void> {
 		const result = exitPlanning(state) as TransitionResult;
 		if (!result.ok) {
 			if (ctx.hasUI) ctx.ui.notify(result.error.message, "warning");
@@ -210,16 +267,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		restoreOriginalTools(ctx);
 		commitTransition(result);
 		updateStatus(ctx);
+		await applyModelProfile(ctx, modelRouting?.inference, "inference");
 		if (ctx.hasUI) ctx.ui.notify("Planning mode disabled. Original tools restored.", "info");
 	}
 
-	function togglePlanning(ctx: ExtensionContext): void {
-		if (isGated(state)) stopPlanning(ctx);
-		else startPlanning(ctx, "");
+	async function togglePlanning(ctx: ExtensionContext): Promise<void> {
+		if (isGated(state)) await stopPlanning(ctx);
+		else await startPlanning(ctx, "");
 	}
 
 	pi.events.on(PLAN_MODE_DIRECT_TOGGLE_EVENT, () => {
-		if (lastContext) togglePlanning(lastContext);
+		if (lastContext) void togglePlanning(lastContext);
 	});
 
 	pi.registerCommand("plan", {
@@ -227,7 +285,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const value = args?.trim() ?? "";
 			if (value.toLowerCase() === "off") {
-				stopPlanning(ctx);
+				await stopPlanning(ctx);
 				return;
 			}
 			if (state.mode === "approval") {
@@ -239,7 +297,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			startPlanning(ctx, value);
+			await startPlanning(ctx, value);
 		},
 	});
 
@@ -304,6 +362,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		commitState(next);
 		applyExecutionTools(ctx);
 		updateStatus(ctx);
+		await applyModelProfile(ctx, modelRouting?.inference, "inference");
 		const boundary = buildExecutionBoundaryMessage(contract, next);
 		try {
 			pi.sendMessage({
@@ -342,33 +401,25 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
 			if (!confirmed) return false;
 		}
-		let original: string;
+		let validatedPlan: string;
 		try {
-			original = await readApprovedPlan(ctx);
+			validatedPlan = await readApprovedPlan(ctx);
 		} catch (error) {
 			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
 			return false;
 		}
-		const edited = await editPlanForReview(ctx, state.plan.path, original);
-		if (!edited.ok || !edited.changed) {
-			ctx.ui.notify(edited.error ? `Review editor failed: ${edited.error}` : "No saved review edits or annotations were found.", edited.error ? "warning" : "info");
+		const review = await (dependencies.runPlanReview ?? runTuicrPlanReview)(ctx, state.plan.path, validatedPlan);
+		if (!review.ok) {
+			ctx.ui.notify(`Plan review: ${review.error}`, review.level);
 			return false;
 		}
-		const feedback = parseReviewAnnotations(original, edited.content);
-		await atomicReplaceFile(state.plan.path, original);
-		if (!feedback.hasAnnotations && !feedback.hasDirectEdits) {
-			ctx.ui.notify("No review annotations or direct edits were found.", "info");
-			return false;
-		}
+		const planPath = state.plan.path;
 		const result = requestRevision(state, nonce, "review") as TransitionResult;
 		if (!result.ok) { ctx.ui.notify(result.error.message, "warning"); return false; }
 		commitTransition(result);
 		applyPlanningGate();
 		updateStatus(ctx);
-		const directives = feedback.directives.map((item) => `- [${item.context}] ${item.text}`).join("\n") || "- None";
-		const questions = feedback.questions.map((item) => `- [${item.context}] ${item.text || "Ambiguous marker: ask what was intended"}`).join("\n") || "- None";
-		const conflicts = feedback.conflicts.map((item) => `- Potential directive/question conflict in ${item.context}: ${item.question}`).join("\n") || "- None";
-		pi.sendUserMessage(`[PLAN REVIEW FEEDBACK]\nPlan: ${state.plan?.path}\n\nDirectives:\n${directives}\n\nQuestions that must all be resolved before resubmission:\n${questions}\n\nPotential conflicts:\n${conflicts}\n\nDirect edits present: ${feedback.hasDirectEdits ? "yes" : "no"}\nCleaned edited draft:\n\n${feedback.cleanedMarkdown}\n\nFirst acknowledge what you parsed. Resolve every ? interactively without guessing, reconcile conflicts, strip all annotations, then call submit_plan exactly once with the revised canonical plan. Stay in planning mode.`);
+		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\nPlan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr. Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Ask the user only when a genuinely unresolved decision remains, following the normal collect-then-batch clarification workflow.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nSubmit one complete revised canonical plan through submit_plan exactly once. Do not edit the saved plan with ordinary mutation tools, do not implement, and remain in planning mode.`);
 		return true;
 	}
 
@@ -494,7 +545,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerShortcut("shift+tab", {
 		description: "Toggle planning mode",
 		handler: async (ctx) => {
-			togglePlanning(ctx);
+			await togglePlanning(ctx);
 		},
 	});
 
@@ -596,6 +647,30 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				};
 			}
 		},
+	});
+
+	pi.on("model_select", async (event, ctx) => {
+		if (applyingModelProfile || !modelRouting) return;
+		const selected = captureModelProfile(event.model, pi.getThinkingLevel());
+		if (!selected) return;
+		if (isGated(state)) {
+			const resolved = resolveInferenceProfile(selected, ctx.modelRegistry);
+			modelRouting = { version: 1, planning: selected, inference: resolved.profile };
+			notifyRoutingFallback(ctx, resolved.fallback);
+		} else {
+			modelRouting = { ...modelRouting, inference: selected };
+		}
+		persistModelRouting();
+	});
+
+	pi.on("thinking_level_select", async (event) => {
+		if (applyingModelProfile || !modelRouting) return;
+		const key = isGated(state) ? "planning" : "inference";
+		modelRouting = {
+			...modelRouting,
+			[key]: { ...modelRouting[key], thinkingLevel: event.level },
+		};
+		persistModelRouting();
 	});
 
 	pi.on("tool_call", async (event) => {
@@ -768,6 +843,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 		state = restoreLatestState(branch) as PlanModeState;
 		executionContract = restoreExecutionContract(branch, state);
+		modelRouting = restoreLatestModelRouting(branch);
 		approvedPlanMarkdown = null;
 		if (state.plan) {
 			for (let index = branch.length - 1; index >= 0; index -= 1) {
@@ -791,6 +867,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		else if (state.originalActiveTools.length > 0 && ["completed", "blocked"].includes(state.mode)) restoreOriginalTools(ctx);
 		else if (state.mode === "off" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
 		else hideWorkflowTools();
+		if (isGated(state)) {
+			initializeModelRouting(ctx);
+			await applyModelProfile(ctx, modelRouting?.planning, "planning");
+		} else if (modelRouting) {
+			await applyModelProfile(ctx, modelRouting.inference, "inference");
+		}
 		updateStatus(ctx);
 		const pendingApproval = ctx.hasUI && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented;
 		const pendingCheckpoint = ctx.hasUI && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented;

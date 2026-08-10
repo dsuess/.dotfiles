@@ -8,25 +8,37 @@ export type PlanAction =
 	| { action: "review" }
 	| { action: "cancel" };
 
-const ITEMS: SelectItem[] = [
+const BASE_ITEMS: SelectItem[] = [
 	{ value: "run", label: "Implement plan", description: "Execute every stage in the current session" },
 	{ value: "staged", label: "Implement in stages", description: "Pause for review after every stage" },
 	{ value: "change", label: "Change", description: "Send revision instructions to the planner" },
-	{ value: "review", label: "Review", description: "Edit the saved plan with ! and ? annotations" },
 ];
 
+function actionItems(ctx: ExtensionContext): SelectItem[] {
+	if (ctx.mode !== "tui") {
+		return BASE_ITEMS.map((item) => item.value === "change"
+			? { ...item, description: "Send revision instructions (tuicr Review requires interactive TUI mode)" }
+			: item);
+	}
+	return [
+		...BASE_ITEMS,
+		{ value: "review", label: "Review", description: "Comment on an isolated plan snapshot with tuicr" },
+	];
+}
+
 async function selectAction(ctx: ExtensionContext): Promise<string | undefined> {
+	const items = actionItems(ctx);
 	if (ctx.mode !== "tui") {
 		if (!ctx.hasUI) return undefined;
-		const labels = ITEMS.map((item) => `${item.label} — ${item.description ?? ""}`);
+		const labels = items.map((item) => `${item.label} — ${item.description ?? ""}`);
 		return ctx.ui.select("Plan ready — what should happen next?", labels)
-			.then((choice) => ITEMS[labels.indexOf(choice ?? "")]?.value);
+			.then((choice) => items[labels.indexOf(choice ?? "")]?.value);
 	}
 	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 		container.addChild(new Text(theme.fg("accent", theme.bold("Plan ready — what should happen next?")), 1, 0));
-		const list = new SelectList(ITEMS, ITEMS.length, {
+		const list = new SelectList(items, items.length, {
 			selectedPrefix: (text) => theme.fg("accent", text),
 			selectedText: (text) => theme.fg("accent", text),
 			description: (text) => theme.fg("muted", text),
