@@ -229,8 +229,7 @@ export function renderSubagentResult(
 				: options?.isError
 					? "failed"
 					: "completed";
-		const model = typeof details.model === "string" ? details.model : undefined;
-		const header = `${theme.fg("toolTitle", theme.bold("subagent"))} ${statusPresentation(status, theme)}${model ? ` ${theme.fg("dim", `· ${model}`)}` : ""}`;
+		const header = statusPresentation(status, theme);
 		const container = new Container();
 		container.addChild(new Text(header, 0, 0));
 

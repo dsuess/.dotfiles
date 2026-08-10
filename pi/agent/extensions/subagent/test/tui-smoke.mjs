@@ -127,7 +127,7 @@ for (const expanded of [false, true]) {
 	}
 	const text = component.render(100).join("\n");
 	assert.match(text, /✓ completed/, "completed header keeps its status icon");
-	assert.match(text, /claude-sonnet/);
+	assert.doesNotMatch(text.split("\n")[0], /subagent|claude-sonnet/, "result header does not repeat call metadata");
 	assert.doesNotMatch(text, /RAW PRIVATE CHAIN OF THOUGHT/);
 	assert.doesNotMatch(text, /📖|🔎|🧠/, "conversation activity lines are plain text");
 	if (expanded) {
@@ -152,5 +152,6 @@ for (const [statusCase, expectedStatus] of statusCases) {
 	}, { expanded: false, isPartial: statusCase.partial === true }, theme, core.getMarkdownTheme());
 	const text = component.render(80).join("\n");
 	assert.match(text, expectedStatus, `${statusCase.status} header keeps its status icon`);
+	assert.doesNotMatch(text.split("\n")[0], /subagent|test\/model/, `${statusCase.status} header does not repeat call metadata`);
 	assert.doesNotMatch(text, /📖|🔎|🧠/, `${statusCase.status} activity lines are plain text`);
 }
