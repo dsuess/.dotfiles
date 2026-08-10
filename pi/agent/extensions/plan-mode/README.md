@@ -35,9 +35,9 @@ The per-turn planner prompt adapts `grill-with-docs` to read-only planning: term
 
 Validated plans are saved under:
 
-`<project>/.pi/plans/<intent-slug>.md`
+`<project>/.pi/plans/YYYYMMDD_<intent-slug>.md`
 
-The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
+`YYYYMMDD` is the local calendar date when a new target is first allocated; revisions retain their recorded path. The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
 
 Newly authored Markdown uses document version 4:
 

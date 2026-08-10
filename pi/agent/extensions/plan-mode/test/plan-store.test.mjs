@@ -31,18 +31,21 @@ const baseOptions = {
 	markdown: VALID_PLAN,
 };
 
+const creationDate = new Date(2026, 7, 10);
+const laterDate = new Date(2026, 7, 11);
+
 test("normalizes intent to a bounded safe slug", () => {
 	assert.equal(sanitizeIntentSlug("  Héllo, WORLD! ../ cache  "), "hello-world-cache");
 	assert.equal(sanitizeIntentSlug("日本語"), "plan");
 	assert.equal(sanitizeIntentSlug("x".repeat(500)).length, MAX_SLUG_LENGTH);
 });
 
-test("persists validated plans atomically and allocates collision suffixes", async () => {
+test("persists validated plans atomically with dated stems and collision suffixes", async () => {
 	await withProject(async (project) => {
-		const first = await persistPlan({ cwd: project, ...baseOptions });
-		const second = await persistPlan({ cwd: project, ...baseOptions });
-		assert.equal(first.slug, "add-reliable-cache-invalidation");
-		assert.equal(second.slug, "add-reliable-cache-invalidation-2");
+		const first = await persistPlan({ cwd: project, ...baseOptions, now: () => creationDate });
+		const second = await persistPlan({ cwd: project, ...baseOptions, now: () => creationDate });
+		assert.equal(first.slug, "20260810_add-reliable-cache-invalidation");
+		assert.equal(second.slug, "20260810_add-reliable-cache-invalidation-2");
 		assert.equal(await readFile(first.path, "utf8"), first.markdown);
 		assert.match(first.markdown, /<!-- pi-plan-mode:progress:start -->[\s\S]*- ☐ Define the cache behavior[\s\S]*- ▶ Add reliable invalidation[\s\S]*- ⛔ Cover boundary conditions[\s\S]*<!-- pi-plan-mode:progress:end -->\n$/);
 		assert.match(first.hash, /^[a-f0-9]{64}$/);
@@ -53,12 +56,13 @@ test("persists validated plans atomically and allocates collision suffixes", asy
 				cwd: project,
 				...baseOptions,
 				intent: "Transient failure",
+				now: () => creationDate,
 				renameFile: async () => { throw new Error("simulated first-write failure"); },
 			}),
 			/simulated first-write failure/,
 		);
-		const retry = await persistPlan({ cwd: project, ...baseOptions, intent: "Transient failure" });
-		assert.equal(retry.slug, "transient-failure", "failed atomic writes must release their filename reservation");
+		const retry = await persistPlan({ cwd: project, ...baseOptions, intent: "Transient failure", now: () => creationDate });
+		assert.equal(retry.slug, "20260810_transient-failure", "failed atomic writes must release their filename reservation");
 	});
 });
 
@@ -86,9 +90,9 @@ test("persists Part plans with derived stages and extension-owned pending progre
 	});
 });
 
-test("replaces only the validated active revision and preserves it on I/O failure", async () => {
+test("replaces only the validated active revision and preserves its creation-date path", async () => {
 	await withProject(async (project) => {
-		const first = await persistPlan({ cwd: project, ...baseOptions });
+		const first = await persistPlan({ cwd: project, ...baseOptions, now: () => creationDate });
 		const revisedMarkdown = VALID_PLAN.replace("failed writes", "rejected writes");
 		await assert.rejects(
 			persistPlan({
@@ -107,9 +111,29 @@ test("replaces only the validated active revision and preserves it on I/O failur
 			...baseOptions,
 			markdown: revisedMarkdown,
 			existingPlan: { path: first.path, hash: first.hash },
+			now: () => laterDate,
 		});
 		assert.equal(revised.path, first.path);
+		assert.equal(revised.slug, first.slug);
+		assert.match(revised.path, /20260810_add-reliable-cache-invalidation\.md$/);
 		assert.notEqual(revised.hash, first.hash);
+	});
+});
+
+test("retains legacy undated active revision paths", async () => {
+	await withProject(async (project) => {
+		const first = await persistPlan({ cwd: project, ...baseOptions, now: () => creationDate });
+		const legacyPath = path.join(path.dirname(first.path), "legacy-active-plan.md");
+		await writeFile(legacyPath, first.markdown);
+		const revised = await persistPlan({
+			cwd: project,
+			...baseOptions,
+			markdown: VALID_PLAN.replace("failed writes", "rejected writes"),
+			existingPlan: { path: legacyPath, hash: first.hash },
+			now: () => laterDate,
+		});
+		assert.equal(revised.path, legacyPath);
+		assert.equal(revised.slug, "legacy-active-plan");
 	});
 });
 
@@ -218,6 +242,23 @@ test("rejects plans whose generated report would exceed the size limit", async (
 			(error) => error instanceof PlanStoreError && error.code === "validation_failed" &&
 				error.details.some((item) => item.code === "plan_too_large"),
 		);
+	});
+});
+
+test("bounds dated stems, including collision suffixes", async () => {
+	await withProject(async (project) => {
+		const options = {
+			cwd: project,
+			...baseOptions,
+			intent: "x".repeat(MAX_SLUG_LENGTH),
+			now: () => creationDate,
+		};
+		const first = await persistPlan(options);
+		const second = await persistPlan(options);
+		assert.equal(first.slug, `20260810_${"x".repeat(MAX_SLUG_LENGTH - "20260810_".length)}`);
+		assert.equal(second.slug, `20260810_${"x".repeat(MAX_SLUG_LENGTH - "20260810_".length - 2)}-2`);
+		assert.equal(first.slug.length, MAX_SLUG_LENGTH);
+		assert.equal(second.slug.length, MAX_SLUG_LENGTH);
 	});
 });
 

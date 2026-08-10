@@ -1,4 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	PLAN_MODE_WORKFLOW_STATE_EVENT,
+	type PlanModeWorkflowStateEvent,
+} from "../plan-mode/events.ts";
 
 /** Public event emitted by @juicesharp/rpiv-ask-user-question while its UI is open. */
 const ASK_USER_BLOCKED_EVENT = "rpiv:ask-user:blocked";
@@ -67,12 +71,13 @@ export default function (pi: ExtensionAPI) {
 	let latestText = "";
 	let structuredBlocked = false;
 	let freeformBlocked = false;
+	let approvalBlocked = false;
 	let reportedBlocked = false;
 	let rootSession = false;
 
 	function syncBlockedState(): void {
 		if (!rootSession) return;
-		const active = structuredBlocked || freeformBlocked;
+		const active = structuredBlocked || freeformBlocked || approvalBlocked;
 		if (active === reportedBlocked) return;
 		reportedBlocked = active;
 		pi.events.emit(HERDR_BLOCKED_EVENT, active ? { active, label: WAITING_LABEL } : { active });
@@ -84,9 +89,16 @@ export default function (pi: ExtensionAPI) {
 		syncBlockedState();
 	});
 
+	pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data) => {
+		const payload = data as PlanModeWorkflowStateEvent | undefined;
+		approvalBlocked = payload?.mode === "approval";
+		syncBlockedState();
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		rootSession = ctx.hasUI === true;
 		structuredBlocked = false;
+		approvalBlocked = false;
 		reportedBlocked = false;
 		latestText = rootSession ? latestSettledAssistantText(ctx.sessionManager.getBranch()) : "";
 		freeformBlocked = rootSession && asksForFeedback(latestText);

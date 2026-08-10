@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import extension, { asksForFeedback, latestSettledAssistantText } from "./index.ts";
+import { PLAN_MODE_WORKFLOW_STATE_EVENT } from "../plan-mode/events.ts";
 
 function createHarness(branch = []) {
 	const lifecycle = new Map();
@@ -66,6 +67,33 @@ test("bridges structured-question waits without duplicate reports", async () => 
 	await harness.emitLifecycle("session_start");
 	harness.emitBus("rpiv:ask-user:blocked", { active: true });
 	harness.emitBus("rpiv:ask-user:blocked", { active: true });
+	harness.emitBus("rpiv:ask-user:blocked", { active: false });
+
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("bridges pending plan approval without duplicate reports and clears when revised", async () => {
+	const harness = createHarness();
+	await harness.emitLifecycle("session_start");
+	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "approval" });
+	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "approval" });
+	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "planning" });
+
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("keeps waiting while another feedback source overlaps a consumed approval", async () => {
+	const harness = createHarness();
+	await harness.emitLifecycle("session_start");
+	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "approval" });
+	harness.emitBus("rpiv:ask-user:blocked", { active: true });
+	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "executing_all" });
 	harness.emitBus("rpiv:ask-user:blocked", { active: false });
 
 	assert.deepEqual(harness.reports, [

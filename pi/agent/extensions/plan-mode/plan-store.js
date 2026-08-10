@@ -85,6 +85,10 @@ function hashContent(content) {
 	return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+function formatLocalDate(date) {
+	return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function resolvePlanTarget(path, plansRoot) {
 	if (typeof path !== "string" || !isAbsolute(path)) {
 		throw new PlanStoreError("path_escape", "The plan path must be absolute");
@@ -208,6 +212,7 @@ export async function persistPlan(options) {
 		configDirName = ".pi",
 		maxCollisionProbes = MAX_COLLISION_PROBES,
 		renameFile,
+		now = () => new Date(),
 	} = options ?? {};
 	if (typeof cwd !== "string" || !cwd) throw new PlanStoreError("invalid_cwd", "A project working directory is required");
 	if (typeof title !== "string" || !title.trim()) throw new PlanStoreError("invalid_title", "Plan title cannot be empty");
@@ -244,7 +249,8 @@ export async function persistPlan(options) {
 		target = await verifyRevisionTarget(existingPlan.path, plansRoot, existingPlan.hash);
 		slug = basename(target, ".md");
 	} else {
-		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, baseSlug, maxCollisionProbes));
+		const datedBaseSlug = `${formatLocalDate(now())}_${baseSlug}`;
+		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, datedBaseSlug, maxCollisionProbes));
 	}
 
 	const hash = hashContent(persistedMarkdown);
