@@ -23,12 +23,27 @@ const boundaryMessages = [];
 const models = [
 	{ provider: "openai-codex", id: "gpt-5.6-sol" },
 	{ provider: "openai-codex", id: "gpt-5.6-terra" },
+	{ provider: "anthropic", id: "claude-sonnet-5" },
 ];
 let activeModel = models[0];
 let thinkingLevel = "high";
 let modelSwitchAllowed = true;
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
+const persistedDefaults = [];
+let defaultWriteAllowed = true;
+const modelDefaults = {
+	load() {
+		return { profiles: {
+			planning: { provider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "high" },
+			inference: { provider: "openai-codex", modelId: "gpt-5.6-terra", thinkingLevel: "high" },
+		} };
+	},
+	async persist(profiles) {
+		if (!defaultWriteAllowed) throw new Error("simulated settings failure");
+		persistedDefaults.push(structuredClone(profiles));
+	},
+};
 const pi = {
 	events: { on() { return () => {}; }, emit() {} },
 	registerFlag() {}, getFlag() { return false; }, registerShortcut() {}, registerEntryRenderer() {},
@@ -52,11 +67,12 @@ const pi = {
 	},
 	sendUserMessage(message, options) { queued.push({ message, options }); },
 };
-extension.default(pi);
+extension.default(pi, { modelDefaults });
 
 const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-mock-"));
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 let ledgerWidget;
+const notifications = [];
 const ctx = {
 	cwd: project, mode: "tui", hasUI: true,
 	get model() { return activeModel; },
@@ -69,6 +85,7 @@ const ctx = {
 	sessionManager: { getBranch: () => appended, getSessionFile: () => "/sessions/planning.jsonl" },
 	ui: {
 		theme, notify() {}, setStatus() {}, setWidget(name, value) { if (name === "plan-mode-ledger") ledgerWidget = value; },
+		notify(message, level) { notifications.push({ message, level }); },
 		async custom(factory) {
 			return new Promise((resolve) => {
 				const component = factory({ requestRender() {} }, theme, {}, resolve);
@@ -174,6 +191,10 @@ try {
 	await commands.get("plan").handler("off", ctx);
 	assert.equal(activeModel.id, "gpt-5.6-terra", "/plan off restores the inference model");
 	assert.equal(thinkingLevel, "high", "/plan off restores inference thinking");
+	assert.deepEqual(persistedDefaults.at(-1), {
+		planning: { provider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "high" },
+		inference: { provider: "openai-codex", modelId: "gpt-5.6-terra", thinkingLevel: "high" },
+	}, "automatic Sol/Terra workflow switches reconcile without changing either durable default");
 
 	modelSwitchAllowed = false;
 	await commands.get("plan").handler("", ctx);
@@ -181,6 +202,30 @@ try {
 	const routing = appended.filter((entry) => entry.customType === "plan-mode-model-routing").at(-1).data;
 	assert.equal(routing.planning.modelId, "gpt-5.6-sol", "a failed restore does not overwrite the saved planner");
 	await commands.get("plan").handler("off", ctx);
+
+	modelSwitchAllowed = true;
+	await commands.get("plan").handler("", ctx);
+	activeModel = models[1];
+	await handlers.get("model_select")[0]({ model: activeModel, source: "set" }, ctx);
+	assert.deepEqual(persistedDefaults.at(-1), {
+		planning: { provider: "openai-codex", modelId: "gpt-5.6-terra", thinkingLevel: "high" },
+		inference: { provider: "openai-codex", modelId: "gpt-5.6-terra", thinkingLevel: "high" },
+	}, "/model in planning persists only the planning default");
+	activeModel = models[0];
+	await handlers.get("model_select")[0]({ model: activeModel, source: "cycle" }, ctx);
+	assert.equal(persistedDefaults.at(-1).planning.modelId, "gpt-5.6-sol", "Ctrl+P persists planning choices");
+	assert.equal(persistedDefaults.at(-1).inference.modelId, "gpt-5.6-terra");
+	await commands.get("plan").handler("off", ctx);
+	activeModel = models[2];
+	await handlers.get("model_select")[0]({ model: activeModel, source: "set" }, ctx);
+	assert.deepEqual(persistedDefaults.at(-1), {
+		planning: { provider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "high" },
+		inference: { provider: "anthropic", modelId: "claude-sonnet-5", thinkingLevel: "high" },
+	}, "/model in implementation persists only the implementation default, including provider changes");
+	defaultWriteAllowed = false;
+	activeModel = models[1];
+	await handlers.get("model_select")[0]({ model: activeModel, source: "cycle" }, ctx);
+	assert.match(notifications.at(-1).message, /defaults could not be saved/i, "settings failures warn instead of claiming persistence");
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

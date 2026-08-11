@@ -59,7 +59,9 @@ export function resolveInferenceProfile(
 export function createModelRoutingState(
 	planning: ModelProfile,
 	registry: ModelRegistry,
+	inference?: ModelProfile,
 ): { state: ModelRoutingState; fallback?: string } {
+	if (inference) return { state: { version: 1, planning, inference } };
 	const resolved = resolveInferenceProfile(planning, registry);
 	return {
 		state: { version: 1, planning, inference: resolved.profile },

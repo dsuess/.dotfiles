@@ -35,11 +35,11 @@ import {
 	PLAN_MODE_MODEL_ROUTING_ENTRY,
 	captureModelProfile,
 	createModelRoutingState,
-	resolveInferenceProfile,
 	restoreLatestModelRouting,
 	type ModelProfile,
 	type ModelRoutingState,
 } from "./model-routing.ts";
+import { createSettingsModelDefaults, type ModelDefaultsBoundary } from "./settings-defaults.ts";
 import { parsePlanDocument, validateFastPlanRevision } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
 import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
@@ -92,6 +92,12 @@ function formatStoreError(error: unknown): string {
 
 interface PlanModeDependencies {
 	runPlanReview?: (ctx: ExtensionContext, canonicalPlanPath: string, validatedPlan: string) => Promise<TuicrPlanReviewResult>;
+	modelDefaults?: ModelDefaultsBoundary;
+}
+
+function hasExplicitCliModel(): boolean {
+	return process.env.PI_PLAN_MODE_DEFAULT_MODEL !== "1"
+		&& process.argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
 }
 
 export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies = {}): void {
@@ -99,6 +105,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	let executionContract: ExecutionContract | null = null;
 	let modelRouting: ModelRoutingState | null = null;
 	let applyingModelProfile = false;
+	const modelDefaults = dependencies.modelDefaults ?? createSettingsModelDefaults();
+	const explicitCliModel = hasExplicitCliModel();
 	let lastContext: ExtensionContext | undefined;
 	let approvedPlanMarkdown: string | null = null;
 	let presentingApproval = false;
@@ -136,12 +144,43 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	function initializeModelRouting(ctx: ExtensionContext): void {
 		if (modelRouting) return;
-		const planning = captureModelProfile(ctx.model, pi.getThinkingLevel());
-		if (!planning) return;
-		const resolved = createModelRoutingState(planning, ctx.modelRegistry);
+		const thinkingLevel = typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : ctx.thinkingLevel;
+		const current = captureModelProfile(ctx.model, thinkingLevel);
+		if (!current) return;
+		if (explicitCliModel) {
+			modelRouting = { version: 1, planning: current, inference: current };
+			persistModelRouting();
+			return;
+		}
+		const configured = modelDefaults.load(thinkingLevel);
+		if (configured.profiles) {
+			const planning = configured.profiles.planning;
+			const inference = configured.profiles.inference;
+			const missing = [planning, inference].find((profile) => !ctx.modelRegistry.find(profile.provider, profile.modelId));
+			if (!missing) {
+				modelRouting = createModelRoutingState(planning, ctx.modelRegistry, inference).state;
+				persistModelRouting();
+				return;
+			}
+			if (ctx.hasUI) ctx.ui.notify(`Plan mode: configured ${missing === planning ? "planning" : "implementation"} model ${missing.provider}/${missing.modelId} is unavailable; keeping the current model.`, "warning");
+		} else if (configured.warning && ctx.hasUI) {
+			ctx.ui.notify(`Plan mode: ${configured.warning}`, "warning");
+		}
+		const resolved = createModelRoutingState(current, ctx.modelRegistry);
 		modelRouting = resolved.state;
 		persistModelRouting();
 		notifyRoutingFallback(ctx, resolved.fallback);
+	}
+
+	async function persistDurableDefaults(ctx: ExtensionContext): Promise<boolean> {
+		if (!modelRouting) return false;
+		try {
+			await modelDefaults.persist({ planning: modelRouting.planning, inference: modelRouting.inference });
+			return true;
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Plan mode: model defaults could not be saved; the active model changed but its durable default did not: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			return false;
+		}
 	}
 
 	async function applyModelProfile(ctx: ExtensionContext, profile: ModelProfile | undefined, label: string): Promise<void> {
@@ -159,6 +198,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					if (ctx.hasUI) ctx.ui.notify(`Plan mode: no credentials for ${profile.provider}/${profile.modelId}; keeping the current model.`, "warning");
 					return;
 				}
+				await persistDurableDefaults(ctx);
 			}
 			pi.setThinkingLevel(profile.thinkingLevel);
 		} finally {
@@ -759,17 +799,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	});
 
 	pi.on("model_select", async (event, ctx) => {
-		if (applyingModelProfile || !modelRouting) return;
+		if (applyingModelProfile || !modelRouting || (event.source !== "set" && event.source !== "cycle")) return;
 		const selected = captureModelProfile(event.model, pi.getThinkingLevel());
 		if (!selected) return;
-		if (isGated(state)) {
-			const resolved = resolveInferenceProfile(selected, ctx.modelRegistry);
-			modelRouting = { version: 1, planning: selected, inference: resolved.profile };
-			notifyRoutingFallback(ctx, resolved.fallback);
-		} else {
-			modelRouting = { ...modelRouting, inference: selected };
-		}
+		const key = isGated(state) ? "planning" : "inference";
+		modelRouting = { ...modelRouting, [key]: selected };
 		persistModelRouting();
+		await persistDurableDefaults(ctx);
 	});
 
 	pi.on("thinking_level_select", async (event) => {
@@ -986,8 +1022,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		else if (state.originalActiveTools.length > 0 && ["completed", "blocked"].includes(state.mode)) restoreOriginalTools(ctx);
 		else if (state.mode === "off" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
 		else hideWorkflowTools();
+		initializeModelRouting(ctx);
 		if (isGated(state)) {
-			initializeModelRouting(ctx);
 			await applyModelProfile(ctx, modelRouting?.planning, "planning");
 		} else if (modelRouting) {
 			await applyModelProfile(ctx, modelRouting.inference, "inference");

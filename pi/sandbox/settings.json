@@ -45,6 +45,7 @@
       "~/.uv/cache",
       "~/.local/share/uv",
       "~/.cache/huggingface",
+      "~/.serena/",
       "~/Library/Caches/ketch",
 
       "~/.config/nvim",
@@ -61,12 +62,14 @@
       "/tmp",
 
       "~/.pi/agent",
+      "~/.dotfiles/pi/agent",
 
       "~/.cache/pi-sandbox",
       "~/.cache/uv",
       "~/.uv/cache",
       "~/.local/share/uv",
       "~/.cache/huggingface",
+      "~/.serena/",
       "~/Library/Caches/ketch",
 
       "~/.cargo",

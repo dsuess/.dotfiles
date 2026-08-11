@@ -505,11 +505,13 @@ set +e
             # unfiltered while bypassing settings-based no-match warnings.
             has_explicit_model=false
             has_explicit_thinking=false
+            start_in_plan_mode=false
             for arg in "$@"; do
                 case "$arg" in
                     --models|--models=*) exec "$real_pi" "$@" ;;
                     --model|--model=*) has_explicit_model=true ;;
                     --thinking|--thinking=*) has_explicit_thinking=true ;;
+                    --plan|--plan=true) start_in_plan_mode=true ;;
                     --list-models) exec "$real_pi" --models "*" "$@" ;;
                 esac
             done
@@ -527,16 +529,18 @@ set +e
             default_selection="$(node -e "
                 const fs = require(\"node:fs\");
                 const settings = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\"));
-                if (typeof settings.defaultProvider === \"string\" &&
-                    typeof settings.defaultModel === \"string\") {
+                const planning = process.argv[2] === \"true\";
+                const provider = planning ? settings.defaultThinkingProvider : settings.defaultProvider;
+                const model = planning ? settings.defaultThinkingModel : settings.defaultModel;
+                if (typeof provider === \"string\" && typeof model === \"string\") {
                     console.log(
-                        settings.defaultProvider + \"/\" + settings.defaultModel,
+                        provider + \"/\" + model,
                         typeof settings.defaultThinkingLevel === \"string\"
                             ? settings.defaultThinkingLevel
                             : \"\",
                     );
                 }
-            " "$HOME/.pi/agent/settings.json")" || exec "$real_pi" "$@"
+            " "$HOME/.pi/agent/settings.json" "$start_in_plan_mode")" || exec "$real_pi" "$@"
             read -r default_model default_thinking <<<"$default_selection"
             available_models="$(set -o pipefail; "$real_pi" --models "*" --list-models |
                 awk "NR > 1 && NF >= 2 { print \$1 \"/\" \$2 }")" || exec "$real_pi" "$@"
@@ -563,6 +567,9 @@ set +e
                 launch_args+=(--model "$default_model")
                 [[ "$has_explicit_thinking" == true || -z "$default_thinking" ]] ||
                     launch_args+=(--thinking "$default_thinking")
+                # The extension must distinguish this injected default from a
+                # user-supplied --model, which remains higher priority.
+                exec env PI_PLAN_MODE_DEFAULT_MODEL=1 "$real_pi" "${launch_args[@]}" "$@"
             fi
             exec "$real_pi" "${launch_args[@]}" "$@"
         ' \

@@ -64,7 +64,9 @@ a private, ephemeral effective policy without changing the checked-in file:
   boundary; the wrapper falls back to the physical launch directory.
 - Other home-directory reads and writes are denied unless explicitly listed.
 - Pi's own `~/.pi/agent` state is available so auth refresh, sessions,
-  packages, and trust decisions continue to work.
+  packages, and trust decisions continue to work. Its Stow source,
+  `~/.dotfiles/pi/agent`, is also writable so runtime settings saves that
+  resolve the symlink can safely replace their target.
 - Ambient environment credentials and common credential files remain hidden.
 - Outbound network access is unrestricted. Pi and all descendants can reach
   public, private, loopback, and metadata services using host networking.

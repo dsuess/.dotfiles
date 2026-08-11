@@ -19,9 +19,11 @@ State transitions are persisted as non-context custom session entries:
 
 ## Model profiles
 
-Plan mode persists separate planning and inference model profiles on the active session branch. The first planning entry captures the exact model and thinking level already selected for the session; planning and approval never reinterpret that choice. Handoff to implementation and `/plan off` switch to the inference profile, while a later planning entry restores the saved planning profile.
+Plan mode has two independent global defaults in `~/.pi/agent/settings.json`: native `defaultProvider`/`defaultModel` for implementation, and extension-owned `defaultThinkingProvider`/`defaultThinkingModel` for planning. A new branch initializes its planning and inference profiles from those pairs. `defaultThinkingLevel` remains one shared reasoning-level default; it is not a planning-model setting.
 
-The initial inference profile follows the semantic routing in `AGENTS.md`: GPT-5.6 Terra at high thinking for OpenAI/OpenAI Codex, or the latest authenticated Sonnet at high thinking for Anthropic. Other providers keep the planning model at high thinking and emit a fallback warning. Manual model or thinking changes update the profile for the active mode. Missing models or credentials leave the current model unchanged and warn rather than blocking the workflow.
+After initialization, planning and inference profiles are branch-local. Resuming a session or navigating its tree restores the saved branch profile rather than adopting a later global edit. Handoff to implementation and `/plan off` switch to the inference profile, while a later planning entry restores the saved planning profile. An explicit CLI `--model` remains higher priority than both defaults.
+
+A `/model` choice or Ctrl+P cycle persists only the active mode's global pair and branch profile: planning/approval changes `defaultThinkingProvider`/`defaultThinkingModel`; implementation changes `defaultProvider`/`defaultModel`. Workflow-driven Sol↔Terra switches never change either durable default. Missing models, credentials, malformed settings, or settings-write failures leave the active model or durable defaults unchanged as applicable and show a warning rather than blocking the workflow.
 
 ## Planning gate
 

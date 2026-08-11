@@ -17,6 +17,13 @@ readonly SHIM_BIN="$TEST_ROOT/workspace"
 readonly WRAPPER_BIN="$(dirname "$WRAPPER")"
 readonly TOOL_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
+node -e '
+const settings = require(process.argv[1]);
+if (!settings.filesystem.allowWrite.includes("~/.dotfiles/pi/agent")) {
+  throw new Error("Stow source for Pi agent state must be writable");
+}
+' "$HERE/settings.json"
+
 mkdir -p \
     "$TEST_HOME/.pi/sandbox/node_modules/.bin" \
     "$TEST_HOME/.pi/agent/sessions" \
@@ -24,6 +31,7 @@ mkdir -p \
     "$PREREQ_BIN" \
     "$SHIM_BIN" \
     "$TEST_ROOT/tmp"
+printf '{}\n' >"$TEST_HOME/.pi/agent/settings.json"
 cat >"$TEST_HOME/.pi/sandbox/settings.json" <<'EOF'
 {
   "network": {"allowedDomains": [], "deniedDomains": [], "strictAllowlist": true},
@@ -59,10 +67,17 @@ EOF
 
 cat >"$REAL_BIN/pi" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$*" == *"--list-models"* ]]; then
+    printf 'Provider Model\n'
+    printf 'openai-codex gpt-5.6-sol\n'
+    printf 'openai-codex gpt-5.6-terra\n'
+    exit 0
+fi
 printf 'real=%s\n' "$0"
 printf 'args='
 printf '<%s>' "$@"
 printf '\n'
+printf 'default_injected=%s\n' "${PI_PLAN_MODE_DEFAULT_MODEL-unset}"
 printf 'secret=%s\n' "${SECRET_SHOULD_NOT_LEAK-unset}"
 printf 'tmpdir=%s\n' "$TMPDIR"
 printf 'path=%s\n' "$PATH"
@@ -186,5 +201,40 @@ then
 fi
 
 grep -F 'cannot find the installed Pi binary' "$TEST_ROOT/no-pi.out" >/dev/null
+
+cat >"$TEST_HOME/.pi/agent/settings.json" <<'EOF'
+{
+  "enabledModels": [
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra"
+  ],
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-terra",
+  "defaultThinkingProvider": "openai-codex",
+  "defaultThinkingModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "high"
+}
+EOF
+model_output="$(
+    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --flag ordinary
+)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-terra><--thinking><high><--flag><ordinary>' <<<"$model_output" >/dev/null
+grep -F 'default_injected=1' <<<"$model_output" >/dev/null
+plan_output="$(
+    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan
+)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-sol><--thinking><high><--plan>' <<<"$plan_output" >/dev/null
+grep -F 'default_injected=1' <<<"$plan_output" >/dev/null
+explicit_output="$(
+    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan --model openai-codex/gpt-5.6-terra --thinking max
+)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max>' <<<"$explicit_output" >/dev/null
+grep -F 'default_injected=unset' <<<"$explicit_output" >/dev/null
+node -e 'const fs = require("node:fs"); const path = process.argv[1]; const settings = JSON.parse(fs.readFileSync(path)); delete settings.defaultThinkingProvider; fs.writeFileSync(path, JSON.stringify(settings));' "$TEST_HOME/.pi/agent/settings.json"
+unavailable_plan_output="$(
+    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan
+)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--plan>' <<<"$unavailable_plan_output" >/dev/null
+grep -F 'default_injected=unset' <<<"$unavailable_plan_output" >/dev/null
 
 echo "wrapper tests passed"

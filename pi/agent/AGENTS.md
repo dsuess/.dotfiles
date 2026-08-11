@@ -62,41 +62,24 @@ concepts do not exist.
 - The coordinator must reconcile child reports, verify consequential findings,
   integrate changes, and validate the resulting behavior.
 
-#### Semantic Model Routing
+#### Subagent Model Routing
 
-- Treat the roles below as authoritative and the named models as replaceable
-  current mappings. When model catalogs change, choose the current model that
-  occupies the same semantic tier rather than preserving a stale version lock.
-- **Strong planner/coordinator:** Owns planning, architecture, ambiguity
-  resolution, cross-cutting synthesis, and high-risk decisions. During planning,
-  use exactly the model and thinking effort already selected for the active
-  session; never change or reinterpret either setting. The intended top-tier
-  families are currently GPT-5.6 Sol for OpenAI Codex and the latest Opus for
-  Anthropic.
-- **Balanced worker:** Handles selectively delegated implementation, tests,
-  focused fixes, and routine code review. Use high reasoning effort. Current
-  mappings are `openai-codex/gpt-5.6-terra` and Anthropic's latest Sonnet.
-- **Fast scout:** Handles read-oriented research, codebase exploration, source
-  gathering, and other high-volume context compression. Use high reasoning
-  effort even though this tier is optimized for cost and speed. Current mappings
-  are `openai-codex/gpt-5.6-luna` and Anthropic's latest Haiku.
-- For every worker or scout child, explicitly pass both `model` as a concrete
-  provider-qualified `provider/model` identifier and `thinkingLevel: "high"`;
-  do not let it accidentally inherit the planning model. Resolve "latest"
-  family names to a concrete ID from the active catalog at invocation time.
-- Prefer the matching route for the active provider. If it is unavailable, use
-  an available same-provider equivalent in the same semantic tier and disclose
-  a material fallback. Escalate capability only when task evidence justifies it:
-  first narrow an unreliable lower-tier prompt, then move up one tier instead of
-  spawning redundant agents or defaulting immediately to the strongest model.
-- Planning-phase codebase or web research still uses fast scouts; the active
-  strong planner interprets their evidence and owns the final plan. A planning
-  child used for an isolated alternative design instead inherits the active
-  planning session's model and thinking setting.
-- During execution, use balanced workers only for bounded, independent work with
-  disjoint ownership. Keep tightly coupled implementation with the coordinator.
+- Planning and implementation model selection is managed by the planning-mode
+  extension. Choose models here only when spawning subagents.
+- **Light subagents:** Use the current GPT Luna or Haiku model for simple,
+  well-defined research tasks.
+- **Medium subagents:** Use the current GPT Terra or Sonnet model for standard
+  implementation tasks and difficult research.
+- Pass a concrete provider-qualified `model` and `thinkingLevel: "high"` to
+  every subagent. Resolve model-family names to a current catalog ID.
+- Prefer the matching route for the active provider. If unavailable, use an
+  equivalent model in the same tier and disclose any material fallback.
 - If subagents are unavailable, simulate the same discipline by separating
   investigations clearly and keeping each line of inquiry narrow.
+
+### Plan-mode model defaults
+
+Planning and implementation defaults are independent. `/model` and Ctrl+P persist only the active mode's default; workflow-driven model switches must never rewrite either default. The sandbox must allow the `~/.dotfiles/pi/agent` Stow source so atomic runtime settings saves can replace a resolved target.
 
 ### 3. Learn From Corrections
 
