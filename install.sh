@@ -112,7 +112,7 @@ ensure_static_bins() {
         rm -rf "$tmp"
         echo "✅ installed $name → $LOCAL_BIN/$name"
     done <<'TOOLS'
-herdr|raw||https://github.com/ogulcancelik/herdr/releases/download/v0.7.1/herdr-linux-x86_64|b965acaffc2c22f54b6e6c64af7cf8e98a3f4ac2622630a0599c67a4b9d8a654|https://github.com/ogulcancelik/herdr/releases/download/v0.7.1/herdr-linux-aarch64|3d757ac30c631e79dc45038c3ecc6423fe13a89f9cffa0f415aedd2c27f1576c
+herdr|raw||https://github.com/herdrdev/herdr/releases/download/v0.8.0/herdr-linux-x86_64|b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28|https://github.com/herdrdev/herdr/releases/download/v0.8.0/herdr-linux-aarch64|f647ac66468d9efbc642fe534fb284468f0aea60641606fc008dfc0d82a3ca87
 ketch|targz|ketch|https://github.com/1broseidon/ketch/releases/download/v0.13.0/ketch_0.13.0_linux_x86_64.tar.gz|8077f9f6a1347cc2980d4012923c0b41d6eb5b52f023cd14602f78c0abd618ae|https://github.com/1broseidon/ketch/releases/download/v0.13.0/ketch_0.13.0_linux_arm64.tar.gz|6a18b1fa94aec1471dc438ff278f807925a254529478b1c4271753ab0098b99e
 rg|targz|rg|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz|33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c|https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz|800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915
 fd|targz|fd|https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-musl.tar.gz|e3257d48e29a6be965187dbd24ce9af564e0fe67b3e73c9bdcd180f4ec11bdde|https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-aarch64-unknown-linux-musl.tar.gz|f32d3657473fba74e2600babc8db0b93420d51169223b7e8143b2ed55d8fd9e8

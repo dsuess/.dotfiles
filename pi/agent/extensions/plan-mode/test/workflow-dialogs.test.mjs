@@ -35,6 +35,7 @@ async function createHarness({
 	const sentMessages = [];
 	const notifications = [];
 	const reviewInvocations = [];
+	const workflowStates = [];
 	let activeTools = [...initialTools];
 	const allTools = new Set(activeTools);
 	let activeModel = model;
@@ -58,7 +59,10 @@ async function createHarness({
 			eventHandlers.get(channel).push(handler);
 			return () => {};
 		},
-		emit(channel, data) { for (const handler of eventHandlers.get(channel) ?? []) handler(data); },
+		emit(channel, data) {
+			if (channel === "plan-mode:workflow-state") workflowStates.push(data);
+			for (const handler of eventHandlers.get(channel) ?? []) handler(data);
+		},
 	};
 	const pi = {
 		events,
@@ -120,7 +124,7 @@ async function createHarness({
 	async function emit(name, event = {}) { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); }
 	await emit("session_start", { reason: "startup" });
 	return {
-		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, reviewInvocations, ctx, emit,
+		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, reviewInvocations, workflowStates, ctx, emit,
 		getActiveTools: () => [...activeTools],
 		latestState: () => entries.filter((entry) => entry.customType === "plan-mode-state").at(-1)?.data,
 		async cleanup() { await rm(cwd, { recursive: true, force: true }); },
@@ -165,6 +169,9 @@ test("Escape keeps approval pending and manual reopening remains available", asy
 	try {
 		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
 		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true);
+		await harness.emit("session_tree");
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "restoration retains the durable approval wait");
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 	} finally { await harness.cleanup(); }
@@ -399,7 +406,10 @@ test("mandatory staged checkpoints open from state without synthetic commands", 
 		await harness.emit("agent_settled"); await harness.emit("agent_settled");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
 		assert.equal(harness.latestState().checkpoint.presented, true);
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true);
 		assert.equal(harness.sentUserMessages.some(({ message }) => /^\/plan-stage-actions\b/.test(message)), false);
+		await harness.emit("session_tree");
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "restoration retains the durable checkpoint wait");
 		await harness.commands.get("plan-stage-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 	} finally { await harness.cleanup(); }

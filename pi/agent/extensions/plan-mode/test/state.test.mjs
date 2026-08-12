@@ -12,6 +12,7 @@ import {
 	createInitialState,
 	enterPlanning,
 	exitPlanning,
+	hasDurableFeedbackPending,
 	recordInvalidSubmission,
 	recordStageCheckpoint,
 	recordTaskProgress,
@@ -258,20 +259,39 @@ test("ledger enforces legal transitions, evidence, stage scope, and explicit reo
 	assert.equal(recordTaskProgress(execution, { taskId: "2", status: "in_progress" }).error.code, "future_stage");
 });
 
-test("staged checkpoints are nonce-guarded, ordered, pausable, and resumable", () => {
-	let execution = approveExecution(approvalState(), "nonce-1", "staged").state;
+test("durable feedback waits remain pending through Escape and restoration until consumed", () => {
+	const approval = approvalState();
+	assert.equal(hasDurableFeedbackPending(approval), true);
+	const dismissedApproval = structuredClone(approval);
+	dismissedApproval.approval.presented = true;
+	assert.equal(hasDurableFeedbackPending(dismissedApproval), true, "Escape changes presentation, not the pending decision");
+	assert.equal(hasDurableFeedbackPending(restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: dismissedApproval }])), true);
+	assert.equal(hasDurableFeedbackPending(requestRevision(approval, "nonce-1").state), false);
+	assert.equal(hasDurableFeedbackPending(approveExecution(approval, "nonce-1", "all").state), false);
+	assert.equal(hasDurableFeedbackPending(blockWorkflow(approval, "stop the workflow").state), false);
+
+	let execution = approveExecution(approval, "nonce-1", "staged").state;
 	execution = recordTaskProgress(execution, { taskId: "1", status: "in_progress" }).state;
 	execution = recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "done" }).state;
 	const checkpoint = recordStageCheckpoint(execution, {
 		stageId: "1", nonce: "stage-nonce", summary: "done", changedFiles: [], tests: ["npm test"], blockers: [],
 	});
 	assert.equal(checkpoint.ok, true);
+	assert.equal(hasDurableFeedbackPending(checkpoint.state), true);
+	const dismissedCheckpoint = structuredClone(checkpoint.state);
+	dismissedCheckpoint.checkpoint.presented = true;
+	assert.equal(hasDurableFeedbackPending(dismissedCheckpoint), true);
+	assert.equal(hasDurableFeedbackPending(restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: dismissedCheckpoint }])), true);
 	assert.equal(resolveStageCheckpoint(checkpoint.state, "stale", "continue").error.code, "stale_checkpoint");
 	const continued = resolveStageCheckpoint(checkpoint.state, "stage-nonce", "continue");
 	assert.equal(continued.state.currentStageId, "2");
+	assert.equal(hasDurableFeedbackPending(continued.state), false);
 
-	const pausedBase = structuredClone(checkpoint.state);
-	const paused = resolveStageCheckpoint(pausedBase, "stage-nonce", "stop");
+	for (const action of ["feedback", "stop"]) {
+		const resolved = resolveStageCheckpoint(structuredClone(checkpoint.state), "stage-nonce", action).state;
+		assert.equal(hasDurableFeedbackPending(resolved), false, action);
+	}
+	const paused = resolveStageCheckpoint(structuredClone(checkpoint.state), "stage-nonce", "stop");
 	assert.equal(paused.state.execution.paused, true);
 	assert.equal(resumeExecution(paused.state).state.execution.paused, false);
 });

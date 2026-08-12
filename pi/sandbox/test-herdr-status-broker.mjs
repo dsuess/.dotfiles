@@ -163,8 +163,26 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 
 		assert.deepEqual(await send(port, token, {
 			method: "pane.report_agent_session",
-			params: { agent_session_id: "session-7" },
+			params: {
+				pane_id: "other-pane",
+				source: "attacker",
+				agent: "other-agent",
+				seq: 1,
+				agent_session_id: "session-7",
+				session_start_source: "resume",
+			},
 		}), { ok: true });
+		assert.equal(forwarded.at(-1).params.session_start_source, "resume");
+
+		assert.deepEqual(await send(port, token, {
+			method: "pane.report_agent_session",
+			params: {
+				agent_session_id: "session-8",
+				session_start_source: "not-a-pi-session-source",
+			},
+		}), { ok: true });
+		assert.equal(forwarded.at(-1).params.session_start_source, undefined);
+
 		assert.deepEqual(await send(port, token, {
 			method: "pane.release_agent",
 			params: {},
@@ -175,6 +193,7 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 		assert.equal(exit.code, 0, stderr.value);
 		assert.deepEqual(forwarded.map((request) => request.method), [
 			"pane.report_agent",
+			"pane.report_agent_session",
 			"pane.report_agent_session",
 			"pane.release_agent",
 			"pane.release_agent",

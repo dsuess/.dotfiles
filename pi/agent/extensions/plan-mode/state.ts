@@ -160,6 +160,7 @@ export {
 	enterPlanning,
 	exitPlanning,
 	getStageTaskIds,
+	hasDurableFeedbackPending,
 	isPlanModeState,
 	migrateState,
 	recordInvalidSubmission,

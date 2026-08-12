@@ -9,6 +9,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 const MAX_LINE_BYTES = 16 * 1024;
 const MAX_MESSAGE_LENGTH = 4096;
 const MAX_SESSION_REF_LENGTH = 4096;
+const MAX_SESSION_START_SOURCE_LENGTH = 64;
+const SESSION_START_SOURCES = new Set(["startup", "reload", "new", "resume", "fork"]);
 const FORWARD_TIMEOUT_MS = 400;
 const SOURCE = "herdr:pi";
 const AGENT = "pi";
@@ -83,6 +85,14 @@ function sessionRef(params) {
 	return {};
 }
 
+function sessionStartSource(params) {
+	return typeof params.session_start_source === "string"
+		&& params.session_start_source.length <= MAX_SESSION_START_SOURCE_LENGTH
+		&& SESSION_START_SOURCES.has(params.session_start_source)
+		? params.session_start_source
+		: undefined;
+}
+
 function canonicalRequest(input) {
 	if (!input || typeof input !== "object" || Array.isArray(input)) {
 		throw new Error("request must be an object");
@@ -126,11 +136,12 @@ function canonicalRequest(input) {
 			if (Object.keys(ref).length === 0) {
 				throw new Error("agent session reference is required");
 			}
+			const startSource = sessionStartSource(params);
 			hasReportedAgent = true;
 			return {
 				id,
 				method: "pane.report_agent_session",
-				params: { ...common, ...ref },
+				params: { ...common, ...ref, ...(startSource ? { session_start_source: startSource } : {}) },
 			};
 		}
 		case "pane.release_agent":

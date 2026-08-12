@@ -4,18 +4,19 @@ import {
 	type PlanModeWorkflowStateEvent,
 } from "../plan-mode/events.ts";
 
-/** Public event emitted by @juicesharp/rpiv-ask-user-question while its UI is open. */
-const ASK_USER_BLOCKED_EVENT = "rpiv:ask-user:blocked";
 /** Event consumed by Herdr's official Pi integration. */
 const HERDR_BLOCKED_EVENT = "herdr:blocked";
 const WAITING_LABEL = "waiting for feedback";
+const BLOCKING_UI_METHODS = ["select", "confirm", "input", "editor", "custom"] as const;
 
+type BlockingUIMethod = (typeof BLOCKING_UI_METHODS)[number];
 type ContentLike = { type?: unknown; text?: unknown };
 type MessageLike = {
 	role?: unknown;
 	stopReason?: unknown;
 	content?: unknown;
 };
+type UIContextLike = Record<BlockingUIMethod, (...args: unknown[]) => unknown>;
 
 function assistantText(message: unknown): string {
 	const candidate = message as MessageLike | undefined;
@@ -69,39 +70,126 @@ export function latestSettledAssistantText(entries: readonly unknown[]): string 
 
 export default function (pi: ExtensionAPI) {
 	let latestText = "";
-	let structuredBlocked = false;
+	let blockingUICount = 0;
+	let blockingUIActive = false;
 	let freeformBlocked = false;
-	let approvalBlocked = false;
+	let workflowBlocked = false;
 	let reportedBlocked = false;
 	let rootSession = false;
+	let clearBlockingUITimer: ReturnType<typeof setTimeout> | undefined;
+	let restoreUI: (() => void) | undefined;
+	let unsubscribeWorkflow: (() => void) | undefined;
+	let installation = 0;
 
 	function syncBlockedState(): void {
 		if (!rootSession) return;
-		const active = structuredBlocked || freeformBlocked || approvalBlocked;
+		const active = blockingUIActive || freeformBlocked || workflowBlocked;
 		if (active === reportedBlocked) return;
 		reportedBlocked = active;
 		pi.events.emit(HERDR_BLOCKED_EVENT, active ? { active, label: WAITING_LABEL } : { active });
 	}
 
-	pi.events.on(ASK_USER_BLOCKED_EVENT, (data) => {
-		const payload = data as { active?: unknown } | undefined;
-		structuredBlocked = payload?.active === true;
-		syncBlockedState();
-	});
+	function clearPendingBlockingUI(): void {
+		if (clearBlockingUITimer) clearTimeout(clearBlockingUITimer);
+		clearBlockingUITimer = undefined;
+	}
 
-	pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data) => {
-		const payload = data as PlanModeWorkflowStateEvent | undefined;
-		approvalBlocked = payload?.mode === "approval";
+	function beginBlockingUI(): void {
+		clearPendingBlockingUI();
+		blockingUICount += 1;
+		blockingUIActive = true;
 		syncBlockedState();
-	});
+	}
+
+	function endBlockingUI(generation: number): void {
+		if (generation !== installation) return;
+		blockingUICount = Math.max(0, blockingUICount - 1);
+		if (blockingUICount > 0 || clearBlockingUITimer) return;
+		clearBlockingUITimer = setTimeout(() => {
+			clearBlockingUITimer = undefined;
+			if (generation !== installation || blockingUICount > 0) return;
+			blockingUIActive = false;
+			syncBlockedState();
+		}, 0);
+	}
+
+	function installBlockingUI(ui: UIContextLike): void {
+		const generation = installation;
+		const originals = new Map<BlockingUIMethod, (...args: unknown[]) => unknown>();
+		const wrappers = new Map<BlockingUIMethod, (...args: unknown[]) => unknown>();
+
+		for (const method of BLOCKING_UI_METHODS) {
+			const original = ui[method];
+			if (typeof original !== "function") continue;
+			originals.set(method, original);
+			function wrapped(this: unknown, ...args: unknown[]) {
+				beginBlockingUI();
+				try {
+					return Promise.resolve(original.apply(this, args)).then(
+						(value) => {
+							endBlockingUI(generation);
+							return value;
+						},
+						(error) => {
+							endBlockingUI(generation);
+							throw error;
+						},
+					);
+				} catch (error) {
+					endBlockingUI(generation);
+					throw error;
+				}
+			}
+			wrappers.set(method, wrapped);
+			ui[method] = wrapped;
+		}
+
+		restoreUI = () => {
+			for (const method of BLOCKING_UI_METHODS) {
+				const original = originals.get(method);
+				const wrapper = wrappers.get(method);
+				if (original && wrapper && ui[method] === wrapper) ui[method] = original;
+			}
+		};
+	}
+
+	function updateWorkflowBlocked(data: unknown): void {
+		const payload = data as PlanModeWorkflowStateEvent | undefined;
+		workflowBlocked = payload?.feedbackPending === true;
+		syncBlockedState();
+	}
+
+	function subscribeWorkflow(): void {
+		if (!unsubscribeWorkflow) unsubscribeWorkflow = pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, updateWorkflowBlocked);
+	}
+
+	function resetSessionState(disposeWorkflow = false): void {
+		installation += 1;
+		clearPendingBlockingUI();
+		restoreUI?.();
+		restoreUI = undefined;
+		blockingUICount = 0;
+		blockingUIActive = false;
+		if (disposeWorkflow) {
+			unsubscribeWorkflow?.();
+			unsubscribeWorkflow = undefined;
+			workflowBlocked = false;
+		}
+	}
+
+	// Subscribe before any session_start handler can publish restored plan state.
+	subscribeWorkflow();
 
 	pi.on("session_start", (_event, ctx) => {
-		rootSession = ctx.hasUI === true;
-		structuredBlocked = false;
-		approvalBlocked = false;
+		subscribeWorkflow();
+		resetSessionState();
+		rootSession = ctx.mode === "tui";
 		reportedBlocked = false;
 		latestText = rootSession ? latestSettledAssistantText(ctx.sessionManager.getBranch()) : "";
 		freeformBlocked = rootSession && asksForFeedback(latestText);
+		if (!rootSession) return;
+
+		installBlockingUI(ctx.ui as UIContextLike);
 		syncBlockedState();
 	});
 
@@ -124,5 +212,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		rootSession = false;
+		resetSessionState(true);
+		freeformBlocked = false;
+		reportedBlocked = false;
 	});
 }

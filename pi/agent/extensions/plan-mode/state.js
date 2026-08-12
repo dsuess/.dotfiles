@@ -59,6 +59,13 @@ function success(state) {
 	return { ok: true, state };
 }
 
+export function hasDurableFeedbackPending(state) {
+	return Boolean(
+		(state?.mode === "approval" && state.approval && state.approval.consumed !== true)
+		|| (state?.mode === "executing_staged" && state.checkpoint && state.checkpoint.consumed !== true),
+	);
+}
+
 function rejection(state, code, message) {
 	return { ok: false, state, error: { code, message } };
 }

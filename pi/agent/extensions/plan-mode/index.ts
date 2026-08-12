@@ -56,6 +56,7 @@ import {
 	enterPlanning,
 	exitPlanning,
 	getStageTaskIds,
+	hasDurableFeedbackPending,
 	recordInvalidSubmission,
 	requestRevision,
 	resetInvalidSubmissions,
@@ -239,7 +240,10 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	function updateStatus(ctx: ExtensionContext): void {
 		lastContext = ctx;
-		pi.events.emit(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: state.mode });
+		pi.events.emit(PLAN_MODE_WORKFLOW_STATE_EVENT, {
+			mode: state.mode,
+			feedbackPending: hasDurableFeedbackPending(state),
+		});
 		if (!ctx.hasUI) return;
 		if (state.mode === "planning") {
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "plan:planning"));
