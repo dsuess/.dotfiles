@@ -4,8 +4,8 @@
  * Matches the @owloops/claude-powerline color scheme:
  *   Segment 1: CWD              — mauve/plan-peach bg, dark text (#1e1e2e)
  *   Segment 2: Model + thinking — surface0 bg (#313244), text fg
- *   Segment 3: Context usage    — surface0 bg (#313244), blue accent (#89b4fa)
- *   Segment 4: Token spend      — surface0 bg (#313244), lavender accent
+ *   Segment 3: Current context  — surface0 bg (#313244), blue accent (#89b4fa)
+ *   Segment 4: Session cost     — surface0 bg (#313244), muted accent
  *
  *   separator transitions:  ▸ CWD→surface0  ▸ surface0→term
  */
@@ -13,6 +13,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { selectContextDisplay } from "./statusbar-context.ts";
 import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
@@ -88,12 +89,6 @@ function formatDuration(seconds: number): string {
 	return parts.join(" ");
 }
 
-function fmtTokens(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-	return `${n}`;
-}
-
 function fmtCost(dollars: number): string {
 	if (dollars < 0.01) return `$${dollars.toFixed(3)}`;
 	if (dollars < 1) return `$${dollars.toFixed(2)}`;
@@ -125,7 +120,8 @@ const GAUGE = {
 	full:    "\uf10c", //
 };
 
-function gaugeIcon(pct: number): string {
+function gaugeIcon(pct: number | undefined): string {
+	if (pct === undefined) return GAUGE.unknown;
 	if (pct <= 0)  return GAUGE.empty;
 	if (pct <= 25) return GAUGE.low;
 	if (pct <= 50) return GAUGE.medium;
@@ -196,36 +192,25 @@ export default function (pi: ExtensionAPI) {
 					const thinkStr = cf(P.overlay1, ` [${thinkingLevel}]`);
 					line += cf(P.text, ` ${I.model} ${modelId}`) + thinkStr + cf(P.text, " ");
 
-					// Segment 3: Context usage — blue accent
-					const usage = ctx.getContextUsage();
-					const ctxWindow = ctx.model?.contextWindow ?? 200_000;
-					let ctxPct = 0;
-					if (usage) ctxPct = Math.min(100, (usage.tokens / ctxWindow) * 100);
+					// Segment 3: Current context usage — blue accent
+					const contextDisplay = selectContextDisplay(ctx.getContextUsage());
+					const gaugePercent = contextDisplay.gaugePercent;
 
-					line += cf(P.blue, ` ${gaugeIcon(ctxPct)} `) +
-						cf(P.blue, dottedBar(ctxPct, 9)) + ' ';
+					const gaugeBar = gaugePercent === undefined ? " ".repeat(9) : dottedBar(gaugePercent, 9);
+					line += cf(P.blue, ` ${gaugeIcon(gaugePercent)} `) +
+						cf(P.blue, gaugeBar) +
+						cf(P.blue, ` ${contextDisplay.count} `);
 
-					// Segment 4: Token spend + cost
-					let totalInput = 0, totalOutput = 0, totalCost = 0;
+					// Segment 4: Cumulative session cost
+					let totalCost = 0;
 					for (const e of ctx.sessionManager.getBranch()) {
 						if (e.type === "message" && e.message.role === "assistant") {
 							const m = e.message as AssistantMessage;
-							totalInput += m.usage.input;
-							totalOutput += m.usage.output;
 							totalCost += m.usage.cost.total;
 						}
 					}
-					const totalTokens = totalInput + totalOutput;
-
-					const costColor =
-						totalCost > 5.0 ? P.red :
-						totalCost > 1.0 ? P.peach :
-						totalTokens > 0 ? P.lavender :
-						P.overlay2;
-
 					line += cf(P.overlay0, I.clock) + "  " +
-						cf(costColor, fmtTokens(totalTokens)) +
-						cf(P.overlay1, ` (${fmtCost(totalCost)}) `) +
+						cf(P.overlay1, `(${fmtCost(totalCost)}) `) +
 						R;
 
 					// ── Final  separator: surface0 → crust ──
