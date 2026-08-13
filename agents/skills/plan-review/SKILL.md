@@ -26,6 +26,21 @@ editor opens *this file*, and the edits they save land back on disk here. That i
 reach you — not through the approval dialog (whose options are fixed and only ever offer "implement"
 paths), but as saved edits to the plan file.
 
+### Pi plan-mode host branch
+
+Pi's `plan-mode` extension stores the active plan at the exact project-local path recorded in extension
+state:
+
+```
+<project>/.pi/plans/YYYYMMDD_<intent-slug>.md
+```
+
+Do not search by modification time in Pi. The extension's **Review** action opens an isolated snapshot of
+that exact validated revision in tuicr and supplies the saved comments as structured feedback containing
+stable IDs, review/file/line/range anchors, side, lifecycle state, optional advisory type, and content. The
+canonical plan itself is not edited. Pi comments are ordinary natural-language feedback: do not reinterpret
+them as Claude's marker protocol below.
+
 ## Telling the user how to invoke this (do this whenever you present a plan)
 
 Because the approval dialog cannot show a "review my annotations" option, the user has to reach this skill
@@ -36,6 +51,11 @@ deliberately. Whenever you present a plan, end the plan with a one-line reminder
 
 The critical mechanic: the user must pick **Keep planning with feedback**, *not* any approve option —
 approving starts implementation and these annotations are never seen.
+
+In Pi plan mode, the interactive approval dialog already has a **Review** option. Tell the user to choose
+**Review**, add anchored comments in the same-terminal tuicr session, and quit tuicr. Pi remains gated on
+missing, empty, malformed, or failed review rounds; **Change** is the fallback outside interactive TUI mode.
+No second submit keystroke or "process my annotations" message is needed.
 
 ## The two markers
 
@@ -52,6 +72,9 @@ one revised plan that folds in both the `!` directives and the decisions reached
 ## Workflow
 
 ### Step 1 — Locate the plan file, then find the annotations
+
+In Pi plan mode, do not search for or parse an edited file. Use the exact `.pi/plans/...` path and complete
+structured tuicr comment set supplied by the extension, then skip the Claude-specific search below.
 
 First find the file the user annotated. The current plan is the most recently modified plan file:
 
@@ -78,6 +101,10 @@ Be careful about false positives:
 
 ### Step 2 — Acknowledge what you parsed (do not revise yet)
 
+In Pi, acknowledge every structured comment by its anchor or ID and explain how you will reconcile it
+against repository evidence; comment types are advisory context only. Use the normal collect-then-batch
+clarification workflow and ask only when the comment and repository evidence do not settle a decision.
+
 Briefly reflect back what you found so the user can confirm you read their marks correctly:
 - the list of `!` directives you will apply, and
 - the list of `?` questions you need to work through first.
@@ -86,6 +113,9 @@ Do **not** output the revised plan at this stage, even if the directives alone w
 If there are open questions, the revision waits.
 
 ### Step 3 — Resolve every `?` question interactively
+
+In Pi, present only the genuinely unresolved decisions identified from the structured comments and
+reconcile conflicting comments explicitly. This is not a marker-driven question gate.
 
 Present the `?` questions and discuss them with the user. Default to surfacing all of them together (so
 the user sees the full set and can answer in one pass), but stay genuinely interactive — if an answer
@@ -115,6 +145,12 @@ file, so the user can annotate the new version the same way and the loop repeats
 it with the same Ctrl+G reminder from above. **Stay in plan mode** — do not begin implementing. The output
 of this skill is a revised plan for the user to review, not executed changes. Do not hand-write into
 `~/.claude/plans/` yourself; let ExitPlanMode own that file.
+
+In Pi plan mode, once all supplied comments are reconciled and any genuine user decisions are resolved,
+submit the single complete canonical revision through `submit_plan` instead. No marker conversion or
+annotation stripping applies. The trusted extension owns
+`.pi/plans/` persistence and reopens its four-action interactive approval dialog. Never use ordinary
+mutation tools to rewrite the Pi plan file.
 
 ## Edge cases
 

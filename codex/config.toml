@@ -4,7 +4,7 @@ model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
 plan_mode_reasoning_effort = "xhigh"
 hide_agent_reasoning = true
-service_tier = "fast"
+service_tier = "default"
 
 [permissions.cwd-only]
 description = "Allow edits only in the active workspace root; allow installed CLI tools and RTK state."
@@ -60,6 +60,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/dsuess/Library/Mobile Documents/iCloud~md~obsidian/Documents/notes/AOCRA Coaching"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/src/visonic"]
 trust_level = "trusted"
 
 [tui]

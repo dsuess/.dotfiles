@@ -146,10 +146,15 @@ test("version-8 reporter is TUI-only and reports sessions before lifecycle state
 		let idle = false;
 		const ctx = tuiContext({ isIdle: () => idle });
 		await harness.emitLifecycle("session_start", { reason: "reload" }, ctx);
-		await waitForCount(requests, 2);
-		assert.deepEqual(requestMethods(requests), ["pane.report_agent_session", "pane.report_agent"]);
+		await waitForCount(requests, 3);
+		assert.deepEqual(requestMethods(requests), [
+			"pane.report_agent_session",
+			"pane.report_metadata",
+			"pane.report_agent",
+		]);
 		assert.equal(requests[0].body.request.params.session_start_source, "reload");
-		assert.equal(requests[1].body.request.params.state, "working", "reload seeds active work from ctx.isIdle()");
+		assert.equal(requests[1].body.request.params.display_agent, "π");
+		assert.equal(requests[2].body.request.params.state, "working", "reload seeds active work from ctx.isIdle()");
 
 		await harness.emitLifecycle("agent_settled", {}, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -157,20 +162,20 @@ test("version-8 reporter is TUI-only and reports sessions before lifecycle state
 
 		idle = true;
 		await harness.emitLifecycle("agent_settled", {}, ctx);
-		await waitForCount(requests, 3);
+		await waitForCount(requests, 4);
 		assert.deepEqual(requestStates(requests), ["working", "idle"]);
 
 		await harness.emitLifecycle("agent_start", {}, ctx);
-		await waitForCount(requests, 5);
+		await waitForCount(requests, 6);
 		assert.deepEqual(requestMethods(requests).slice(-2), ["pane.report_agent_session", "pane.report_agent"]);
 		assert.equal(requests.at(-1).body.request.params.state, "working");
 		assert.equal(requests.at(-2).body.request.params.session_start_source, undefined);
 
-		assert.deepEqual(requests.map(({ url }) => url), Array(5).fill("http://localhost:43210/"));
-		assert.deepEqual(requests.map(({ host }) => host), Array(5).fill("localhost:43210"));
+		assert.deepEqual(requests.map(({ url }) => url), Array(6).fill("http://localhost:43210/"));
+		assert.deepEqual(requests.map(({ host }) => host), Array(6).fill("localhost:43210"));
 		assert.deepEqual(
 			requests.map(({ authorization }) => authorization),
-			Array(5).fill(`Basic ${Buffer.from("proxy-user:proxy-pass").toString("base64")}`),
+			Array(6).fill(`Basic ${Buffer.from("proxy-user:proxy-pass").toString("base64")}`),
 		);
 		assert.ok(requests.every(({ body }) => body.token === "status-token"));
 	} finally {
@@ -209,18 +214,18 @@ test("blocked state takes precedence over a settled lifecycle transition", async
 		extension(harness.pi);
 		const ctx = tuiContext();
 		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
-		await waitForCount(requests, 2);
+		await waitForCount(requests, 3);
 		await harness.emitLifecycle("agent_start", {}, ctx);
-		await waitForCount(requests, 4);
+		await waitForCount(requests, 5);
 
 		harness.emitEvent("herdr:blocked", { active: true, label: "Waiting for feedback" });
-		await waitForCount(requests, 5);
+		await waitForCount(requests, 6);
 		await harness.emitLifecycle("agent_settled", {}, ctx);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.deepEqual(requestStates(requests), ["idle", "working", "blocked"]);
 
 		harness.emitEvent("herdr:blocked", { active: false });
-		await waitForCount(requests, 6);
+		await waitForCount(requests, 7);
 		assert.deepEqual(requestStates(requests), ["idle", "working", "blocked", "idle"]);
 	} finally {
 		restore();
@@ -238,7 +243,7 @@ test("broker delivery retries a failed acknowledgement before advancing the stat
 		});
 		request.on("end", () => {
 			requests.push({ body: JSON.parse(body) });
-			response.writeHead(requests.length === 2 ? 503 : 200);
+			response.writeHead(requests.length === 3 ? 503 : 200);
 			response.end('{"ok":true}');
 		});
 	});
@@ -257,15 +262,16 @@ test("broker delivery retries a failed acknowledgement before advancing the stat
 		const extension = await loadExtension();
 		extension(harness.pi);
 		await harness.emitLifecycle("session_start", { reason: "startup" }, tuiContext());
-		await waitForCount(requests, 3);
+		await waitForCount(requests, 4);
 		assert.deepEqual(requestMethods(requests), [
 			"pane.report_agent_session",
+			"pane.report_metadata",
 			"pane.report_agent",
 			"pane.report_agent",
 		]);
-		assert.equal(requests[1].body.request.params.state, "idle");
 		assert.equal(requests[2].body.request.params.state, "idle");
-		assert.equal(requests[1].body.request.params.seq, requests[2].body.request.params.seq, "retry preserves sequence");
+		assert.equal(requests[3].body.request.params.state, "idle");
+		assert.equal(requests[2].body.request.params.seq, requests[3].body.request.params.seq, "retry preserves sequence");
 	} finally {
 		restore();
 		await close(broker);
@@ -303,10 +309,11 @@ test("direct socket delivery retries a failed acknowledgement", async () => {
 		const extension = await loadExtension();
 		extension(harness.pi);
 		await harness.emitLifecycle("session_start", { reason: "startup" }, tuiContext());
-		await waitForCount(requests, 3);
+		await waitForCount(requests, 4);
 		assert.deepEqual(requests.map((request) => request.method), [
 			"pane.report_agent_session",
 			"pane.report_agent_session",
+			"pane.report_metadata",
 			"pane.report_agent",
 		]);
 		assert.equal(requests[0].params.seq, requests[1].params.seq, "retry preserves sequence");

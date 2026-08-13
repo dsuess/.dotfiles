@@ -151,8 +151,9 @@ workflow convenience rather than a complete mutation boundary.
 When Pi starts inside Herdr, the wrapper launches a small unsandboxed broker on
 a random loopback port. Pi receives that port and a per-process token instead
 of `HERDR_SOCKET_PATH`. The broker accepts only `pane.report_agent`,
-`pane.report_agent_session`, and `pane.release_agent`; it fixes the pane,
-source, agent, and sequence values before forwarding to Herdr. All other Herdr
+`pane.report_agent_session`, `pane.report_metadata`, and `pane.release_agent`;
+it fixes the pane, source, agent, display agent, and sequence values before
+forwarding to Herdr. All other Herdr
 methods are rejected, agent-session paths are confined to Pi's session tree,
 and the native Herdr Unix socket path is not passed into Pi's environment.
 

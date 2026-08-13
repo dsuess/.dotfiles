@@ -144,6 +144,17 @@ function canonicalRequest(input) {
 				params: { ...common, ...ref, ...(startSource ? { session_start_source: startSource } : {}) },
 			};
 		}
+		case "pane.report_metadata":
+			return {
+				id,
+				method: "pane.report_metadata",
+				params: {
+					pane_id: paneId,
+					source: SOURCE,
+					display_agent: "π",
+					seq: common.seq,
+				},
+			};
 		case "pane.release_agent":
 			return {
 				id,
