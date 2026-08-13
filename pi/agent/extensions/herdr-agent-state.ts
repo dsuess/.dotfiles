@@ -193,6 +193,19 @@ function reportSession(sessionStartSource?: string): Promise<void> {
   });
 }
 
+function reportDisplayAgent(): Promise<void> {
+  return sendRequest({
+    id: `${source}:metadata:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    method: "pane.report_metadata",
+    params: {
+      pane_id: paneId,
+      source,
+      display_agent: "π",
+      seq: nextReportSeq(),
+    },
+  });
+}
+
 function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<void> {
   return sendRequest({
     id: `${source}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
@@ -282,6 +295,8 @@ export default function (pi) {
     rootSession = true;
     updateSessionRef(ctx);
     await reportSession(event?.reason);
+    // Keep the canonical `pi` identifier for integration state, but show π in Herdr's sidebar.
+    await reportDisplayAgent();
     // A reload can replace this extension mid-run without another agent_start.
     agentActive = ctx?.isIdle?.() === false;
     publishState(true);

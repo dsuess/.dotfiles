@@ -129,6 +129,15 @@ description = "Command palette"
 # Accent matches tmux `pane-active-border-style fg=#cba6f7` (catppuccin mauve).
 accent = "#cba6f7"
 
+# Herdr 0.8.0 switched Spaces to a packed layout; restore the previous breathing room.
+[ui.sidebar.spaces]
+row_gap = 1
+
+# The static indicator is color-only in Herdr 0.8.0; label the agent state explicitly.
+[ui.sidebar.agents]
+row_gap = 1
+rows = [["state_icon", "workspace", "tab"], ["state_text", "agent"]]
+
 [ui.sound]
 # tmux `set -g bell-action none` / `set -g visual-bell off` -> no audible bell.
 enabled = false

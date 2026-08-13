@@ -1,3 +1,5 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
 export interface ContextUsageSnapshot {
 	tokens: number | null;
 	percent: number | null;
@@ -25,3 +27,6 @@ export function selectContextDisplay(usage: ContextUsageSnapshot | undefined): C
 		gaugePercent: Math.max(0, Math.min(100, usage.percent)),
 	};
 }
+
+/** Register no runtime behavior; statusbar.ts imports the display helpers. */
+export default function statusbarContextExtension(_pi: ExtensionAPI): void {}
