@@ -415,6 +415,35 @@ test("mandatory staged checkpoints open from state without synthetic commands", 
 	} finally { await harness.cleanup(); }
 });
 
+test("the context hook retains post-compaction execution messages without exposing the mixed summary", async () => {
+	const harness = await createHarness({ actions: ["run"] });
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness);
+		await harness.emit("agent_settled");
+		const summary = { role: "compactionSummary", summary: "Planning history", tokensBefore: 1000, timestamp: 1 };
+		const readResult = {
+			role: "toolResult", toolCallId: "read-plan", toolName: "read", content: [{ type: "text", text: "# Approved\\n" }], isError: false, timestamp: 3,
+		};
+		const progressFailure = {
+			role: "toolResult", toolCallId: "progress-1", toolName: "plan_progress", content: [{ type: "text", text: "Task 1 is already in_progress." }], isError: true, timestamp: 5,
+		};
+		const retainedTail = [
+			{ role: "assistant", content: [{ type: "toolCall", id: "read-plan", name: "read", arguments: { path: "/project/.pi/plans/approved.md" } }], timestamp: 2 },
+			readResult,
+			{ role: "assistant", content: [{ type: "toolCall", id: "progress-1", name: "plan_progress", arguments: { taskId: "1", status: "in_progress" } }], timestamp: 4 },
+			progressFailure,
+			{ role: "user", content: "Continue from the current ledger.", timestamp: 6 },
+		];
+		const context = await harness.handlers.get("context")[0]({ messages: [summary, ...retainedTail] }, harness.ctx);
+		assert.equal(context.messages[0].customType, "plan-mode-execution-boundary");
+		assert.deepEqual(context.messages.slice(1), retainedTail);
+		assert.ok(context.messages.includes(readResult));
+		assert.ok(context.messages.includes(progressFailure));
+		assert.equal(context.messages.some((message) => message.role === "compactionSummary"), false);
+	} finally { await harness.cleanup(); }
+});
+
 for (const [action, entry, expectedMode, completionTool] of [
 	["run", "keyboard", "executing_all", "complete_plan"],
 	["staged", "palette", "executing_staged", "complete_stage"],

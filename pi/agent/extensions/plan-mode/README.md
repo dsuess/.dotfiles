@@ -136,7 +136,9 @@ Saved review-, file-, line-, and range-level comments are returned as one struct
 
 Run actions continue in the current visible session; they do not create a child session or parent-session link. The extension persists a versioned, run-scoped execution contract and inserts one hidden execution-boundary message containing the complete approved plan and execution rules. The visible transcript keeps the planning discussion for reference, while model context starts at the matching boundary, so implementation receives normal project instructions plus only the approved contract and messages sent afterward.
 
-If an in-place execution state is restored without its matching boundary marker, context fails closed to a boundary reconstructed from the persisted approved contract rather than exposing the planning conversation. Run IDs distinguish the active execution from older contracts on the same session branch. Version 1 contracts from already-running fresh child sessions remain readable and retain their original context behavior.
+If an in-place execution state is restored without its matching boundary marker, context fails closed to a boundary reconstructed from the persisted approved contract rather than exposing the planning conversation. After compaction, the extension excludes the mixed compaction summary and retains every message after the newest summary, so the reconstructed boundary is followed by the retained execution tail. Without a matching boundary or compaction summary, it keeps only the reconstructed boundary. Run IDs distinguish the active execution from older contracts on the same session branch. Version 1 contracts from already-running fresh child sessions remain readable and retain their original context behavior.
+
+To recover an affected existing session, first stop the loop. Deploy the extension, then use `/reload` or restart Pi. The extension restores the persisted workflow state and continues without editing or deleting the session JSONL file.
 
 The original active tools are restored by registered-name intersection, with execution-only tools added:
 

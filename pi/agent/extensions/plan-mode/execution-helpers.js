@@ -168,6 +168,8 @@ export function isolateExecutionMessages(messages, contract, state) {
 	if (!isInPlaceExecutionContract(contract)) return messages;
 	const boundaryIndex = messages.findIndex((message) => isMatchingBoundary(message, contract));
 	if (boundaryIndex >= 0) return messages.slice(boundaryIndex);
+	const compactionSummaryIndex = messages.findLastIndex((message) => message?.role === "compactionSummary");
+	if (compactionSummaryIndex >= 0) return [buildExecutionBoundaryMessage(contract, state), ...messages.slice(compactionSummaryIndex + 1)];
 	return [buildExecutionBoundaryMessage(contract, state)];
 }
 

@@ -179,6 +179,55 @@ test("missing or mismatched boundaries fail closed to the approved execution con
 	}
 });
 
+test("missing execution boundaries after compaction reconstruct the contract and retain the execution tail", () => {
+	const summary = {
+		role: "compactionSummary",
+		summary: "Mixed planning and execution history.",
+		tokensBefore: 1000,
+		timestamp: 10,
+	};
+	const readPlanCall = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "read-plan", name: "read", arguments: { path: contract.planPath } }],
+		timestamp: 11,
+	};
+	const readResult = {
+		role: "toolResult",
+		toolCallId: "read-plan",
+		toolName: "read",
+		content: [{ type: "text", text: "# Approved\\n" }],
+		isError: false,
+		timestamp: 12,
+	};
+	const progressCall = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "progress-2", name: "plan_progress", arguments: { taskId: "2", status: "in_progress" } }],
+		timestamp: 13,
+	};
+	const progressFailure = {
+		role: "toolResult",
+		toolCallId: "progress-2",
+		toolName: "plan_progress",
+		content: [{ type: "text", text: "Task 2 is already in_progress." }],
+		isError: true,
+		timestamp: 14,
+	};
+	const queuedContinuation = { role: "user", content: "Continue from the current ledger.", timestamp: 15 };
+
+	const firstPass = isolateExecutionMessages([summary, readPlanCall, readResult], contract, state);
+	assert.equal(firstPass[0].customType, EXECUTION_BOUNDARY_MESSAGE);
+	assert.deepEqual(firstPass.slice(1), [readPlanCall, readResult]);
+	assert.equal(firstPass.some((message) => message.role === "compactionSummary"), false);
+
+	const retainedTail = [readPlanCall, readResult, progressCall, progressFailure, queuedContinuation];
+	const secondPass = isolateExecutionMessages([summary, ...retainedTail], contract, state);
+	assert.equal(secondPass[0].customType, EXECUTION_BOUNDARY_MESSAGE);
+	assert.deepEqual(secondPass.slice(1), retainedTail);
+	assert.ok(secondPass.includes(readResult));
+	assert.ok(secondPass.includes(progressFailure));
+	assert.equal(secondPass.some((message) => message.role === "compactionSummary"), false);
+});
+
 test("a matching durable boundary remains discoverable after reload and branch restoration", () => {
 	const branch = [
 		{ type: "message", message: { role: "user", content: "plan", timestamp: 1 } },
