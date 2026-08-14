@@ -116,70 +116,96 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
     : sendSocketRequestAttempt(request, timeoutMs);
 }
 
-async function sendRequest(request: unknown): Promise<void> {
-  if (await sendRequestAttempt(request, 500)) return;
+async function sendRequest(request: unknown, shouldContinue = () => true): Promise<void> {
+  if (!shouldContinue() || await sendRequestAttempt(request, 500)) return;
+  if (!shouldContinue()) return;
   await sendRequestAttempt(request, 1500);
 }
 
 type AgentState = "working" | "blocked" | "idle";
+type SessionRef = Record<string, unknown> | undefined;
 
 type QueuedState = {
+  generation: number;
   state: AgentState;
   message?: string;
   seq: number;
+  sessionRef: SessionRef;
 };
 
-let reportSeq = Date.now() * 1000;
-let currentAgentSessionId: string | undefined;
-let currentAgentSessionPath: string | undefined;
+type ReporterRuntime = {
+  activeGeneration: number | undefined;
+  nextGeneration: number;
+  operationQueue: Promise<void>;
+  reportSeq: number;
+};
 
-function nextReportSeq(): number {
-  reportSeq += 1;
-  return reportSeq;
+// Pi reloads extension modules, but the shared event bus intentionally survives.
+// Keep transport ordering and lifecycle authority outside an individual module so
+// a retired reporter cannot race its replacement.
+const runtimeKey = "__herdrPiReporterRuntime";
+
+function reporterRuntime(): ReporterRuntime {
+  const scope = globalThis as typeof globalThis & { [runtimeKey]?: ReporterRuntime };
+  const existing = scope[runtimeKey];
+  if (existing) return existing;
+  const created: ReporterRuntime = {
+    activeGeneration: undefined,
+    nextGeneration: 0,
+    operationQueue: Promise.resolve(),
+    reportSeq: Date.now() * 1000,
+  };
+  scope[runtimeKey] = created;
+  return created;
 }
 
-function updateSessionRef(ctx: any): void {
+function nextReportSeq(): number {
+  const runtime = reporterRuntime();
+  runtime.reportSeq += 1;
+  return runtime.reportSeq;
+}
+
+function readSessionRef(ctx: any): SessionRef {
   try {
     const file = ctx?.sessionManager?.getSessionFile?.();
-    currentAgentSessionPath =
-      typeof file === "string" && file.startsWith("/") ? file : undefined;
+    if (typeof file === "string" && file.startsWith("/")) return { agent_session_path: file };
   } catch {
-    currentAgentSessionPath = undefined;
+    // Fall through to the session ID when the current session file is unavailable.
   }
 
   try {
     const id = ctx?.sessionManager?.getSessionId?.();
-    currentAgentSessionId = typeof id === "string" && id.length > 0 ? id : undefined;
+    if (typeof id === "string" && id.length > 0) return { agent_session_id: id };
   } catch {
-    currentAgentSessionId = undefined;
-  }
-}
-
-function withSessionRef(params: Record<string, unknown>): Record<string, unknown> {
-  if (currentAgentSessionPath) {
-    return { ...params, agent_session_path: currentAgentSessionPath };
-  }
-  if (currentAgentSessionId) {
-    return { ...params, agent_session_id: currentAgentSessionId };
-  }
-  return params;
-}
-
-function currentSessionRef(): Record<string, unknown> | undefined {
-  if (currentAgentSessionPath) {
-    return { agent_session_path: currentAgentSessionPath };
-  }
-  if (currentAgentSessionId) {
-    return { agent_session_id: currentAgentSessionId };
+    // Herdr can still receive a canonical state without a session reference.
   }
   return undefined;
 }
 
-function reportSession(sessionStartSource?: string): Promise<void> {
-  const sessionRef = currentSessionRef();
-  if (!sessionRef) return Promise.resolve();
+function sessionRefKey(sessionRef: SessionRef): string {
+  if (!sessionRef) return "";
+  if (typeof sessionRef.agent_session_path === "string") return `path:${sessionRef.agent_session_path}`;
+  if (typeof sessionRef.agent_session_id === "string") return `id:${sessionRef.agent_session_id}`;
+  return "";
+}
 
-  return sendRequest({
+function withSessionRef(params: Record<string, unknown>, sessionRef: SessionRef): Record<string, unknown> {
+  return sessionRef ? { ...params, ...sessionRef } : params;
+}
+
+function enqueueRequest(generation: number, request: Record<string, unknown>): Promise<void> {
+  const runtime = reporterRuntime();
+  const pending = runtime.operationQueue.then(async () => {
+    if (runtime.activeGeneration !== generation) return;
+    await sendRequest(request, () => reporterRuntime().activeGeneration === generation);
+  });
+  runtime.operationQueue = pending.catch(() => {});
+  return pending;
+}
+
+function sessionRequest(sessionRef: SessionRef, sessionStartSource?: string): Record<string, unknown> | undefined {
+  if (!sessionRef) return undefined;
+  return {
     id: `${source}:session:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     method: "pane.report_agent_session",
     params: {
@@ -190,11 +216,11 @@ function reportSession(sessionStartSource?: string): Promise<void> {
       session_start_source: sessionStartSource,
       ...sessionRef,
     },
-  });
+  };
 }
 
-function reportDisplayAgent(): Promise<void> {
-  return sendRequest({
+function metadataRequest(): Record<string, unknown> {
+  return {
     id: `${source}:metadata:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     method: "pane.report_metadata",
     params: {
@@ -203,11 +229,11 @@ function reportDisplayAgent(): Promise<void> {
       display_agent: "π",
       seq: nextReportSeq(),
     },
-  });
+  };
 }
 
-function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<void> {
-  return sendRequest({
+function stateRequest(state: AgentState, message: string | undefined, seq: number, sessionRef: SessionRef): Record<string, unknown> {
+  return {
     id: `${source}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     method: "pane.report_agent",
     params: withSessionRef({
@@ -217,32 +243,8 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
       state,
       message,
       seq,
-    }),
-  });
-}
-
-let sendInFlight = false;
-let queuedState: QueuedState | undefined;
-
-function queueState(state: AgentState, message?: string): void {
-  queuedState = { state, message, seq: nextReportSeq() };
-  if (!sendInFlight) void drainStateQueue();
-}
-
-async function drainStateQueue(): Promise<void> {
-  if (sendInFlight) return;
-
-  sendInFlight = true;
-  try {
-    while (queuedState) {
-      const next = queuedState;
-      queuedState = undefined;
-      await sendState(next.state, next.message, next.seq);
-    }
-  } finally {
-    sendInFlight = false;
-    if (queuedState) void drainStateQueue();
-  }
+    }, sessionRef),
+  };
 }
 
 export default function (pi) {
@@ -254,6 +256,43 @@ export default function (pi) {
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
   let rootSession = false;
+  let generation = 0;
+  let sessionRef: SessionRef;
+  let queuedState: QueuedState | undefined;
+  let drainPromise: Promise<void> | undefined;
+  let drainGeneration = 0;
+  const deliveries = new Set<Promise<void>>();
+
+  function ownsAuthority(owner = generation): boolean {
+    return rootSession && owner !== 0 && reporterRuntime().activeGeneration === owner;
+  }
+
+  function track(delivery: Promise<void>): Promise<void> {
+    deliveries.add(delivery);
+    void delivery.then(
+      () => deliveries.delete(delivery),
+      () => deliveries.delete(delivery),
+    );
+    return delivery;
+  }
+
+  function reportSession(sessionStartSource?: string, owner = generation): Promise<void> {
+    if (!ownsAuthority(owner)) return Promise.resolve();
+    const request = sessionRequest(sessionRef, sessionStartSource);
+    return request ? track(enqueueRequest(owner, request)) : Promise.resolve();
+  }
+
+  function reportDisplayAgent(owner = generation): Promise<void> {
+    if (!ownsAuthority(owner)) return Promise.resolve();
+    return track(enqueueRequest(owner, metadataRequest()));
+  }
+
+  function refreshSessionRef(ctx: any): boolean {
+    const next = readSessionRef(ctx);
+    const changed = sessionRefKey(next) !== sessionRefKey(sessionRef);
+    sessionRef = next;
+    return changed;
+  }
 
   function desiredState() {
     if (blockedCount > 0) {
@@ -265,16 +304,71 @@ export default function (pi) {
     return { state: "idle" as const, message: undefined };
   }
 
-  function publishState(force = false) {
+  function queueState(state: AgentState, message: string | undefined, owner = generation): void {
+    if (!ownsAuthority(owner)) return;
+    queuedState = {
+      generation: owner,
+      state,
+      message,
+      seq: nextReportSeq(),
+      sessionRef: sessionRef ? { ...sessionRef } : undefined,
+    };
+    if (!drainPromise || drainGeneration !== owner) {
+      const drain = drainStateQueue(owner);
+      drainPromise = drain;
+      drainGeneration = owner;
+      void drain.then(
+        () => {
+          if (drainPromise === drain) {
+            drainPromise = undefined;
+            drainGeneration = 0;
+          }
+        },
+        () => {
+          if (drainPromise === drain) {
+            drainPromise = undefined;
+            drainGeneration = 0;
+          }
+        },
+      );
+    }
+  }
+
+  async function drainStateQueue(owner: number): Promise<void> {
+    while (queuedState?.generation === owner && ownsAuthority(owner)) {
+      const next = queuedState;
+      queuedState = undefined;
+      await track(enqueueRequest(owner, stateRequest(next.state, next.message, next.seq, next.sessionRef)));
+    }
+    if (!ownsAuthority(owner) && queuedState?.generation === owner) queuedState = undefined;
+  }
+
+  function publishState(force = false, owner = generation): void {
+    if (!ownsAuthority(owner)) return;
     const next = desiredState();
     if (!force && next.state === lastState && next.message === lastMessage) return;
     lastState = next.state;
     lastMessage = next.message;
-    queueState(next.state, next.message);
+    queueState(next.state, next.message, owner);
+  }
+
+  function activateRootSession(ctx: any): number {
+    const runtime = reporterRuntime();
+    generation = ++runtime.nextGeneration;
+    runtime.activeGeneration = generation;
+    rootSession = true;
+    agentActive = false;
+    blockedCount = 0;
+    blockedMessage = undefined;
+    lastState = undefined;
+    lastMessage = undefined;
+    queuedState = undefined;
+    refreshSessionRef(ctx);
+    return generation;
   }
 
   pi.events.on("herdr:blocked", (data) => {
-    if (!rootSession) return;
+    if (!ownsAuthority()) return;
     if (!data?.active) {
       blockedCount = Math.max(0, blockedCount - 1);
       if (blockedCount === 0) blockedMessage = undefined;
@@ -292,28 +386,43 @@ export default function (pi) {
     // and RPC still reports hasUI=true, so mode is the reliable gate.
     if (ctx?.mode !== "tui") return;
 
-    rootSession = true;
-    updateSessionRef(ctx);
-    await reportSession(event?.reason);
+    const owner = activateRootSession(ctx);
+    // A current session reference must reach Herdr before any lifecycle state.
+    await reportSession(event?.reason, owner);
+    if (!ownsAuthority(owner)) return;
     // Keep the canonical `pi` identifier for integration state, but show π in Herdr's sidebar.
-    await reportDisplayAgent();
+    await reportDisplayAgent(owner);
+    if (!ownsAuthority(owner)) return;
     // A reload can replace this extension mid-run without another agent_start.
     agentActive = ctx?.isIdle?.() === false;
-    publishState(true);
+    publishState(true, owner);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    if (!rootSession) return;
+    if (!ownsAuthority()) return;
 
-    updateSessionRef(ctx);
+    refreshSessionRef(ctx);
     await reportSession();
+    if (!ownsAuthority()) return;
     agentActive = true;
     publishState();
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
-    if (!rootSession || ctx?.isIdle?.() !== true) return;
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ownsAuthority() || ctx?.isIdle?.() !== true) return;
+    const changedSessionRef = refreshSessionRef(ctx);
+    if (changedSessionRef) await reportSession();
+    if (!ownsAuthority()) return;
     agentActive = false;
     publishState();
+  });
+
+  pi.on("session_shutdown", async () => {
+    const owner = generation;
+    rootSession = false;
+    queuedState = undefined;
+    if (reporterRuntime().activeGeneration === owner) reporterRuntime().activeGeneration = undefined;
+    await drainPromise;
+    await Promise.allSettled([...deliveries]);
   });
 }

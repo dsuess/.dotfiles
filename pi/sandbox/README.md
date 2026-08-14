@@ -162,6 +162,12 @@ The broker transport is a local adaptation in the generated
 file; preserve or restore the tracked broker transport. The wrapper never falls
 back to exposing the real Herdr socket.
 
+For a root TUI session, the reporter sends the current Pi session reference
+before its `idle`, `working`, or `blocked` lifecycle state. These reports are
+authoritative to Herdr, so screen detection is skipped. On reload, the retiring
+reporter stops before its replacement can report; a missing `agent_session` or
+screen-detection fallback indicates a lifecycle integration failure.
+
 Model-invoked code can still spoof Pi's own reported state because it shares the
 broker capability with the extension. That narrow status mutation is inherent
 in making status reporting available inside the sandbox; it does not provide

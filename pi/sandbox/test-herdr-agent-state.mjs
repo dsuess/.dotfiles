@@ -56,6 +56,11 @@ async function loadExtension() {
 	return extension;
 }
 
+async function loadFeedbackExtension() {
+	const { default: extension } = await import(`../agent/extensions/herdr-feedback-state/index.ts?test=${Date.now()}-${Math.random()}`);
+	return extension;
+}
+
 function createHarness() {
 	const lifecycle = new Map();
 	const events = new Map();
@@ -100,6 +105,102 @@ function tuiContext({ isIdle = () => true } = {}) {
 		sessionManager: {
 			getSessionFile: () => "/tmp/pi-session.jsonl",
 			getSessionId: () => "session-7",
+		},
+	};
+}
+
+function deferred() {
+	let resolve;
+	let reject;
+	const promise = new Promise((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
+function nextTurn() {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitFor(predicate, description) {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(`timed out waiting for ${description}`);
+}
+
+function createComposedHarness() {
+	const lifecycle = new Map();
+	const eventHandlers = new Map();
+	const events = {
+		on(name, handler) {
+			if (!eventHandlers.has(name)) eventHandlers.set(name, []);
+			const handlers = eventHandlers.get(name);
+			handlers.push(handler);
+			return () => {
+				const index = handlers.indexOf(handler);
+				if (index >= 0) handlers.splice(index, 1);
+			};
+		},
+		emit(name, data) {
+			for (const handler of [...(eventHandlers.get(name) ?? [])]) handler(data);
+		},
+	};
+	const pi = {
+		events,
+		on(name, handler) {
+			if (!lifecycle.has(name)) lifecycle.set(name, []);
+			lifecycle.get(name).push(handler);
+		},
+	};
+	return {
+		pi,
+		async install() {
+			const reporter = await loadExtension();
+			const feedback = await loadFeedbackExtension();
+			reporter(pi);
+			feedback(pi);
+		},
+		replaceExtensions() {
+			lifecycle.clear();
+		},
+		async emitLifecycle(name, event, ctx) {
+			for (const handler of lifecycle.get(name) ?? []) await handler(event, ctx);
+		},
+		emitWorkflow(data) {
+			events.emit("plan-mode:workflow-state", data);
+		},
+	};
+}
+
+function composedTuiContext(sessionId, isIdle, ui) {
+	return {
+		mode: "tui",
+		hasUI: true,
+		isIdle,
+		ui,
+		sessionManager: {
+			getSessionFile: () => undefined,
+			getSessionId: () => sessionId,
+			getBranch: () => [],
+		},
+	};
+}
+
+function composedUI() {
+	const dialogs = [];
+	return {
+		dialogs,
+		select: () => Promise.resolve(undefined),
+		confirm: () => Promise.resolve(false),
+		input: () => Promise.resolve(undefined),
+		editor: () => Promise.resolve(undefined),
+		custom: () => {
+			const dialog = deferred();
+			dialogs.push(dialog);
+			return dialog.promise;
 		},
 	};
 }
@@ -272,6 +373,201 @@ test("broker delivery retries a failed acknowledgement before advancing the stat
 		assert.equal(requests[2].body.request.params.state, "idle");
 		assert.equal(requests[3].body.request.params.state, "idle");
 		assert.equal(requests[2].body.request.params.seq, requests[3].body.request.params.seq, "retry preserves sequence");
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("root session replacement retains only the current reporter through a durable approval wait", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			requests.push({ body: JSON.parse(body) });
+			response.writeHead(200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const state = await import("../agent/extensions/plan-mode/state.js");
+		const harness = createComposedHarness();
+		let idle = false;
+		const firstUI = composedUI();
+		const firstContext = composedTuiContext("session-1", () => idle, firstUI);
+		await harness.install();
+		await harness.emitLifecycle("session_start", { reason: "startup" }, firstContext);
+		await waitForCount(requests, 3);
+
+		// Pi reloads its extension runner after session_shutdown. The old reporter's
+		// event-bus listener remains registered unless its shutdown lifecycle ends
+		// its authority, which is the production failure this composes.
+		await harness.emitLifecycle("session_shutdown", { reason: "reload" }, firstContext);
+		harness.replaceExtensions();
+		const secondUI = composedUI();
+		const secondContext = composedTuiContext("session-2", () => idle, secondUI);
+		const replacementStart = requests.length;
+		await harness.install();
+		await harness.emitLifecycle("session_start", { reason: "reload" }, secondContext);
+		await waitForCount(requests, 6);
+
+		const planning = state.enterPlanning(state.createInitialState(), ["read", "bash"]).state;
+		let approval = state.submitPlan(planning, {
+			path: "/tmp/approval.md",
+			slug: "approval",
+			hash: "approval-hash",
+			title: "Approval",
+			intent: "Exercise replacement authority",
+			approvalNonce: "approval-nonce",
+			stages: [{ id: "A", description: "Approval", taskIds: ["A"] }],
+			tasks: [{ id: "A", title: "Wait for approval", status: "pending" }],
+		}).state;
+		harness.emitWorkflow({ mode: approval.mode, feedbackPending: state.hasDurableFeedbackPending(approval) });
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-2"
+				&& body.request.params.state === "blocked"),
+			"the replacement session to report blocked",
+		);
+
+		const replacementRequests = requests.slice(replacementStart);
+		const sessionIndex = replacementRequests.findIndex(({ body }) =>
+			body.request.method === "pane.report_agent_session" && body.request.params.agent_session_id === "session-2");
+		const stateIndex = replacementRequests.findIndex(({ body }) =>
+			body.request.method === "pane.report_agent" && body.request.params.agent_session_id === "session-2");
+		assert.ok(sessionIndex >= 0 && sessionIndex < stateIndex, "the replacement session reference precedes lifecycle state");
+		assert.equal(
+			replacementRequests.at(-1).body.request.params.state,
+			"blocked",
+			"the unresolved approval is the current effective state",
+		);
+
+		const dismissed = secondUI.custom(() => undefined);
+		secondUI.dialogs.at(-1).resolve(undefined);
+		await dismissed;
+		await nextTurn();
+		assert.equal(approval.approval.consumed, false, "dismissing retains the durable approval for reopening");
+		assert.equal(requests.at(-1).body.request.params.state, "blocked", "closing UI alone cannot clear durable approval");
+
+		const accepted = secondUI.custom(() => undefined);
+		secondUI.dialogs.at(-1).resolve("run");
+		approval = state.approveExecution(approval, "approval-nonce", "all").state;
+		harness.emitWorkflow({ mode: approval.mode, feedbackPending: state.hasDurableFeedbackPending(approval) });
+		await accepted;
+		await nextTurn();
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-2"
+				&& body.request.params.state === "working"),
+			"approval acceptance to restore working",
+		);
+
+		idle = true;
+		await harness.emitLifecycle("agent_settled", {}, secondContext);
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-2"
+				&& body.request.params.state === "idle"),
+			"settled active session to report idle",
+		);
+
+		const plainDialog = secondUI.custom(() => undefined);
+		await waitFor(
+			() => requests.at(-1)?.body.request.params.state === "blocked",
+			"plain blocking UI to report blocked",
+		);
+		secondUI.dialogs.at(-1).resolve(undefined);
+		await plainDialog;
+		await nextTurn();
+		await waitFor(
+			() => requests.at(-1)?.body.request.params.state === "idle",
+			"plain blocking UI dismissal to restore idle",
+		);
+
+		const postReplacementStates = requests.slice(replacementStart)
+			.filter(({ body }) => body.request.method === "pane.report_agent");
+		assert.ok(postReplacementStates.length > 0);
+		assert.ok(
+			postReplacementStates.every(({ body }) => body.request.params.agent_session_id === "session-2"),
+			"a retired reporter must not reclaim or clear lifecycle authority",
+		);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("shutdown drops a stale retry before a replacement reporter starts", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let holdFirstState = true;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			if (holdFirstState && parsed.request.method === "pane.report_agent") {
+				holdFirstState = false;
+				return;
+			}
+			response.writeHead(200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const harness = createComposedHarness();
+		await harness.install();
+		const firstContext = composedTuiContext("session-1", () => true, composedUI());
+		await harness.emitLifecycle("session_start", { reason: "startup" }, firstContext);
+		await waitForCount(requests, 3);
+		await harness.emitLifecycle("session_shutdown", { reason: "reload" }, firstContext);
+		assert.equal(
+			requests.filter(({ body }) => body.request.method === "pane.report_agent").length,
+			1,
+			"a failed retired state delivery must not retry after shutdown",
+		);
+
+		harness.replaceExtensions();
+		await harness.install();
+		const secondContext = composedTuiContext("session-2", () => true, composedUI());
+		await harness.emitLifecycle("session_start", { reason: "reload" }, secondContext);
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-2"),
+			"replacement lifecycle state",
+		);
+		assert.deepEqual(
+			requests.filter(({ body }) => body.request.method === "pane.report_agent").map(({ body }) => body.request.params.agent_session_id),
+			["session-1", "session-2"],
+			"only the current reporter may send after replacement",
+		);
 	} finally {
 		restore();
 		await close(broker);
