@@ -97,11 +97,12 @@ function requestStates(requests) {
 		.map(({ body }) => body.request.params.state);
 }
 
-function tuiContext({ isIdle = () => true } = {}) {
+function tuiContext({ isIdle = () => true, ui } = {}) {
 	return {
 		mode: "tui",
 		hasUI: true,
 		isIdle,
+		ui,
 		sessionManager: {
 			getSessionFile: () => "/tmp/pi-session.jsonl",
 			getSessionId: () => "session-7",
@@ -373,6 +374,62 @@ test("broker delivery retries a failed acknowledgement before advancing the stat
 		assert.equal(requests[2].body.request.params.state, "idle");
 		assert.equal(requests[3].body.request.params.state, "idle");
 		assert.equal(requests[2].body.request.params.seq, requests[3].body.request.params.seq, "retry preserves sequence");
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("unacknowledged startup session blocks lifecycle state and reports a non-secret diagnostic", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let acceptSessions = false;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			response.writeHead(acceptSessions || parsed.request.method !== "pane.report_agent_session" ? 200 : 502);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const notifications = [];
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		const ctx = tuiContext({ ui: { notify: (message, level) => notifications.push({ message, level }) } });
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitForCount(requests, 2);
+		assert.deepEqual(requestMethods(requests), ["pane.report_agent_session", "pane.report_agent_session"]);
+		assert.equal(requests[0].body.request.params.agent_session_id, "session-7", "a session ID accompanies a not-yet-canonical path");
+		assert.deepEqual(notifications, [{
+			message: "Herdr status unavailable; retrying on the next lifecycle event.",
+			level: "warning",
+		}]);
+
+		acceptSessions = true;
+		await harness.emitLifecycle("agent_start", {}, ctx);
+		await waitForCount(requests, 5);
+		assert.deepEqual(requestMethods(requests).slice(-3), [
+			"pane.report_agent_session",
+			"pane.report_metadata",
+			"pane.report_agent",
+		]);
+		assert.equal(requests.at(-1).body.request.params.state, "working");
 	} finally {
 		restore();
 		await close(broker);

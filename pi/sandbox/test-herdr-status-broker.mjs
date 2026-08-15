@@ -77,6 +77,7 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 	await writeFile(sessionFile, "{}\n");
 	const canonicalSessionFile = await realpath(sessionFile);
 	const forwarded = [];
+	let rejectBlocked = false;
 	const herdr = createServer((socket) => {
 		let input = "";
 		socket.on("data", (chunk) => {
@@ -85,7 +86,9 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 			if (newline < 0) return;
 			const request = JSON.parse(input.slice(0, newline));
 			forwarded.push(request);
-			socket.end(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+			socket.end(`${JSON.stringify(rejectBlocked && request.params.state === "blocked"
+				? { id: request.id, error: { message: "forwarding denied" } }
+				: { id: request.id, result: {} })}\n`);
 		});
 	});
 	await listen(herdr, herdrSocket);
@@ -213,6 +216,12 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 			params: {},
 		}), { ok: true });
 
+		rejectBlocked = true;
+		assert.deepEqual(await send(port, token, {
+			method: "pane.report_agent",
+			params: { state: "blocked", message: "waiting for feedback" },
+		}), { ok: false, error: "forwarding denied" }, "the broker preserves a Herdr forwarding rejection");
+
 		broker.kill("SIGTERM");
 		const exit = await waitForExit(broker);
 		assert.equal(exit.code, 0, stderr.value);
@@ -222,6 +231,7 @@ test("broker exposes only canonical Herdr agent-status requests", async () => {
 			"pane.report_agent_session",
 			"pane.report_metadata",
 			"pane.release_agent",
+			"pane.report_agent",
 			"pane.release_agent",
 		]);
 		for (let index = 1; index < forwarded.length; index += 1) {

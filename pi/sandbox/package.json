@@ -5,7 +5,7 @@
   "description": "Pinned whole-process sandbox runtime for Pi",
   "scripts": {
     "test": "npm run test:broker && npm run test:wrapper && npm run test:repository && npm run test:ketch-config && npm run test:containment && npm run test:ketch-live",
-    "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs",
+    "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs test-herdr-sandbox-composed.mjs",
     "test:wrapper": "bash test-wrapper.sh",
     "test:repository": "bash test-repository-scope.sh",
     "test:ketch-config": "bash test-ketch-config.sh",

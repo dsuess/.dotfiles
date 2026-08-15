@@ -163,10 +163,27 @@ file; preserve or restore the tracked broker transport. The wrapper never falls
 back to exposing the real Herdr socket.
 
 For a root TUI session, the reporter sends the current Pi session reference
-before its `idle`, `working`, or `blocked` lifecycle state. These reports are
+before its `idle`, `working`, or `blocked` lifecycle state, and waits for the
+broker acknowledgement. The session path is preferred after Pi creates it; the
+stable Pi session ID covers the short creation race. These reports are
 authoritative to Herdr, so screen detection is skipped. On reload, the retiring
-reporter stops before its replacement can report; a missing `agent_session` or
-screen-detection fallback indicates a lifecycle integration failure.
+reporter stops before its replacement can report.
+
+A listening broker process alone does not prove the integration works. Verify
+an active pane after launch with:
+
+```bash
+herdr agent get <pane>
+herdr agent explain <pane>
+```
+
+`get` must include the current Pi `agent_session`, and `explain` must report
+`screen_detection_skip_reason: full_lifecycle_hook_authority`. While a Pi plan
+action dialog or question is unresolved, the reported state must be `blocked`
+with `waiting for feedback`. A `working_literal` match,
+`default_known_agent_idle_fallback`, a missing session reference, or a single
+Herdr-status warning from Pi means the lifecycle integration failed; inspect
+broker startup and Herdr forwarding rather than adding screen patterns.
 
 Model-invoked code can still spoof Pi's own reported state because it shares the
 broker capability with the extension. That narrow status mutation is inherent

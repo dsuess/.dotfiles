@@ -116,10 +116,11 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
     : sendSocketRequestAttempt(request, timeoutMs);
 }
 
-async function sendRequest(request: unknown, shouldContinue = () => true): Promise<void> {
-  if (!shouldContinue() || await sendRequestAttempt(request, 500)) return;
-  if (!shouldContinue()) return;
-  await sendRequestAttempt(request, 1500);
+async function sendRequest(request: unknown, shouldContinue = () => true): Promise<boolean> {
+  if (!shouldContinue()) return false;
+  if (await sendRequestAttempt(request, 500)) return true;
+  if (!shouldContinue()) return false;
+  return sendRequestAttempt(request, 1500);
 }
 
 type AgentState = "working" | "blocked" | "idle";
@@ -166,20 +167,25 @@ function nextReportSeq(): number {
 }
 
 function readSessionRef(ctx: any): SessionRef {
+  let file: string | undefined;
+  let id: string | undefined;
   try {
-    const file = ctx?.sessionManager?.getSessionFile?.();
-    if (typeof file === "string" && file.startsWith("/")) return { agent_session_path: file };
+    const candidate = ctx?.sessionManager?.getSessionFile?.();
+    if (typeof candidate === "string" && candidate.startsWith("/")) file = candidate;
   } catch {
-    // Fall through to the session ID when the current session file is unavailable.
+    // The session ID below remains a stable fallback while Pi creates its file.
   }
 
   try {
-    const id = ctx?.sessionManager?.getSessionId?.();
-    if (typeof id === "string" && id.length > 0) return { agent_session_id: id };
+    const candidate = ctx?.sessionManager?.getSessionId?.();
+    if (typeof candidate === "string" && candidate.length > 0) id = candidate;
   } catch {
     // Herdr can still receive a canonical state without a session reference.
   }
-  return undefined;
+  return file || id ? {
+    ...(file ? { agent_session_path: file } : {}),
+    ...(id ? { agent_session_id: id } : {}),
+  } : undefined;
 }
 
 function sessionRefKey(sessionRef: SessionRef): string {
@@ -193,13 +199,13 @@ function withSessionRef(params: Record<string, unknown>, sessionRef: SessionRef)
   return sessionRef ? { ...params, ...sessionRef } : params;
 }
 
-function enqueueRequest(generation: number, request: Record<string, unknown>): Promise<void> {
+function enqueueRequest(generation: number, request: Record<string, unknown>): Promise<boolean> {
   const runtime = reporterRuntime();
   const pending = runtime.operationQueue.then(async () => {
-    if (runtime.activeGeneration !== generation) return;
-    await sendRequest(request, () => reporterRuntime().activeGeneration === generation);
+    if (runtime.activeGeneration !== generation) return false;
+    return sendRequest(request, () => reporterRuntime().activeGeneration === generation);
   });
-  runtime.operationQueue = pending.catch(() => {});
+  runtime.operationQueue = pending.then(() => {}, () => {});
   return pending;
 }
 
@@ -258,16 +264,20 @@ export default function (pi) {
   let rootSession = false;
   let generation = 0;
   let sessionRef: SessionRef;
+  let sessionAcknowledged = false;
+  let metadataAcknowledged = false;
+  let deliveryFailureNotified = false;
+  let latestContext: any;
   let queuedState: QueuedState | undefined;
   let drainPromise: Promise<void> | undefined;
   let drainGeneration = 0;
-  const deliveries = new Set<Promise<void>>();
+  const deliveries = new Set<Promise<unknown>>();
 
   function ownsAuthority(owner = generation): boolean {
     return rootSession && owner !== 0 && reporterRuntime().activeGeneration === owner;
   }
 
-  function track(delivery: Promise<void>): Promise<void> {
+  function track<T>(delivery: Promise<T>): Promise<T> {
     deliveries.add(delivery);
     void delivery.then(
       () => deliveries.delete(delivery),
@@ -276,15 +286,37 @@ export default function (pi) {
     return delivery;
   }
 
-  function reportSession(sessionStartSource?: string, owner = generation): Promise<void> {
-    if (!ownsAuthority(owner)) return Promise.resolve();
-    const request = sessionRequest(sessionRef, sessionStartSource);
-    return request ? track(enqueueRequest(owner, request)) : Promise.resolve();
+  function notifyDeliveryFailure(): void {
+    if (deliveryFailureNotified || !ownsAuthority()) return;
+    deliveryFailureNotified = true;
+    latestContext?.ui?.notify?.("Herdr status unavailable; retrying on the next lifecycle event.", "warning");
   }
 
-  function reportDisplayAgent(owner = generation): Promise<void> {
-    if (!ownsAuthority(owner)) return Promise.resolve();
+  function reportSession(sessionStartSource?: string, owner = generation): Promise<boolean> {
+    if (!ownsAuthority(owner)) return Promise.resolve(false);
+    const request = sessionRequest(sessionRef, sessionStartSource);
+    return request ? track(enqueueRequest(owner, request)) : Promise.resolve(false);
+  }
+
+  function reportDisplayAgent(owner = generation): Promise<boolean> {
+    if (!ownsAuthority(owner)) return Promise.resolve(false);
     return track(enqueueRequest(owner, metadataRequest()));
+  }
+
+  async function ensureAuthority(reportCurrentSession: boolean, sessionStartSource?: string, owner = generation): Promise<boolean> {
+    if (reportCurrentSession) sessionAcknowledged = await reportSession(sessionStartSource, owner);
+    if (!ownsAuthority(owner)) return false;
+    if (!sessionAcknowledged) {
+      notifyDeliveryFailure();
+      return false;
+    }
+    if (!metadataAcknowledged) metadataAcknowledged = await reportDisplayAgent(owner);
+    if (!ownsAuthority(owner)) return false;
+    if (!metadataAcknowledged) {
+      notifyDeliveryFailure();
+      return false;
+    }
+    return true;
   }
 
   function refreshSessionRef(ctx: any): boolean {
@@ -338,13 +370,18 @@ export default function (pi) {
     while (queuedState?.generation === owner && ownsAuthority(owner)) {
       const next = queuedState;
       queuedState = undefined;
-      await track(enqueueRequest(owner, stateRequest(next.state, next.message, next.seq, next.sessionRef)));
+      const delivered = await track(enqueueRequest(owner, stateRequest(next.state, next.message, next.seq, next.sessionRef)));
+      if (!delivered && ownsAuthority(owner)) {
+        lastState = undefined;
+        lastMessage = undefined;
+        notifyDeliveryFailure();
+      }
     }
     if (!ownsAuthority(owner) && queuedState?.generation === owner) queuedState = undefined;
   }
 
   function publishState(force = false, owner = generation): void {
-    if (!ownsAuthority(owner)) return;
+    if (!ownsAuthority(owner) || !sessionAcknowledged || !metadataAcknowledged) return;
     const next = desiredState();
     if (!force && next.state === lastState && next.message === lastMessage) return;
     lastState = next.state;
@@ -357,12 +394,16 @@ export default function (pi) {
     generation = ++runtime.nextGeneration;
     runtime.activeGeneration = generation;
     rootSession = true;
+    sessionAcknowledged = false;
+    metadataAcknowledged = false;
+    deliveryFailureNotified = false;
     agentActive = false;
     blockedCount = 0;
     blockedMessage = undefined;
     lastState = undefined;
     lastMessage = undefined;
     queuedState = undefined;
+    latestContext = ctx;
     refreshSessionRef(ctx);
     return generation;
   }
@@ -388,11 +429,7 @@ export default function (pi) {
 
     const owner = activateRootSession(ctx);
     // A current session reference must reach Herdr before any lifecycle state.
-    await reportSession(event?.reason, owner);
-    if (!ownsAuthority(owner)) return;
-    // Keep the canonical `pi` identifier for integration state, but show π in Herdr's sidebar.
-    await reportDisplayAgent(owner);
-    if (!ownsAuthority(owner)) return;
+    if (!await ensureAuthority(true, event?.reason, owner)) return;
     // A reload can replace this extension mid-run without another agent_start.
     agentActive = ctx?.isIdle?.() === false;
     publishState(true, owner);
@@ -401,18 +438,18 @@ export default function (pi) {
   pi.on("agent_start", async (_event, ctx) => {
     if (!ownsAuthority()) return;
 
+    latestContext = ctx;
     refreshSessionRef(ctx);
-    await reportSession();
-    if (!ownsAuthority()) return;
+    if (!await ensureAuthority(true)) return;
     agentActive = true;
     publishState();
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     if (!ownsAuthority() || ctx?.isIdle?.() !== true) return;
+    latestContext = ctx;
     const changedSessionRef = refreshSessionRef(ctx);
-    if (changedSessionRef) await reportSession();
-    if (!ownsAuthority()) return;
+    if (!await ensureAuthority(changedSessionRef || !sessionAcknowledged)) return;
     agentActive = false;
     publishState();
   });
@@ -420,6 +457,9 @@ export default function (pi) {
   pi.on("session_shutdown", async () => {
     const owner = generation;
     rootSession = false;
+    sessionAcknowledged = false;
+    metadataAcknowledged = false;
+    latestContext = undefined;
     queuedState = undefined;
     if (reporterRuntime().activeGeneration === owner) reporterRuntime().activeGeneration = undefined;
     await drainPromise;
