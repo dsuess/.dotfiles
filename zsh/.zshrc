@@ -34,6 +34,16 @@ else
 fi
 source "$ZSH/oh-my-zsh.sh"
 
+# zsh-vi-mode updates its custom dot-repeat state on every redraw. The redraw
+# after accept-line sees the final inserted character again, recording it twice
+# and corrupting a repeated command that ends with a quote. Keep all normal
+# redraw updates, but ignore the accepting widget's final redraw.
+functions -c zvm_update_repeat_commands _dotfiles_zvm_update_repeat_commands
+function zvm_update_repeat_commands() {
+  [[ $LASTWIDGET == accept-line ]] && return
+  _dotfiles_zvm_update_repeat_commands "$@"
+}
+
 # Zsh Options ──────────────────────────────────────────────────────────────────
 setopt inc_append_history
 setopt share_history
