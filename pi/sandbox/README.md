@@ -186,12 +186,18 @@ back to exposing the real Herdr socket.
 For a root TUI session, the reporter sends the current Pi session reference
 before its `idle`, `working`, or `blocked` lifecycle state, and waits for the
 broker acknowledgement. The session path is preferred after Pi creates it; the
-stable Pi session ID covers the short creation race. These reports are
-authoritative to Herdr, so screen detection is skipped. On reload, the retiring
-reporter stops before its replacement can report.
+stable Pi session ID covers the short creation race. The reporter retains the
+latest desired state until it is acknowledged and retries automatically with
+bounded backoff. Terminal `idle` and long-lived `blocked` delivery must not
+depend on a future lifecycle event. These reports are authoritative to Herdr,
+so screen detection is skipped. On reload, the retiring reporter stops before
+its replacement can report.
 
-A listening broker process alone does not prove the integration works. Verify
-an active pane after launch with:
+A listening broker process or one successful canary alone does not prove
+terminal-state reliability. Regression coverage must exhaust both immediate
+attempts for terminal `idle` and durable `blocked`, restore delivery, and verify
+acknowledgement without another lifecycle event. Verify active panes after
+launch with:
 
 ```bash
 herdr agent get <pane>
@@ -204,9 +210,11 @@ herdr agent explain <pane>
 source; wrapping generic `ctx.ui` dialogs is fallback coverage for extensions
 without a semantic wait event. While a Pi plan action dialog or question is
 unresolved, the reported state must be `blocked` with `waiting for feedback`.
-A `working_literal` match, `default_known_agent_idle_fallback`, a missing
-session reference, or a single Herdr-status warning from Pi means the lifecycle
-integration failed; inspect broker startup and Herdr forwarding rather than
+A `working_literal` match, `default_known_agent_idle_fallback`, or a missing
+session reference means lifecycle authority failed. A Herdr-status warning
+marks an active delivery outage; the reporter retries automatically and clears
+the outage episode after acknowledgement. If state remains stale beyond the
+maximum retry backoff, inspect broker startup and Herdr forwarding rather than
 adding screen patterns.
 
 Model-invoked code can still spoof Pi's own reported state because it shares the

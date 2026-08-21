@@ -126,13 +126,15 @@ async function sendRequest(request: unknown, shouldContinue = () => true): Promi
 type AgentState = "working" | "blocked" | "idle";
 type SessionRef = Record<string, unknown> | undefined;
 
-type QueuedState = {
+type DesiredState = {
   generation: number;
   state: AgentState;
   message?: string;
   seq: number;
   sessionRef: SessionRef;
 };
+
+const RECONCILE_DELAYS_MS = [100, 250, 500, 1000, 2000] as const;
 
 type ReporterRuntime = {
   activeGeneration: number | undefined;
@@ -199,11 +201,16 @@ function withSessionRef(params: Record<string, unknown>, sessionRef: SessionRef)
   return sessionRef ? { ...params, ...sessionRef } : params;
 }
 
-function enqueueRequest(generation: number, request: Record<string, unknown>): Promise<boolean> {
+function enqueueRequest(
+  generation: number,
+  request: Record<string, unknown>,
+  isCurrent = () => true,
+): Promise<boolean> {
   const runtime = reporterRuntime();
+  const shouldContinue = () => reporterRuntime().activeGeneration === generation && isCurrent();
   const pending = runtime.operationQueue.then(async () => {
-    if (runtime.activeGeneration !== generation) return false;
-    return sendRequest(request, () => reporterRuntime().activeGeneration === generation);
+    if (!shouldContinue()) return false;
+    return sendRequest(request, shouldContinue);
   });
   runtime.operationQueue = pending.then(() => {}, () => {});
   return pending;
@@ -259,18 +266,21 @@ export default function (pi) {
   let agentActive = false;
   let blockedCount = 0;
   let blockedMessage: string | undefined;
-  let lastState: AgentState | undefined;
-  let lastMessage: string | undefined;
   let rootSession = false;
   let generation = 0;
   let sessionRef: SessionRef;
+  let pendingSessionStartSource: string | undefined;
   let sessionAcknowledged = false;
   let metadataAcknowledged = false;
+  let desired: DesiredState | undefined;
+  let acknowledged: DesiredState | undefined;
   let deliveryFailureNotified = false;
   let latestContext: any;
-  let queuedState: QueuedState | undefined;
-  let drainPromise: Promise<void> | undefined;
-  let drainGeneration = 0;
+  let reconcilePromise: Promise<void> | undefined;
+  let reconcileGeneration = 0;
+  let reconciliationRequested = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryIndex = 0;
   const deliveries = new Set<Promise<unknown>>();
 
   function ownsAuthority(owner = generation): boolean {
@@ -286,47 +296,32 @@ export default function (pi) {
     return delivery;
   }
 
-  function notifyDeliveryFailure(): void {
-    if (deliveryFailureNotified || !ownsAuthority()) return;
+  function notifyDeliveryFailure(owner: number): void {
+    if (deliveryFailureNotified || !ownsAuthority(owner)) return;
     deliveryFailureNotified = true;
-    latestContext?.ui?.notify?.("Herdr status unavailable; retrying on the next lifecycle event.", "warning");
+    latestContext?.ui?.notify?.("Herdr status unavailable; retrying automatically.", "warning");
   }
 
-  function reportSession(sessionStartSource?: string, owner = generation): Promise<boolean> {
-    if (!ownsAuthority(owner)) return Promise.resolve(false);
-    const request = sessionRequest(sessionRef, sessionStartSource);
-    return request ? track(enqueueRequest(owner, request)) : Promise.resolve(false);
+  function clearRetryTimer(): void {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
   }
 
-  function reportDisplayAgent(owner = generation): Promise<boolean> {
-    if (!ownsAuthority(owner)) return Promise.resolve(false);
-    return track(enqueueRequest(owner, metadataRequest()));
-  }
-
-  async function ensureAuthority(reportCurrentSession: boolean, sessionStartSource?: string, owner = generation): Promise<boolean> {
-    if (reportCurrentSession) sessionAcknowledged = await reportSession(sessionStartSource, owner);
-    if (!ownsAuthority(owner)) return false;
-    if (!sessionAcknowledged) {
-      notifyDeliveryFailure();
-      return false;
-    }
-    if (!metadataAcknowledged) metadataAcknowledged = await reportDisplayAgent(owner);
-    if (!ownsAuthority(owner)) return false;
-    if (!metadataAcknowledged) {
-      notifyDeliveryFailure();
-      return false;
-    }
-    return true;
+  function clearDeliveryFailure(): void {
+    clearRetryTimer();
+    retryIndex = 0;
+    deliveryFailureNotified = false;
   }
 
   function refreshSessionRef(ctx: any): boolean {
     const next = readSessionRef(ctx);
     const changed = sessionRefKey(next) !== sessionRefKey(sessionRef);
     sessionRef = next;
+    if (changed) sessionAcknowledged = false;
     return changed;
   }
 
-  function desiredState() {
+  function effectiveState() {
     if (blockedCount > 0) {
       return { state: "blocked" as const, message: blockedMessage };
     }
@@ -336,73 +331,155 @@ export default function (pi) {
     return { state: "idle" as const, message: undefined };
   }
 
-  function queueState(state: AgentState, message: string | undefined, owner = generation): void {
+  function updateDesired(force = false, owner = generation): void {
     if (!ownsAuthority(owner)) return;
-    queuedState = {
+    const next = effectiveState();
+    const currentSessionKey = sessionRefKey(sessionRef);
+    if (
+      !force
+      && desired?.generation === owner
+      && desired.state === next.state
+      && desired.message === next.message
+      && sessionRefKey(desired.sessionRef) === currentSessionKey
+    ) return;
+    desired = {
       generation: owner,
-      state,
-      message,
+      state: next.state,
+      message: next.message,
       seq: nextReportSeq(),
       sessionRef: sessionRef ? { ...sessionRef } : undefined,
     };
-    if (!drainPromise || drainGeneration !== owner) {
-      const drain = drainStateQueue(owner);
-      drainPromise = drain;
-      drainGeneration = owner;
-      void drain.then(
-        () => {
-          if (drainPromise === drain) {
-            drainPromise = undefined;
-            drainGeneration = 0;
-          }
-        },
-        () => {
-          if (drainPromise === drain) {
-            drainPromise = undefined;
-            drainGeneration = 0;
-          }
-        },
-      );
+  }
+
+  function reportSession(owner: number): Promise<boolean> {
+    if (!ownsAuthority(owner)) return Promise.resolve(false);
+    const expectedSessionKey = sessionRefKey(sessionRef);
+    const request = sessionRequest(sessionRef ? { ...sessionRef } : undefined, pendingSessionStartSource);
+    return request
+      ? track(enqueueRequest(owner, request, () => sessionRefKey(sessionRef) === expectedSessionKey))
+      : Promise.resolve(false);
+  }
+
+  function reportDisplayAgent(owner: number): Promise<boolean> {
+    if (!ownsAuthority(owner)) return Promise.resolve(false);
+    return track(enqueueRequest(owner, metadataRequest()));
+  }
+
+  function scheduleRetry(owner: number): void {
+    if (retryTimer || !ownsAuthority(owner)) return;
+    const delay = RECONCILE_DELAYS_MS[Math.min(retryIndex, RECONCILE_DELAYS_MS.length - 1)];
+    retryIndex += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (ownsAuthority(owner)) void startReconciliation(owner, false);
+    }, delay);
+    retryTimer.unref?.();
+  }
+
+  async function reconcile(owner: number): Promise<void> {
+    while (ownsAuthority(owner)) {
+      const expectedSessionKey = sessionRefKey(sessionRef);
+      if (!sessionAcknowledged) {
+        const delivered = await reportSession(owner);
+        if (!ownsAuthority(owner)) return;
+        if (sessionRefKey(sessionRef) !== expectedSessionKey) continue;
+        if (!delivered) {
+          notifyDeliveryFailure(owner);
+          scheduleRetry(owner);
+          return;
+        }
+        sessionAcknowledged = true;
+        pendingSessionStartSource = undefined;
+      }
+
+      if (!metadataAcknowledged) {
+        const delivered = await reportDisplayAgent(owner);
+        if (!ownsAuthority(owner)) return;
+        if (!delivered) {
+          notifyDeliveryFailure(owner);
+          scheduleRetry(owner);
+          return;
+        }
+        metadataAcknowledged = true;
+      }
+
+      // A lifecycle event can invalidate session authority while another
+      // authority request is in flight. Re-check ordering before state.
+      if (!sessionAcknowledged || !metadataAcknowledged) continue;
+
+      const next = desired;
+      if (!next || next.generation !== owner) return;
+      if (acknowledged?.generation === owner && acknowledged.seq === next.seq) {
+        clearDeliveryFailure();
+        return;
+      }
+
+      const delivered = await track(enqueueRequest(
+        owner,
+        stateRequest(next.state, next.message, next.seq, next.sessionRef),
+        () => desired === next && sessionRefKey(sessionRef) === sessionRefKey(next.sessionRef),
+      ));
+      if (!ownsAuthority(owner)) return;
+      if (desired !== next || sessionRefKey(sessionRef) !== sessionRefKey(next.sessionRef)) continue;
+      if (!sessionAcknowledged || !metadataAcknowledged) continue;
+      if (!delivered) {
+        notifyDeliveryFailure(owner);
+        scheduleRetry(owner);
+        return;
+      }
+
+      acknowledged = next;
+      if (desired !== next) continue;
+      clearDeliveryFailure();
+      return;
     }
   }
 
-  async function drainStateQueue(owner: number): Promise<void> {
-    while (queuedState?.generation === owner && ownsAuthority(owner)) {
-      const next = queuedState;
-      queuedState = undefined;
-      const delivered = await track(enqueueRequest(owner, stateRequest(next.state, next.message, next.seq, next.sessionRef)));
-      if (!delivered && ownsAuthority(owner)) {
-        lastState = undefined;
-        lastMessage = undefined;
-        notifyDeliveryFailure();
-      }
+  function startReconciliation(owner = generation, immediate = true): Promise<void> {
+    if (!ownsAuthority(owner)) return Promise.resolve();
+    if (immediate) clearRetryTimer();
+    if (reconcilePromise && reconcileGeneration === owner) {
+      reconciliationRequested = true;
+      return reconcilePromise;
     }
-    if (!ownsAuthority(owner) && queuedState?.generation === owner) queuedState = undefined;
+    reconciliationRequested = false;
+    const pending = reconcile(owner);
+    reconcilePromise = pending;
+    reconcileGeneration = owner;
+    void pending.finally(() => {
+      if (reconcilePromise !== pending) return;
+      reconcilePromise = undefined;
+      reconcileGeneration = 0;
+      if (reconciliationRequested && ownsAuthority(owner)) {
+        reconciliationRequested = false;
+        void startReconciliation(owner);
+      }
+    });
+    return pending;
   }
 
   function publishState(force = false, owner = generation): void {
-    if (!ownsAuthority(owner) || !sessionAcknowledged || !metadataAcknowledged) return;
-    const next = desiredState();
-    if (!force && next.state === lastState && next.message === lastMessage) return;
-    lastState = next.state;
-    lastMessage = next.message;
-    queueState(next.state, next.message, owner);
+    updateDesired(force, owner);
+    void startReconciliation(owner);
   }
 
-  function activateRootSession(ctx: any): number {
+  function activateRootSession(ctx: any, sessionStartSource?: string): number {
+    clearRetryTimer();
     const runtime = reporterRuntime();
     generation = ++runtime.nextGeneration;
     runtime.activeGeneration = generation;
     rootSession = true;
     sessionAcknowledged = false;
     metadataAcknowledged = false;
+    pendingSessionStartSource = sessionStartSource;
+    desired = undefined;
+    acknowledged = undefined;
+    reconciliationRequested = false;
     deliveryFailureNotified = false;
+    retryIndex = 0;
     agentActive = false;
     blockedCount = 0;
     blockedMessage = undefined;
-    lastState = undefined;
-    lastMessage = undefined;
-    queuedState = undefined;
     latestContext = ctx;
     refreshSessionRef(ctx);
     return generation;
@@ -427,42 +504,50 @@ export default function (pi) {
     // and RPC still reports hasUI=true, so mode is the reliable gate.
     if (ctx?.mode !== "tui") return;
 
-    const owner = activateRootSession(ctx);
-    // A current session reference must reach Herdr before any lifecycle state.
-    if (!await ensureAuthority(true, event?.reason, owner)) return;
+    const owner = activateRootSession(ctx, event?.reason);
     // A reload can replace this extension mid-run without another agent_start.
     agentActive = ctx?.isIdle?.() === false;
-    publishState(true, owner);
+    updateDesired(true, owner);
+    // Session and metadata authority must be acknowledged before lifecycle state.
+    void startReconciliation(owner);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
     if (!ownsAuthority()) return;
 
+    const owner = generation;
     latestContext = ctx;
     refreshSessionRef(ctx);
-    if (!await ensureAuthority(true)) return;
+    // Preserve the existing session-before-turn ordering even when the
+    // canonical reference has not changed.
+    sessionAcknowledged = false;
     agentActive = true;
-    publishState();
+    updateDesired(false, owner);
+    void startReconciliation(owner);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     if (!ownsAuthority() || ctx?.isIdle?.() !== true) return;
+    const owner = generation;
     latestContext = ctx;
-    const changedSessionRef = refreshSessionRef(ctx);
-    if (!await ensureAuthority(changedSessionRef || !sessionAcknowledged)) return;
+    refreshSessionRef(ctx);
     agentActive = false;
-    publishState();
+    updateDesired(false, owner);
+    void startReconciliation(owner);
   });
 
   pi.on("session_shutdown", async () => {
     const owner = generation;
     rootSession = false;
+    clearRetryTimer();
     sessionAcknowledged = false;
     metadataAcknowledged = false;
+    desired = undefined;
+    acknowledged = undefined;
+    reconciliationRequested = false;
     latestContext = undefined;
-    queuedState = undefined;
     if (reporterRuntime().activeGeneration === owner) reporterRuntime().activeGeneration = undefined;
-    await drainPromise;
+    await reconcilePromise;
     await Promise.allSettled([...deliveries]);
   });
 }

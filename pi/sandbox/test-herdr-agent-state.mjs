@@ -386,6 +386,352 @@ test("broker delivery retries a failed acknowledgement before advancing the stat
 	}
 });
 
+test("terminal idle reconciles after both immediate acknowledgements fail without another lifecycle event", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectedIdle = 0;
+	let rejectedRecoveredWorking = 0;
+	let rejectRecoveredWorking = false;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			const rejectIdle = parsed.request.method === "pane.report_agent"
+				&& parsed.request.params.state === "idle"
+				&& rejectedIdle++ < 2;
+			const rejectWorking = rejectRecoveredWorking
+				&& parsed.request.method === "pane.report_agent"
+				&& parsed.request.params.state === "working"
+				&& rejectedRecoveredWorking++ < 2;
+			const reject = rejectIdle || rejectWorking;
+			response.writeHead(reject ? 503 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		let idle = false;
+		const notifications = [];
+		const ctx = tuiContext({
+			isIdle: () => idle,
+			ui: { notify: (message, level) => notifications.push({ message, level }) },
+		});
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(() => requestStates(requests).includes("working"), "startup working state");
+
+		idle = true;
+		await harness.emitLifecycle("agent_settled", {}, ctx);
+		await waitFor(
+			() => requestStates(requests).filter((state) => state === "idle").length >= 3,
+			"idle reconciliation without another lifecycle event",
+		);
+		assert.deepEqual(requestStates(requests).slice(-3), ["idle", "idle", "idle"]);
+		assert.deepEqual(notifications, [{
+			message: "Herdr status unavailable; retrying automatically.",
+			level: "warning",
+		}]);
+
+		rejectRecoveredWorking = true;
+		idle = false;
+		await harness.emitLifecycle("agent_start", {}, ctx);
+		await waitFor(
+			() => requestStates(requests).filter((state) => state === "working").length >= 4,
+			"a later outage episode to reconcile",
+		);
+		assert.equal(notifications.length, 2, "a recovered outage does not suppress a later warning");
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("long-lived blocked state reconciles after both immediate acknowledgements fail", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectedBlocked = 0;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			const reject = parsed.request.method === "pane.report_agent"
+				&& parsed.request.params.state === "blocked"
+				&& rejectedBlocked++ < 2;
+			response.writeHead(reject ? 502 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const ctx = tuiContext();
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(() => requestStates(requests).includes("idle"), "startup idle state");
+
+		harness.emitEvent("herdr:blocked", { active: true, label: "Waiting for feedback" });
+		await waitFor(
+			() => requestStates(requests).filter((state) => state === "blocked").length >= 3,
+			"blocked reconciliation without feedback activity",
+		);
+		assert.deepEqual(requestStates(requests).slice(-3), ["blocked", "blocked", "blocked"]);
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("startup authority reconciles before terminal state without another lifecycle event", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectedSessions = 0;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			const reject = parsed.request.method === "pane.report_agent_session" && rejectedSessions++ < 2;
+			response.writeHead(reject ? 503 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const ctx = tuiContext();
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(
+			() => requestMethods(requests).filter((method) => method === "pane.report_agent_session").length >= 3
+				&& requestStates(requests).includes("idle"),
+			"session authority and terminal state reconciliation",
+		);
+		assert.deepEqual(requestMethods(requests).slice(-3), [
+			"pane.report_agent_session",
+			"pane.report_metadata",
+			"pane.report_agent",
+		]);
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("a newer terminal state supersedes a failed blocked retry", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectBlocked = true;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			const reject = rejectBlocked
+				&& parsed.request.method === "pane.report_agent"
+				&& parsed.request.params.state === "blocked";
+			response.writeHead(reject ? 503 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		let idle = false;
+		const ctx = tuiContext({ isIdle: () => idle });
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(() => requestStates(requests).includes("working"), "startup working state");
+
+		harness.emitEvent("herdr:blocked", { active: true, label: "Waiting for feedback" });
+		await waitFor(
+			() => requestStates(requests).filter((state) => state === "blocked").length >= 2,
+			"both immediate blocked attempts",
+		);
+		idle = true;
+		await harness.emitLifecycle("agent_settled", {}, ctx);
+		rejectBlocked = false;
+		const supersessionIndex = requests.length;
+		harness.emitEvent("herdr:blocked", { active: false });
+		await waitFor(() => requestStates(requests.slice(supersessionIndex)).includes("idle"), "superseding idle state");
+		const supersedingIdleIndex = requests.findIndex((entry, index) => index >= supersessionIndex
+			&& entry.body.request.method === "pane.report_agent"
+			&& entry.body.request.params.state === "idle");
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.deepEqual(requestStates(requests.slice(supersedingIdleIndex)), ["idle"]);
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("shutdown cancels automatic reconciliation after exhausted state attempts", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectStates = true;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			response.writeHead(rejectStates && parsed.request.method === "pane.report_agent" ? 503 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const ctx = tuiContext();
+		const harness = createHarness();
+		const extension = await loadExtension();
+		extension(harness.pi);
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(() => requestStates(requests).length >= 2, "both immediate state attempts");
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+		rejectStates = false;
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.equal(requestStates(requests).length, 2, "the retired generation cannot retry after shutdown");
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
+test("replacement generation cancels automatic reconciliation from the retired reporter", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	let rejectSessionOneStates = true;
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			const parsed = JSON.parse(body);
+			requests.push({ body: parsed });
+			const reject = rejectSessionOneStates
+				&& parsed.request.method === "pane.report_agent"
+				&& parsed.request.params.agent_session_id === "session-1";
+			response.writeHead(reject ? 503 : 200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const firstHarness = createHarness();
+		const firstExtension = await loadExtension();
+		firstExtension(firstHarness.pi);
+		const firstContext = composedTuiContext("session-1", () => true);
+		await firstHarness.emitLifecycle("session_start", { reason: "startup" }, firstContext);
+		await waitFor(
+			() => requests.filter(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-1").length >= 2,
+			"both retired reporter state attempts",
+		);
+
+		rejectSessionOneStates = false;
+		const secondHarness = createHarness();
+		const secondExtension = await loadExtension();
+		secondExtension(secondHarness.pi);
+		const secondContext = composedTuiContext("session-2", () => true);
+		await secondHarness.emitLifecycle("session_start", { reason: "reload" }, secondContext);
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-2"),
+			"replacement reporter state",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.equal(
+			requests.filter(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "session-1").length,
+			2,
+			"the retired generation cannot reconcile after replacement",
+		);
+		await secondHarness.emitLifecycle("session_shutdown", {}, secondContext);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
 test("unacknowledged startup session blocks lifecycle state and reports a non-secret diagnostic", async () => {
 	const restore = preserveHerdrEnvironment();
 	const requests = [];
@@ -423,7 +769,7 @@ test("unacknowledged startup session blocks lifecycle state and reports a non-se
 		assert.deepEqual(requestMethods(requests), ["pane.report_agent_session", "pane.report_agent_session"]);
 		assert.equal(requests[0].body.request.params.agent_session_id, "session-7", "a session ID accompanies a not-yet-canonical path");
 		assert.deepEqual(notifications, [{
-			message: "Herdr status unavailable; retrying on the next lifecycle event.",
+			message: "Herdr status unavailable; retrying automatically.",
 			level: "warning",
 		}]);
 
