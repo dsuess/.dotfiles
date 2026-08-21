@@ -33,6 +33,7 @@ mkdir -p \
     "$TEST_HOME/.pi/agent/sessions" \
     "$REAL_BIN" \
     "$WORKSPACE_PARENT"
+printf '{}\n' >"$TEST_HOME/.pi/agent/settings.json"
 ln -s "$HERE/node_modules" "$SANDBOX_HOME/node_modules"
 cp "$HERE/settings.json" "$SANDBOX_HOME/settings.json"
 cp "$HERE/unrestricted-network.mjs" "$SANDBOX_HOME/unrestricted-network.mjs"
@@ -41,6 +42,11 @@ cp "$HERE/herdr-status-broker.mjs" "$SANDBOX_HOME/herdr-status-broker.mjs"
 cat >"$REAL_BIN/pi" <<'EOF'
 #!/bin/bash
 set -euo pipefail
+
+if [[ "$*" == *"--list-models"* ]]; then
+    printf 'Provider Model\n'
+    exit 0
+fi
 
 mode="$1"
 launch="$2"
@@ -52,6 +58,8 @@ common="${6-}"
 [[ "$PWD" == "$launch" ]]
 printf 'root write\n' >"$root/root-write"
 /bin/bash -c 'printf "nested child write\n" >"$1"' _ "$root/nested-child-write"
+mkdir -p "$root/config-source"
+printf 'tracked startup source\n' >"$root/config-source/.zshrc"
 
 expect_blocked() {
     local description="$1"
@@ -66,7 +74,8 @@ expect_blocked "parent read" /bin/cat "$parent_file"
 expect_blocked "parent write" /bin/bash -c 'printf denied >"$1"' _ "$parent_file"
 expect_blocked "sibling read" /bin/cat "$sibling/secret"
 expect_blocked "sibling write" /bin/bash -c 'printf denied >"$1"' _ "$sibling/denied"
-expect_blocked "shell startup write" /bin/bash -c 'printf denied >>"$1"' _ "$root/.bashrc"
+expect_blocked "Bash startup write" /bin/bash -c 'printf denied >>"$1"' _ "$root/.bashrc"
+expect_blocked "zsh startup write" /bin/bash -c 'printf denied >>"$1"' _ "$root/.zshrc"
 expect_blocked "editor config write" /bin/bash -c 'printf denied >>"$1"' _ "$root/.vscode/settings.json"
 expect_blocked "agent command write" /bin/bash -c 'printf denied >>"$1"' _ "$root/.claude/commands/test.md"
 
@@ -87,24 +96,29 @@ chmod +x "$REAL_BIN/pi"
 
 readonly TOOL_PATH="$(dirname "$HOST_NODE"):$(dirname "$HOST_GIT"):$(dirname "$HOST_RG"):$(dirname "$HOST_MKTEMP"):/usr/bin:/bin"
 run_sandboxed_fixture() {
-    HOME="$TEST_HOME" \
-    PATH="$(dirname "$WRAPPER"):$REAL_BIN:$TOOL_PATH" \
-    HERDR_ENV= \
-    HERDR_SOCKET_PATH= \
-    HERDR_PANE_ID= \
-    "$WRAPPER" "$@"
+    local launch="$2"
+    (
+        cd "$launch"
+        HOME="$TEST_HOME" \
+        PATH="$(dirname "$WRAPPER"):$REAL_BIN:$TOOL_PATH" \
+        HERDR_ENV= \
+        HERDR_SOCKET_PATH= \
+        HERDR_PANE_ID= \
+        "$WRAPPER" "$@"
+    )
 }
 
 prepare_protected_paths() {
     local root="$1"
     mkdir -p "$root/.vscode" "$root/.claude/commands"
     printf 'startup\n' >"$root/.bashrc"
+    printf 'startup\n' >"$root/.zshrc"
     printf '{}\n' >"$root/.vscode/settings.json"
     printf 'command\n' >"$root/.claude/commands/test.md"
 }
 
-# Normal repository: root and inherited child writes succeed; parent, sibling,
-# Git execution config, editor config, and agent config writes remain blocked.
+# Normal repository: root, inherited child, and nested dotfile-source writes
+# succeed; parent, sibling, and root execution-config writes remain blocked.
 NORMAL_ROOT="$WORKSPACE_PARENT/normal repository"
 NORMAL_SIBLING="$WORKSPACE_PARENT/normal sibling"
 PARENT_FILE="$WORKSPACE_PARENT/parent-secret"
@@ -118,6 +132,7 @@ NORMAL_LAUNCH="$(canonical_dir "$NORMAL_ROOT/nested/deep")"
 NORMAL_SIBLING="$(canonical_dir "$NORMAL_SIBLING")"
 run_sandboxed_fixture normal "$NORMAL_LAUNCH" "$NORMAL_ROOT" "$NORMAL_SIBLING" "$PARENT_FILE"
 [[ -f "$NORMAL_ROOT/root-write" && -f "$NORMAL_ROOT/nested-child-write" ]]
+[[ "$(<"$NORMAL_ROOT/config-source/.zshrc")" == "tracked startup source" ]]
 [[ ! -e "$NORMAL_SIBLING/denied" ]]
 
 # Bare-backed worktree: Git can update objects, refs, logs, and worktree state,
@@ -149,6 +164,7 @@ new_head="$("$HOST_GIT" -C "$BARE_ROOT" rev-parse HEAD)"
 [[ "$output" == *"commit=$new_head"* ]]
 "$HOST_GIT" --git-dir="$BARE_COMMON" show-ref --verify --quiet refs/heads/sandbox-created-branch
 [[ -f "$BARE_ROOT/root-write" && -f "$BARE_ROOT/nested-child-write" ]]
+[[ "$(<"$BARE_ROOT/config-source/.zshrc")" == "tracked startup source" ]]
 [[ ! -e "$BARE_SIBLING/denied" ]]
 
 echo "repository containment tests passed"

@@ -120,10 +120,13 @@ use `com.apple.trustd.agent` for certificate verification. Credential filtering
 and the Apple Events deny remain unchanged.
 
 Filesystem grants remain subject to higher-priority write denies. At a
-working-tree root, Git hooks and configuration plus the runtime's protected
-shell, agent, and editor execution configuration remain non-writable. In a bare
-common directory, root-level `hooks/` and `config` remain non-writable while Git
-data and worktree administration stay writable.
+working-tree root, Git hooks and configuration plus protected root-level shell,
+agent, and editor execution configuration remain non-writable. The launcher
+suppresses SRT's redundant recursive dangerous-filename scan only for a
+Git-validated worktree, allowing tracked sources such as `zsh/.zshrc` while the
+root `.zshrc` stays denied. In a bare common directory, root-level `hooks/` and
+`config` remain non-writable while Git data and worktree administration stay
+writable.
 
 Repository discovery first excludes the untrusted candidate worktree and its
 candidate metadata from bootstrap executable lookup. It then uses a host Git

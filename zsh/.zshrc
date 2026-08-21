@@ -34,16 +34,6 @@ else
 fi
 source "$ZSH/oh-my-zsh.sh"
 
-# zsh-vi-mode updates its custom dot-repeat state on every redraw. The redraw
-# after accept-line sees the final inserted character again, recording it twice
-# and corrupting a repeated command that ends with a quote. Keep all normal
-# redraw updates, but ignore the accepting widget's final redraw.
-functions -c zvm_update_repeat_commands _dotfiles_zvm_update_repeat_commands
-function zvm_update_repeat_commands() {
-  [[ $LASTWIDGET == accept-line ]] && return
-  _dotfiles_zvm_update_repeat_commands "$@"
-}
-
 # Zsh Options ──────────────────────────────────────────────────────────────────
 setopt inc_append_history
 setopt share_history
@@ -74,18 +64,38 @@ if command -v direnv &>/dev/null; then
     eval "$(direnv hook zsh)"
 fi
 
+# Use zsh's native last-argument widget for both forms of Esc-. that
+# zsh-vi-mode can produce: one viins Meta sequence, or `.` after Esc has
+# already entered normal mode. In normal mode, resume insertion after the
+# cursor before adding the argument.
+function _dotfiles_insert_last_word() {
+  if [[ $ZVM_MODE == $ZVM_MODE_NORMAL ]]; then
+    (( CURSOR < $#BUFFER )) && (( CURSOR++ ))
+    zvm_select_vi_mode $ZVM_MODE_INSERT
+  fi
+  zle .insert-last-word
+}
+zle -N _dotfiles_insert_last_word
+
 # zsh-vi-mode overwrites the viins keymap when it initializes on the first
 # precmd (after this file has already sourced fzf's key bindings below),
-# which clobbers fzf's Ctrl+R binding in insert mode. Defining zvm_after_init
-# makes zsh-vi-mode re-run this once its own init finishes, so Ctrl+R keeps
-# working in insert mode too, not just normal mode.
+# which clobbers fzf's Ctrl+R binding in insert mode. Restore both bindings
+# once its own initialization finishes.
 function zvm_after_init() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
     source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
   else
     [[ -f ~/.fzf.zsh ]] && source ~/.fzf.zsh
   fi
+  bindkey -M viins '\e.' _dotfiles_insert_last_word
 }
+
+# Normal-mode bindings are installed lazily on the first Esc, after the main
+# initialization hook, so replace `.` only once that delayed setup is complete.
+function zvm_after_lazy_keybindings() {
+  bindkey -M vicmd '.' _dotfiles_insert_last_word
+}
+
 zvm_after_init
 
 # Ctrl+O: fzf file picker rooted at $HOME (sibling to Ctrl+T, which uses $PWD).

@@ -5,6 +5,7 @@ import {
   SandboxManager,
   SandboxRuntimeConfigSchema,
 } from "@anthropic-ai/sandbox-runtime";
+import { DANGEROUS_FILES } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 function usage() {
   console.error("Usage: unrestricted-network.mjs --settings <path> -- <command> [args...]");
@@ -23,6 +24,15 @@ const commandArgs = args.slice(3);
 let child;
 
 try {
+  // SRT normally blocks dangerous filenames recursively, even inside an
+  // explicitly writable worktree. The wrapper independently adds exact denies
+  // for those files at the validated root, so suppress only the redundant
+  // subtree scan and allow tracked dotfile sources such as zsh/.zshrc.
+  if (process.env.PI_SANDBOX_VALIDATED_WORKTREE === "1") {
+    DANGEROUS_FILES.splice(0);
+  }
+  delete process.env.PI_SANDBOX_VALIDATED_WORKTREE;
+
   const rawConfig = JSON.parse(await readFile(settingsPath, "utf8"));
   const config = SandboxRuntimeConfigSchema.parse(rawConfig);
 
