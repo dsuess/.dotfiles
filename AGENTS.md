@@ -141,15 +141,11 @@ Key files:
 3. Run `./install.sh config` (deploys the new file into all vaults as real files)
 4. Reload Obsidian (command palette → "Reload app without saving") to pick up changes
 
-## Pi Extension Invariants
+## AGENTS.md Scope
 
-- `git-tree-checkpoints`: **Keep current code** must remain the first/default restore-dialog choice. Restoring checkpointed code is always an explicit opt-in.
-- `subagent`: Keep tool identity, model, role, and task on the tool-call row. Result headers show only icon-bearing status so adjacent call/result rows do not duplicate metadata.
-- Cross-extension status integrations must consume the producer's explicit lifecycle events and include a production-shaped composed test. Mutable UI monkey-patching and isolated mocks are fallback coverage, not sufficient acceptance evidence.
-- When diagnosing launcher environment behavior, distinguish the invoking shell environment from the environment observed inside the wrapper. Inspect or reconstruct the login-shell setup before concluding which host executable or configuration the launcher selected.
-- `bin/pi`: Keep Ketch on its upstream direct-spawn path. Do not add a Ketch broker or network/domain allowlist; sandboxed Pi intentionally has unrestricted host network and Unix-socket traffic.
-
-- Pi editor wrappers must match shortcuts with `matchesKey(data, Key.ctrl(...))`, not raw control bytes, so Kitty CSI-u input is intercepted consistently.
+- This file contains repository-wide development instructions and cross-package conventions.
+- `pi/AGENTS.md` contains only repository-specific instructions for the Pi configuration, sandbox, launcher, and extensions; do not duplicate general Pi development guidance supplied by the agent harness.
+- `pi/agent/AGENTS.md` is Pi's runtime system prompt. Do not modify it unless the user explicitly requests a system-prompt change. Do not put repository development instructions there.
 ## Machine-Specific Overrides
 
 Files intentionally not tracked in git, sourced by the stowed configs:
