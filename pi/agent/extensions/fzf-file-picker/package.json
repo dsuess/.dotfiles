@@ -1,0 +1,10 @@
+{
+  "name": "pi-fzf-file-picker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke-load.mjs",
+    "check": "npm test && npm run smoke"
+  }
+}

@@ -148,6 +148,7 @@ Key files:
 - Cross-extension status integrations must consume the producer's explicit lifecycle events and include a production-shaped composed test. Mutable UI monkey-patching and isolated mocks are fallback coverage, not sufficient acceptance evidence.
 - `bin/pi`: Keep Ketch on its upstream direct-spawn path. Do not add a Ketch broker or network/domain allowlist; sandboxed Pi intentionally has unrestricted host network and Unix-socket traffic.
 
+- Pi editor wrappers must match shortcuts with `matchesKey(data, Key.ctrl(...))`, not raw control bytes, so Kitty CSI-u input is intercepted consistently.
 ## Machine-Specific Overrides
 
 Files intentionally not tracked in git, sourced by the stowed configs:

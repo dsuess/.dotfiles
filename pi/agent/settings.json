@@ -22,6 +22,7 @@
   "packages": [
     "extensions/statusbar.ts",
     "npm:pi-vim",
+    "extensions/fzf-file-picker",
     "npm:pi-ketch",
     "npm:pi-context-usage",
     "npm:pi-rtk-optimizer",
