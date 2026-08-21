@@ -14,6 +14,9 @@ readonly TEST_HOME="$TEST_ROOT/home"
 readonly REAL_BIN="$TEST_ROOT/real-bin"
 readonly PREREQ_BIN="$TEST_ROOT/prereq-bin"
 readonly SHIM_BIN="$TEST_ROOT/workspace"
+readonly FIRST_SAFE_BIN="$TEST_ROOT/first-safe-bin"
+readonly SECOND_SAFE_BIN="$TEST_ROOT/second-safe-bin"
+readonly RELATIVE_BIN="$SHIM_BIN/relative-bin"
 readonly WRAPPER_BIN="$(dirname "$WRAPPER")"
 readonly TOOL_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -30,6 +33,9 @@ mkdir -p \
     "$REAL_BIN" \
     "$PREREQ_BIN" \
     "$SHIM_BIN" \
+    "$FIRST_SAFE_BIN" \
+    "$SECOND_SAFE_BIN" \
+    "$RELATIVE_BIN" \
     "$TEST_ROOT/tmp"
 printf '{}\n' >"$TEST_HOME/.pi/agent/settings.json"
 cat >"$TEST_HOME/.pi/sandbox/settings.json" <<'EOF'
@@ -86,6 +92,29 @@ printf 'herdr_socket=%s\n' "${HERDR_SOCKET_PATH-unset}"
 printf 'herdr_pane=%s\n' "${HERDR_PANE_ID-unset}"
 printf 'herdr_status_port=%s\n' "${HERDR_PI_STATUS_PORT-unset}"
 printf 'herdr_status_token=%s\n' "${HERDR_PI_STATUS_TOKEN-unset}"
+if [[ "$*" == *"--path-order-probe"* ]]; then
+    printf 'git_resolution=%s\n' "$(command -v git || printf absent)"
+    printf 'git_marker=%s\n' "$(git)"
+    printf 'pi_resolution=%s\n' "$(command -v pi || printf absent)"
+fi
+if [[ "$*" == *"--relative-path-probe"* ]]; then
+    printf 'relative_probe=%s\n' "$(command -v relative-path-probe || printf absent)"
+fi
+EOF
+
+cat >"$FIRST_SAFE_BIN/git" <<'EOF'
+#!/bin/sh
+printf 'first-safe\n'
+EOF
+
+cat >"$SECOND_SAFE_BIN/git" <<'EOF'
+#!/bin/sh
+printf 'second-safe\n'
+EOF
+
+cat >"$RELATIVE_BIN/relative-path-probe" <<'EOF'
+#!/bin/sh
+printf 'repository-relative\n'
 EOF
 
 cat >"$SHIM_BIN/node" <<'EOF'
@@ -108,9 +137,15 @@ EOF
 chmod +x \
     "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt" \
     "$REAL_BIN/pi" \
+    "$FIRST_SAFE_BIN/git" \
+    "$SECOND_SAFE_BIN/git" \
+    "$RELATIVE_BIN/relative-path-probe" \
     "$SHIM_BIN/node" \
     "$SHIM_BIN/rg"
 readonly RESOLVED_REAL_BIN="$(cd "$REAL_BIN" && pwd -P)"
+readonly RESOLVED_WRAPPER_BIN="$(cd "$WRAPPER_BIN" && pwd -P)"
+readonly RESOLVED_FIRST_SAFE_BIN="$(cd "$FIRST_SAFE_BIN" && pwd -P)"
+readonly RESOLVED_SECOND_SAFE_BIN="$(cd "$SECOND_SAFE_BIN" && pwd -P)"
 
 output="$(
     cd "$SHIM_BIN"
@@ -134,6 +169,32 @@ grep -F 'herdr_socket=unset' <<<"$output" >/dev/null
 grep -F 'herdr_pane=unset' <<<"$output" >/dev/null
 grep -F 'herdr_status_port=unset' <<<"$output" >/dev/null
 grep -F 'herdr_status_token=unset' <<<"$output" >/dev/null
+
+path_order_output="$(
+    cd "$SHIM_BIN"
+    HOME="$TEST_HOME" \
+    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$FIRST_SAFE_BIN:$SECOND_SAFE_BIN:$FIRST_SAFE_BIN:$TOOL_PATH" \
+    HERDR_ENV= \
+    HERDR_SOCKET_PATH= \
+    HERDR_PANE_ID= \
+    "$WRAPPER" --path-order-probe
+)"
+grep -F "path=$RESOLVED_REAL_BIN:$RESOLVED_WRAPPER_BIN:$RESOLVED_FIRST_SAFE_BIN:$RESOLVED_SECOND_SAFE_BIN:" <<<"$path_order_output" >/dev/null
+grep -F "git_resolution=$RESOLVED_FIRST_SAFE_BIN/git" <<<"$path_order_output" >/dev/null
+grep -F 'git_marker=first-safe' <<<"$path_order_output" >/dev/null
+grep -F "pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$path_order_output" >/dev/null
+[[ "$(grep '^path=' <<<"$path_order_output" | grep -oF "$RESOLVED_FIRST_SAFE_BIN" | wc -l | tr -d ' ')" == 1 ]]
+
+relative_path_output="$(
+    cd "$SHIM_BIN"
+    HOME="$TEST_HOME" \
+    PATH="relative-bin:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
+    HERDR_ENV= \
+    HERDR_SOCKET_PATH= \
+    HERDR_PANE_ID= \
+    "$WRAPPER" --relative-path-probe
+)"
+grep -F 'relative_probe=absent' <<<"$relative_path_output" >/dev/null
 
 herdr_output="$(
     cd "$SHIM_BIN"

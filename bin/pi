@@ -401,16 +401,22 @@ real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind thi
 readonly REAL_PI="$real_pi"
 readonly REAL_PI_DIR="${REAL_PI%/*}"
 
-# Put the package binary ahead of ~/bin inside the sandbox. Nested Pi processes
-# (including pi-subagents) then inherit the current OS sandbox without trying to
-# initialize a weaker nested sandbox. Trusted bootstrap directories also stay
-# ahead of workspace-local shims while SRT initializes.
-inner_path="$REAL_PI_DIR:${HOST_NODE%/*}:${HOST_RG%/*}:/usr/bin:/bin"
-if [[ "$OSTYPE" == linux* ]]; then
-    inner_path="$inner_path:${HOST_BWRAP%/*}:${HOST_SOCAT%/*}"
-fi
-inner_path="$inner_path:$PATH"
-readonly inner_path
+# Put only the package binary ahead of the launching session's trusted PATH.
+# Nested Pi processes (including pi-subagents) then inherit the current OS
+# sandbox without trying to initialize a weaker nested sandbox. Preserve the
+# remaining first-match command resolution after excluding repository paths.
+inner_path_entries=("$REAL_PI_DIR")
+while IFS= read -r entry; do
+    duplicate=false
+    for existing in "${inner_path_entries[@]}"; do
+        if [[ "$entry" == "$existing" ]]; then
+            duplicate=true
+            break
+        fi
+    done
+    [[ "$duplicate" == true ]] || inner_path_entries+=("$entry")
+done < <(safe_path_entries)
+readonly inner_path="$(IFS=:; printf '%s' "${inner_path_entries[*]}")"
 
 # Do not leak ambient cloud, package-manager, SSH, or application credentials
 # into model-invoked subprocesses. Pi's explicitly accepted credentials remain
@@ -427,6 +433,7 @@ safe_env=(
     "HF_HOME=$HOME/.cache/huggingface"
     "CARGO_HOME=$HOME/.cargo"
 )
+[[ -z "$WORKTREE_ROOT" ]] || safe_env+=("PI_SANDBOX_VALIDATED_WORKTREE=1")
 
 for name in \
     USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \

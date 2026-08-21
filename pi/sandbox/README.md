@@ -44,6 +44,24 @@ prerequisite and exits. A trusted `git` outside the candidate repository is
 optional: when it is unavailable, repository scope discovery fails narrow to
 the physical launch directory.
 
+## PATH contract
+
+Sandboxed Pi preserves the launching session's first-match command resolution
+across trusted PATH entries. The wrapper keeps canonical absolute directories
+in their original order, removes relative entries and directories inside the
+candidate worktree or its Git metadata, and deduplicates entries without
+changing precedence. It does not add the unfiltered host PATH afterward.
+
+Only the installed Pi binary's directory is moved to the front. This prevents
+nested Pi processes and subagents from re-entering `~/bin/pi` and attempting a
+weaker nested sandbox. Node.js, ripgrep, Git, platform tools, and system binary
+directories keep their order from the safe launching PATH. This preserves the
+user's package-manager choices without adding filesystem access or trusting
+repository-local shims during bootstrap.
+
+`--yolo` is intentionally outside this contract because it directly inherits
+the unfiltered host environment.
+
 ## Policy
 
 `settings.json` is the trusted base policy. For each launch, the wrapper builds

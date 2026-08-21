@@ -9,6 +9,9 @@ readonly HOST_NODE="$(command -v node)"
 readonly HOST_GIT="$(command -v git)"
 readonly HOST_RG="$(command -v rg)"
 readonly HOST_MKTEMP="$(command -v mktemp)"
+readonly HOST_AWK="$(command -v awk)"
+readonly HOST_GREP="$(command -v grep)"
+readonly HOST_ENV="$(command -v env)"
 
 cleanup() {
     rm -rf "$TEST_ROOT"
@@ -36,6 +39,7 @@ mkdir -p \
     "$TRUSTED_BIN" \
     "$NO_GIT_BIN" \
     "$FAIL_GIT_BIN"
+printf '{}\n' >"$TEST_HOME/.pi/agent/settings.json"
 
 write_exec_wrapper() {
     local destination="$1"
@@ -48,6 +52,9 @@ for directory in "$TRUSTED_BIN" "$NO_GIT_BIN" "$FAIL_GIT_BIN"; do
     write_exec_wrapper "$directory/node" "$HOST_NODE"
     write_exec_wrapper "$directory/rg" "$HOST_RG"
     write_exec_wrapper "$directory/mktemp" "$HOST_MKTEMP"
+    write_exec_wrapper "$directory/awk" "$HOST_AWK"
+    write_exec_wrapper "$directory/grep" "$HOST_GREP"
+    write_exec_wrapper "$directory/env" "$HOST_ENV"
     printf '#!/bin/bash\nexit 0\n' >"$directory/bwrap"
     printf '#!/bin/bash\nexit 0\n' >"$directory/socat"
     chmod +x "$directory/bwrap" "$directory/socat"
@@ -128,6 +135,9 @@ printf '\n'
 printf 'secret=%s\n' "${SECRET_SHOULD_NOT_LEAK-unset}"
 printf 'node_options=%s\n' "${NODE_OPTIONS-unset}"
 printf 'git_dir=%s\n' "${GIT_DIR-unset}"
+printf 'git_resolution=%s\n' "$(command -v git || printf absent)"
+printf 'repository_probe=%s\n' "$(command -v repository-path-probe || printf absent)"
+printf 'relative_probe=%s\n' "$(command -v relative-path-probe || printf absent)"
 EOF
 chmod +x "$SANDBOX_HOME/node_modules/.bin/srt" "$REAL_BIN/pi"
 
@@ -137,7 +147,7 @@ make_repository_shims() {
     local name
 
     mkdir -p "$shim_dir"
-    for name in node rg git mktemp pi bwrap socat; do
+    for name in node rg git mktemp pi bwrap socat repository-path-probe; do
         cat >"$shim_dir/$name" <<EOF
 #!/bin/bash
 printf '%s\n' '$name' >>'$BOOTSTRAP_MARKER'
@@ -239,7 +249,7 @@ run_wrapper() {
     output="$(
         cd "$launch_dir"
         HOME="$TEST_HOME" \
-        PATH="$shim_dir:$WRAPPER_BIN:$REAL_BIN:$trusted_bin" \
+        PATH="relative-bootstrap-shims:$shim_dir:$WRAPPER_BIN:$REAL_BIN:$trusted_bin" \
         HERDR_ENV= \
         HERDR_SOCKET_PATH= \
         HERDR_PANE_ID= \
@@ -259,6 +269,13 @@ run_wrapper() {
     grep -F 'secret=unset' <<<"$output" >/dev/null
     grep -F 'node_options=unset' <<<"$output" >/dev/null
     grep -F 'git_dir=unset' <<<"$output" >/dev/null
+    grep -F 'repository_probe=absent' <<<"$output" >/dev/null
+    grep -F 'relative_probe=absent' <<<"$output" >/dev/null
+    if [[ -x "$trusted_bin/git" ]]; then
+        grep -F "git_resolution=$(canonical_dir "$trusted_bin")/git" <<<"$output" >/dev/null
+    else
+        grep -F 'git_resolution=absent' <<<"$output" >/dev/null
+    fi
     local policy_path
     policy_path="$(awk -F= '/^policy_path=/{print substr($0, index($0, "=") + 1); exit}' <<<"$output")"
     [[ -n "$policy_path" && ! -e "$policy_path" && ! -e "${policy_path%/*}" ]]
@@ -280,6 +297,13 @@ mkdir -p "$NORMAL_REPO/nested/deep"
 "$HOST_GIT" -C "$NORMAL_REPO" init -q
 NORMAL_ROOT="$(canonical_dir "$NORMAL_REPO")"
 NORMAL_SHIMS="$(make_repository_shims "$NORMAL_REPO")"
+mkdir -p "$NORMAL_REPO/relative-bootstrap-shims"
+cat >"$NORMAL_REPO/relative-bootstrap-shims/relative-path-probe" <<EOF
+#!/bin/bash
+printf '%s\n' relative-path-probe >>'$BOOTSTRAP_MARKER'
+exit 97
+EOF
+chmod +x "$NORMAL_REPO/relative-bootstrap-shims/relative-path-probe"
 output="$(run_wrapper "$NORMAL_REPO" "$NORMAL_SHIMS" "$TRUSTED_BIN" --root-launch)"
 grep -F "srt_cwd=$NORMAL_ROOT" <<<"$output" >/dev/null
 assert_worktree_denies "$NORMAL_ROOT"
