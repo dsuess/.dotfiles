@@ -170,8 +170,14 @@ function createComposedHarness() {
 		async emitLifecycle(name, event, ctx) {
 			for (const handler of lifecycle.get(name) ?? []) await handler(event, ctx);
 		},
+		emitQuestionnaire(data) {
+			events.emit("rpiv:ask-user:blocked", data);
+		},
 		emitWorkflow(data) {
 			events.emit("plan-mode:workflow-state", data);
+		},
+		eventListenerCount(name) {
+			return (eventHandlers.get(name) ?? []).length;
 		},
 	};
 }
@@ -469,11 +475,13 @@ test("root session replacement retains only the current reporter through a durab
 		await harness.install();
 		await harness.emitLifecycle("session_start", { reason: "startup" }, firstContext);
 		await waitForCount(requests, 3);
+		assert.equal(harness.eventListenerCount("rpiv:ask-user:blocked"), 1);
 
 		// Pi reloads its extension runner after session_shutdown. The old reporter's
 		// event-bus listener remains registered unless its shutdown lifecycle ends
 		// its authority, which is the production failure this composes.
 		await harness.emitLifecycle("session_shutdown", { reason: "reload" }, firstContext);
+		assert.equal(harness.eventListenerCount("rpiv:ask-user:blocked"), 0);
 		harness.replaceExtensions();
 		const secondUI = composedUI();
 		const secondContext = composedTuiContext("session-2", () => idle, secondUI);
@@ -481,6 +489,7 @@ test("root session replacement retains only the current reporter through a durab
 		await harness.install();
 		await harness.emitLifecycle("session_start", { reason: "reload" }, secondContext);
 		await waitForCount(requests, 6);
+		assert.equal(harness.eventListenerCount("rpiv:ask-user:blocked"), 1);
 
 		const planning = state.enterPlanning(state.createInitialState(), ["read", "bash"]).state;
 		let approval = state.submitPlan(planning, {
@@ -521,16 +530,23 @@ test("root session replacement retains only the current reporter through a durab
 		assert.equal(requests.at(-1).body.request.params.state, "blocked", "closing UI alone cannot clear durable approval");
 
 		const accepted = secondUI.custom(() => undefined);
+		harness.emitQuestionnaire({ active: true });
 		secondUI.dialogs.at(-1).resolve("run");
 		approval = state.approveExecution(approval, "approval-nonce", "all").state;
 		harness.emitWorkflow({ mode: approval.mode, feedbackPending: state.hasDurableFeedbackPending(approval) });
 		await accepted;
 		await nextTurn();
+		assert.equal(
+			requests.at(-1).body.request.params.state,
+			"blocked",
+			"clearing durable and wrapped UI sources cannot clear an explicit questionnaire wait",
+		);
+		harness.emitQuestionnaire({ active: false });
 		await waitFor(
 			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
 				&& body.request.params.agent_session_id === "session-2"
 				&& body.request.params.state === "working"),
-			"approval acceptance to restore working",
+			"all feedback sources clearing to restore working",
 		);
 
 		idle = true;

@@ -8,7 +8,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["**/*.test.ts"],
+    include: ["**/*.test.ts", "**/*.test.mjs"],
     exclude: ["node_modules/**"],
     setupFiles: ["./test/setup.ts"],
     hookTimeout: 30_000,

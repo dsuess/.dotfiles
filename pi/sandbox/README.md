@@ -178,12 +178,15 @@ herdr agent explain <pane>
 ```
 
 `get` must include the current Pi `agent_session`, and `explain` must report
-`screen_detection_skip_reason: full_lifecycle_hook_authority`. While a Pi plan
-action dialog or question is unresolved, the reported state must be `blocked`
-with `waiting for feedback`. A `working_literal` match,
-`default_known_agent_idle_fallback`, a missing session reference, or a single
-Herdr-status warning from Pi means the lifecycle integration failed; inspect
-broker startup and Herdr forwarding rather than adding screen patterns.
+`screen_detection_skip_reason: full_lifecycle_hook_authority`. The public
+`rpiv:ask-user:blocked` lifecycle is the authoritative structured-question
+source; wrapping generic `ctx.ui` dialogs is fallback coverage for extensions
+without a semantic wait event. While a Pi plan action dialog or question is
+unresolved, the reported state must be `blocked` with `waiting for feedback`.
+A `working_literal` match, `default_known_agent_idle_fallback`, a missing
+session reference, or a single Herdr-status warning from Pi means the lifecycle
+integration failed; inspect broker startup and Herdr forwarding rather than
+adding screen patterns.
 
 Model-invoked code can still spoof Pi's own reported state because it shares the
 broker capability with the extension. That narrow status mutation is inherent

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import extension, { asksForFeedback, latestSettledAssistantText } from "./index.ts";
+import { ASK_USER_BLOCKED_EVENT } from "../../packages/ask-user-question/events.ts";
 import { PLAN_MODE_WORKFLOW_STATE_EVENT } from "../plan-mode/events.ts";
 
 const BLOCKING_UI_METHODS = ["select", "confirm", "input", "editor", "custom"];
@@ -224,12 +225,15 @@ test("restores UI and unsubscribes workflow listeners on shutdown without late r
 	ui.custom = () => pending.promise;
 	const originalMethods = Object.fromEntries(BLOCKING_UI_METHODS.map((method) => [method, ui[method]]));
 	const harness = createHarness([], ui);
+	assert.equal(harness.busListenerCount(ASK_USER_BLOCKED_EVENT), 1);
 	assert.equal(harness.busListenerCount(PLAN_MODE_WORKFLOW_STATE_EVENT), 1);
 	await harness.emitLifecycle("session_start");
 	const waiting = ui.custom(() => undefined);
 	await harness.emitLifecycle("session_shutdown");
 	for (const method of BLOCKING_UI_METHODS) assert.equal(ui[method], originalMethods[method], method);
+	assert.equal(harness.busListenerCount(ASK_USER_BLOCKED_EVENT), 0);
 	assert.equal(harness.busListenerCount(PLAN_MODE_WORKFLOW_STATE_EVENT), 0);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
 	harness.emitBus(PLAN_MODE_WORKFLOW_STATE_EVENT, { feedbackPending: true });
 	pending.resolve("done");
 	assert.equal(await waiting, "done");
@@ -237,12 +241,86 @@ test("restores UI and unsubscribes workflow listeners on shutdown without late r
 	assert.deepEqual(harness.reports, [{ active: true, label: "waiting for feedback" }]);
 });
 
-test("does not consume the structured-question package event", async () => {
+test("consumes the structured-question package blocked lifecycle", async () => {
 	const harness = createHarness();
 	await harness.emitLifecycle("session_start");
-	harness.emitBus("rpiv:ask-user:blocked", { active: true });
-	harness.emitBus("rpiv:ask-user:blocked", { active: false });
-	assert.deepEqual(harness.reports, []);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	assert.deepEqual(harness.reports, [{ active: true, label: "waiting for feedback" }]);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: false });
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("treats malformed structured-question payloads as inactive", async () => {
+	const harness = createHarness();
+	await harness.emitLifecycle("session_start");
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	for (const payload of [{ active: "true" }, {}, null, undefined]) {
+		harness.emitBus(ASK_USER_BLOCKED_EVENT, payload);
+	}
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("deduplicates overlapping semantic and wrapped questionnaire waits", async () => {
+	const ui = createUI();
+	const harness = createHarness([], ui);
+	const pending = deferred();
+	ui.custom = () => pending.promise;
+	await harness.emitLifecycle("session_start");
+
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	const questionnaire = ui.custom(() => undefined);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: false });
+	assert.deepEqual(harness.reports, [{ active: true, label: "waiting for feedback" }]);
+	pending.resolve({ answers: [], cancelled: true });
+	await questionnaire;
+	await nextTurn();
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("an explicit questionnaire wait prevents an early wrapped-UI clear", async () => {
+	const ui = createUI();
+	const harness = createHarness([], ui);
+	const pending = deferred();
+	ui.custom = () => pending.promise;
+	await harness.emitLifecycle("session_start");
+
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	const questionnaire = ui.custom(() => undefined);
+	pending.resolve({ answers: [], cancelled: true });
+	await questionnaire;
+	await nextTurn();
+	assert.deepEqual(harness.reports, [{ active: true, label: "waiting for feedback" }]);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: false });
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
+});
+
+test("resets stale questionnaire state across session replacement", async () => {
+	const firstUI = createUI();
+	const secondUI = createUI();
+	const harness = createHarness([], firstUI);
+	await harness.emitLifecycle("session_start");
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	await harness.emitLifecycle("session_start", {}, { lifecycleUI: secondUI });
+	assert.equal(harness.busListenerCount(ASK_USER_BLOCKED_EVENT), 1);
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: true });
+	harness.emitBus(ASK_USER_BLOCKED_EVENT, { active: false });
+	assert.deepEqual(harness.reports, [
+		{ active: true, label: "waiting for feedback" },
+		{ active: true, label: "waiting for feedback" },
+		{ active: false },
+	]);
 });
 
 test("restores durable feedback published before session_start", async () => {

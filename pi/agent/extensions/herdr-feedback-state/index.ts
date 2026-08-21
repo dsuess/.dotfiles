@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+	ASK_USER_BLOCKED_EVENT,
+	type AskUserBlockedEventPayload,
+} from "../../packages/ask-user-question/events.ts";
+import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
 } from "../plan-mode/events.ts";
@@ -73,17 +77,19 @@ export default function (pi: ExtensionAPI) {
 	let blockingUICount = 0;
 	let blockingUIActive = false;
 	let freeformBlocked = false;
+	let questionnaireBlocked = false;
 	let workflowBlocked = false;
 	let reportedBlocked = false;
 	let rootSession = false;
 	let clearBlockingUITimer: ReturnType<typeof setTimeout> | undefined;
 	let restoreUI: (() => void) | undefined;
+	let unsubscribeQuestionnaire: (() => void) | undefined;
 	let unsubscribeWorkflow: (() => void) | undefined;
 	let installation = 0;
 
 	function syncBlockedState(): void {
 		if (!rootSession) return;
-		const active = blockingUIActive || freeformBlocked || workflowBlocked;
+		const active = blockingUIActive || freeformBlocked || questionnaireBlocked || workflowBlocked;
 		if (active === reportedBlocked) return;
 		reportedBlocked = active;
 		pi.events.emit(HERDR_BLOCKED_EVENT, active ? { active, label: WAITING_LABEL } : { active });
@@ -153,35 +159,47 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	function updateQuestionnaireBlocked(data: unknown): void {
+		const payload = data as AskUserBlockedEventPayload | undefined;
+		questionnaireBlocked = payload?.active === true;
+		syncBlockedState();
+	}
+
 	function updateWorkflowBlocked(data: unknown): void {
 		const payload = data as PlanModeWorkflowStateEvent | undefined;
 		workflowBlocked = payload?.feedbackPending === true;
 		syncBlockedState();
 	}
 
-	function subscribeWorkflow(): void {
+	function subscribeFeedbackSources(): void {
+		if (!unsubscribeQuestionnaire) {
+			unsubscribeQuestionnaire = pi.events.on(ASK_USER_BLOCKED_EVENT, updateQuestionnaireBlocked);
+		}
 		if (!unsubscribeWorkflow) unsubscribeWorkflow = pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, updateWorkflowBlocked);
 	}
 
-	function resetSessionState(disposeWorkflow = false): void {
+	function resetSessionState(disposeSubscriptions = false): void {
 		installation += 1;
 		clearPendingBlockingUI();
 		restoreUI?.();
 		restoreUI = undefined;
 		blockingUICount = 0;
 		blockingUIActive = false;
-		if (disposeWorkflow) {
+		questionnaireBlocked = false;
+		if (disposeSubscriptions) {
+			unsubscribeQuestionnaire?.();
+			unsubscribeQuestionnaire = undefined;
 			unsubscribeWorkflow?.();
 			unsubscribeWorkflow = undefined;
 			workflowBlocked = false;
 		}
 	}
 
-	// Subscribe before any session_start handler can publish restored plan state.
-	subscribeWorkflow();
+	// Subscribe before any session_start handler can publish restored feedback state.
+	subscribeFeedbackSources();
 
 	pi.on("session_start", (_event, ctx) => {
-		subscribeWorkflow();
+		subscribeFeedbackSources();
 		resetSessionState();
 		rootSession = ctx.mode === "tui";
 		reportedBlocked = false;
