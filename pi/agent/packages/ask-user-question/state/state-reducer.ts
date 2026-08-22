@@ -1,10 +1,8 @@
 import {
 	aggregateDiscussionUsage,
-	boundDiscussionTranscript,
 	buildDiscussionContexts,
 	emptyQuestionDiscussion,
-	MAX_DISCUSSION_ACTIVITY_ITEMS,
-	mergeDiscussionUsage,
+	type DiscussionResolution,
 	type QuestionDiscussionState,
 } from "../discussion/types.js";
 import type { QuestionAnswer, QuestionData, QuestionnaireResult } from "../tool/types.js";
@@ -40,6 +38,7 @@ export type Effect =
 	 * behind the modal.
 	 */
 	| { kind: "set_overlay_hidden"; hidden: boolean }
+	| { kind: "launch_discussion"; questionIndex: number }
 	| { kind: "done"; result: QuestionnaireResult };
 
 export interface ApplyResult {
@@ -126,7 +125,6 @@ function withoutCustomDraft(state: QuestionnaireState, tab: number): ReadonlyMap
 }
 
 function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyContext): ApplyResult {
-	if (state.discussionOpenTab != null) return { state, effects: [] };
 	const notesValue = notesValueFor(state, nextTab);
 	const transitioned: QuestionnaireState = {
 		...state,
@@ -219,116 +217,68 @@ const inputReplaceHandler: Handler<"input_replace"> = (state, action, _ctx) => (
 
 const tabSwitchHandler: Handler<"tab_switch"> = (state, action, ctx) => switchTabResult(state, action.nextTab, ctx);
 
-const discussionEnterHandler: Handler<"discussion_enter"> = (state, _action, _ctx) => ({
-	state: {
-		...withDiscussion(state, discussionFor(state)),
-		discussionOpenTab: state.currentTab,
-	},
-	effects: [],
-});
-
-const discussionBackHandler: Handler<"discussion_back"> = (state, _action, _ctx) => {
-	const discussion = discussionFor(state, state.discussionOpenTab ?? state.currentTab);
-	if (discussion.running) return { state, effects: [] };
-	return { state: { ...state, discussionOpenTab: null }, effects: [] };
-};
-
-const discussionDraftHandler: Handler<"discussion_draft"> = (state, action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
+const discussionEnterHandler: Handler<"discussion_enter"> = (state, _action, _ctx) => {
+	const discussion = discussionFor(state);
+	if (discussion.launching) return { state, effects: [] };
 	return {
-		state: withDiscussion(state, { ...discussionFor(state, tab), draft: action.value }, tab),
-		effects: [],
+		state: withDiscussion(state, { ...discussion, launching: true, error: undefined }),
+		effects: [{ kind: "launch_discussion", questionIndex: state.currentTab }],
 	};
 };
 
-const discussionStartHandler: Handler<"discussion_start"> = (state, _action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
-	const discussion = discussionFor(state, tab);
-	if (discussion.running || discussion.draft.trim().length === 0) return { state, effects: [] };
-	return {
-		state: withDiscussion(state, { ...discussion, running: true, activity: [], error: undefined }, tab),
-		effects: [],
-	};
-};
+function suggestionState(
+	state: QuestionnaireState,
+	resolution: DiscussionResolution,
+	ctx: ApplyContext,
+): ApplyResult {
+	const suggestion = resolution.suggestion;
+	const question = ctx.questions[state.currentTab];
+	if (!suggestion || !question) return { state, effects: [] };
+	if (suggestion.kind === "option" && suggestion.optionLabels?.[0]) {
+		const optionIndex = question.options.findIndex((option) => option.label === suggestion.optionLabels![0]);
+		if (optionIndex >= 0) return { state: { ...state, optionIndex, inputMode: false }, effects: [] };
+	}
+	if (suggestion.kind === "multi" && question.multiSelect) {
+		const selected = new Set(suggestion.optionLabels ?? []);
+		const multiSelectChecked = new Set<number>();
+		for (let i = 0; i < question.options.length; i++) {
+			if (selected.has(question.options[i]!.label)) multiSelectChecked.add(i);
+		}
+		return {
+			state: { ...state, multiSelectChecked, optionIndex: question.options.length + 2, inputMode: false },
+			effects: [],
+		};
+	}
+	if (suggestion.kind === "custom" && suggestion.customAnswer) {
+		const customDraftsByTab = setCustomDraft(state, state.currentTab, suggestion.customAnswer);
+		return {
+			state: { ...state, customDraftsByTab, optionIndex: question.options.length + 1, inputMode: true },
+			effects: [{ kind: "set_input_buffer", value: suggestion.customAnswer }],
+		};
+	}
+	return { state, effects: [] };
+}
 
-const discussionActivityHandler: Handler<"discussion_activity"> = (state, action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
-	const discussion = discussionFor(state, tab);
-	const activity = [...discussion.activity, action.message].slice(-MAX_DISCUSSION_ACTIVITY_ITEMS);
-	return { state: withDiscussion(state, { ...discussion, activity }, tab), effects: [] };
-};
-
-const discussionSuccessHandler: Handler<"discussion_success"> = (state, action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
-	const discussion = discussionFor(state, tab);
-	const transcript = [
-		...discussion.transcript,
-		{ role: "user" as const, text: discussion.draft },
-		{ role: "assistant" as const, text: action.response, ...(action.truncated ? { truncated: true } : {}) },
-	];
-	return {
-		state: withDiscussion(
-			state,
-			{
-				...discussion,
-				draft: "",
-				transcript,
-				running: false,
-				activity: [],
-				error: undefined,
-				usage: mergeDiscussionUsage(discussion.usage, action.usage),
-			},
-			tab,
-		),
-		effects: [],
-	};
-};
-
-const discussionFailureHandler: Handler<"discussion_failure"> = (state, action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
-	const discussion = discussionFor(state, tab);
-	return {
-		state: withDiscussion(state, { ...discussion, running: false, activity: [], error: action.error }, tab),
-		effects: [],
-	};
-};
-
-const discussionCancelHandler: Handler<"discussion_cancel"> = (state, _action, _ctx) => {
-	const tab = state.discussionOpenTab ?? state.currentTab;
-	const discussion = discussionFor(state, tab);
-	return {
-		state: withDiscussion(state, { ...discussion, running: false, activity: [], error: "Turn cancelled" }, tab),
-		effects: [],
-	};
-};
-
-const discussionHandoffHandler: Handler<"discussion_handoff"> = (state, action, ctx) => {
-	const questionIndex = state.discussionOpenTab ?? state.currentTab;
-	const question = ctx.questions[questionIndex];
-	if (!question) return { state, effects: [] };
-	const discussion = discussionFor(state, questionIndex);
-	const pendingDraft = discussion.draft.trim();
-	const transcript = pendingDraft.length > 0
-		? [...discussion.transcript, { role: "user" as const, text: pendingDraft }]
-		: discussion.transcript;
-	const bounded = boundDiscussionTranscript(transcript);
-	const answers = orderedAnswers(state, ctx.questions);
-	const result: QuestionnaireResult = {
-		answers,
-		cancelled: false,
-		outcome: "handoff",
-		...resultMetadata(state, ctx),
-		handoff: {
-			questionIndex,
-			question: question.question,
-			options: question.options.map(({ label, description }) => ({ label, description })),
-			reason: action.reason,
-			transcript: bounded.messages,
-			partialAnswers: answers,
-			...(bounded.truncated ? { truncated: true } : {}),
+const discussionFinishedHandler: Handler<"discussion_finished"> = (state, action, ctx) => {
+	const discussion = discussionFor(state);
+	const next = withDiscussion(
+		state,
+		{
+			...discussion,
+			...(action.thread ? { thread: action.thread } : {}),
+			...(action.resolution
+				? { resolution: action.resolution, lastConsumedResolutionId: action.resolution.id }
+				: {}),
+			usage: action.usage,
+			launching: false,
+			...(action.error ? { error: action.error } : { error: undefined }),
 		},
-	};
-	return { state, effects: [{ kind: "done", result }] };
+	);
+	if (!action.resolution) return { state: { ...next, optionIndex: ctx.questions[state.currentTab]?.options.length ?? state.optionIndex }, effects: [] };
+	if (action.resolution.classification === "context_only" || !action.resolution.suggestion) {
+		return { state: { ...next, optionIndex: ctx.questions[state.currentTab]?.options.length ?? state.optionIndex }, effects: [] };
+	}
+	return suggestionState(next, action.resolution, ctx);
 };
 
 const confirmHandler: Handler<"confirm"> = (state, action, ctx) => {
@@ -456,14 +406,7 @@ const HANDLERS: { [K in QuestionnaireAction["kind"]]: Handler<K> } = {
 	input_replace: inputReplaceHandler,
 	tab_switch: tabSwitchHandler,
 	discussion_enter: discussionEnterHandler,
-	discussion_back: discussionBackHandler,
-	discussion_draft: discussionDraftHandler,
-	discussion_start: discussionStartHandler,
-	discussion_activity: discussionActivityHandler,
-	discussion_success: discussionSuccessHandler,
-	discussion_failure: discussionFailureHandler,
-	discussion_cancel: discussionCancelHandler,
-	discussion_handoff: discussionHandoffHandler,
+	discussion_finished: discussionFinishedHandler,
 	confirm: confirmHandler,
 	toggle: toggleHandler,
 	multi_confirm: multiConfirmHandler,

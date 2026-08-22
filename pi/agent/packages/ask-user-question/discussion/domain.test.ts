@@ -5,12 +5,7 @@ import { validateQuestionnaire } from "../tool/validate-questionnaire.js";
 import { routeKey, type QuestionnaireAction } from "../state/key-router.js";
 import { reduce } from "../state/state-reducer.js";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.js";
-import {
-  boundDiscussionTranscript,
-  emptyDiscussionUsage,
-  MAX_DISCUSSION_CONTEXT_CHARS,
-  MAX_DISCUSSION_MESSAGES,
-} from "./types.js";
+import { boundDiscussionTranscript, emptyDiscussionUsage, type DiscussionThread } from "./types.js";
 
 const items: WrappingSelectItem[] = [
   { kind: "option", label: "A" },
@@ -18,13 +13,19 @@ const items: WrappingSelectItem[] = [
   { kind: "discuss", label: "Discuss this" },
   { kind: "other", label: "Type something." },
 ];
+const thread: DiscussionThread = {
+  sessionFile: "/tmp/child.jsonl",
+  parentSessionFile: "/tmp/parent.jsonl",
+  forkAnchorId: "anchor",
+  parentToolCallId: "tool",
+};
 
 function apply(state: ReturnType<typeof makeQuestionnaireState>, action: QuestionnaireAction) {
   return reduce(state, action, makeApplyContext({ itemsByTab: [items] }));
 }
 
-describe("discussion domain", () => {
-  it("routes Enter to discussion and never treats the sentinel as a checkbox", () => {
+describe("forked discussion domain", () => {
+  it("routes Enter to a one-shot launch effect and never treats the sentinel as a checkbox", () => {
     const question = makeQuestion({ multiSelect: true });
     const state = makeQuestionnaireState({ optionIndex: 2 });
     const runtime = {
@@ -39,32 +40,14 @@ describe("discussion domain", () => {
       collapseKey: "off",
     };
     expect(routeKey("enter", state, runtime)).toEqual({ kind: "discussion_enter" });
+    const result = apply(state, { kind: "discussion_enter" });
+    expect(result.state.discussionsByTab?.get(0)?.launching).toBe(true);
+    expect(result.effects).toEqual([{ kind: "launch_discussion", questionIndex: 0 }]);
     expect(routeKey(" ", state, runtime)).toEqual({ kind: "ignore" });
-    expect(state.answers.size).toBe(0);
-    expect(state.multiSelectChecked.size).toBe(0);
   });
 
-  it("reserves the canonical sentinel label", () => {
-    const question = makeQuestion({
-      options: [
-        { label: "Discuss this", description: "collision" },
-        { label: "B", description: "b" },
-      ],
-    });
-    expect(validateQuestionnaire({ questions: [question] })).toMatchObject({
-      ok: false,
-      error: "reserved_label",
-    });
-  });
-
-  it("opens without changing answers, notes, custom drafts, checkbox state, tab, or collapse", () => {
-    const answer: QuestionAnswer = {
-      questionIndex: 0,
-      question: "Pick one",
-      kind: "multi",
-      answer: null,
-      selected: ["A"],
-    };
+  it("keeps authored candidate state intact while launching and while context-only resolution returns", () => {
+    const answer: QuestionAnswer = { questionIndex: 0, question: "Pick one", kind: "multi", answer: null, selected: ["A"] };
     const before = makeQuestionnaireState({
       optionIndex: 2,
       inputMode: true,
@@ -76,134 +59,98 @@ describe("discussion domain", () => {
       notesDraft: "note",
       collapsed: true,
     });
-    const opened = apply(before, { kind: "discussion_enter" }).state;
-    expect(opened.discussionOpenTab).toBe(0);
-    expect(opened.answers).toEqual(before.answers);
-    expect(opened.multiSelectChecked).toEqual(before.multiSelectChecked);
-    expect(opened.customDraftsByTab).toEqual(before.customDraftsByTab);
-    expect(opened.notesByTab).toEqual(before.notesByTab);
-    expect(opened.currentTab).toBe(before.currentTab);
-    expect(opened.optionIndex).toBe(before.optionIndex);
-    expect(opened.inputMode).toBe(true);
-    expect(opened.notesVisible).toBe(true);
-    expect(opened.collapsed).toBe(true);
-  });
-
-  it("keeps drafts on failure and cancellation, then appends a successful turn and usage", () => {
-    let state = apply(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }).state;
-    state = apply(state, { kind: "discussion_draft", value: "Why A?" }).state;
-    state = apply(state, { kind: "discussion_start" }).state;
-    expect(state.discussionsByTab?.get(0)?.running).toBe(true);
-
-    state = apply(state, { kind: "discussion_failure", error: "provider unavailable" }).state;
-    expect(state.discussionsByTab?.get(0)).toMatchObject({
-      draft: "Why A?",
-      running: false,
-      error: "provider unavailable",
-    });
-
-    state = apply(state, { kind: "discussion_start" }).state;
-    state = apply(state, { kind: "discussion_cancel" }).state;
-    expect(state.discussionsByTab?.get(0)).toMatchObject({ draft: "Why A?", error: "Turn cancelled" });
-
-    state = apply(state, { kind: "discussion_start" }).state;
-    const usage = { ...emptyDiscussionUsage(), input: 10, output: 4, totalTokens: 14 };
-    state = apply(state, { kind: "discussion_success", response: "A is simpler.", usage }).state;
-    expect(state.discussionsByTab?.get(0)?.transcript).toEqual([
-      { role: "user", text: "Why A?" },
-      { role: "assistant", text: "A is simpler." },
-    ]);
-    expect(state.discussionsByTab?.get(0)?.draft).toBe("");
-    expect(state.discussionsByTab?.get(0)?.usage.totalTokens).toBe(14);
-  });
-
-  it("requires Back before tab switching and restores the same structured row", () => {
-    const questions = [makeQuestion(), makeQuestion({ question: "Second?" })];
-    const ctx = makeApplyContext({ questions, itemsByTab: [items, items] });
-    let state = reduce(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }, ctx).state;
-    state = reduce(state, { kind: "tab_switch", nextTab: 1 }, ctx).state;
-    expect(state.currentTab).toBe(0);
-    state = reduce(state, { kind: "discussion_back" }, ctx).state;
-    expect(state.discussionOpenTab).toBeNull();
-    expect(state.optionIndex).toBe(2);
-    state = reduce(state, { kind: "tab_switch", nextTab: 1 }, ctx).state;
-    expect(state.currentTab).toBe(1);
-  });
-
-  it("attaches bounded discussion context to a later normal answer", () => {
-    let state = apply(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }).state;
-    state = apply(state, { kind: "discussion_draft", value: "What is safer?" }).state;
-    state = apply(state, {
-      kind: "discussion_success",
-      response: "A has fewer dependencies.",
+    const launching = apply(before, { kind: "discussion_enter" }).state;
+    expect(launching.answers).toEqual(before.answers);
+    expect(launching.multiSelectChecked).toEqual(before.multiSelectChecked);
+    expect(launching.customDraftsByTab).toEqual(before.customDraftsByTab);
+    const returned = apply(launching, {
+      kind: "discussion_finished",
+      thread,
       usage: emptyDiscussionUsage(),
+      resolution: {
+        id: "r1",
+        outcome: "A has less maintenance.",
+        classification: "context_only",
+        transcript: [{ role: "assistant", text: "A has less maintenance." }],
+        classifierUsage: emptyDiscussionUsage(),
+        createdAt: Date.now(),
+      },
     }).state;
-    state = apply(state, { kind: "discussion_back" }).state;
-    const answer: QuestionAnswer = {
-      questionIndex: 0,
-      question: "Pick one",
-      kind: "option",
-      answer: "A",
-    };
-    const result = apply(state, { kind: "confirm", answer }).effects[0];
-    expect(result).toMatchObject({
-      kind: "done",
-      result: {
-        cancelled: false,
-        discussions: [
-          {
-            questionIndex: 0,
-            messages: [
-              { role: "user", text: "What is safer?" },
-              { role: "assistant", text: "A has fewer dependencies." },
-            ],
-          },
-        ],
-      },
-    });
+    expect(returned.multiSelectChecked).toEqual(before.multiSelectChecked);
+    expect(returned.customDraftsByTab).toEqual(before.customDraftsByTab);
+    expect(returned.collapsed).toBe(true);
+    expect(returned.optionIndex).toBe(2);
   });
 
-  it("represents handoff as non-cancellation with the question, choices, draft, and partial answers", () => {
-    const questions = [makeQuestion(), makeQuestion({ question: "Second?", header: "Second" })];
-    const partial: QuestionAnswer = {
-      questionIndex: 0,
-      question: "Pick one",
-      kind: "option",
-      answer: "A",
-    };
-    const ctx = makeApplyContext({ questions, itemsByTab: [items, items] });
-    let state = makeQuestionnaireState({ currentTab: 1, optionIndex: 2, answers: new Map([[0, partial]]) });
-    state = reduce(state, { kind: "discussion_enter" }, ctx).state;
-    state = reduce(state, { kind: "discussion_draft", value: "These choices do not cover it" }, ctx).state;
-    const effect = reduce(state, { kind: "discussion_handoff", reason: "Need broader investigation" }, ctx).effects[0];
-    expect(effect).toMatchObject({
-      kind: "done",
-      result: {
-        cancelled: false,
-        outcome: "handoff",
-        answers: [partial],
-        handoff: {
-          questionIndex: 1,
-          question: "Second?",
-          reason: "Need broader investigation",
-          transcript: [{ role: "user", text: "These choices do not cover it" }],
-          partialAnswers: [partial],
-        },
+  it("preselects a valid single option but still requires normal Enter confirmation", () => {
+    let state = apply(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }).state;
+    state = apply(state, {
+      kind: "discussion_finished",
+      thread,
+      usage: emptyDiscussionUsage(),
+      resolution: {
+        id: "r1",
+        outcome: "Choose B.",
+        classification: "single_option",
+        suggestion: { kind: "option", optionLabels: ["B"] },
+        transcript: [],
+        classifierUsage: emptyDiscussionUsage(),
+        createdAt: Date.now(),
       },
-    });
+    }).state;
+    expect(state.optionIndex).toBe(1);
+    expect(state.answers.size).toBe(0);
+    const answer: QuestionAnswer = { questionIndex: 0, question: "Pick one", kind: "option", answer: "B" };
+    expect(apply(state, { kind: "confirm", answer }).effects[0]).toMatchObject({ kind: "done", result: { answers: [answer] } });
   });
 
-  it("bounds transcript count and total characters from the newest messages", () => {
-    const transcript = Array.from({ length: MAX_DISCUSSION_MESSAGES + 5 }, (_, i) => ({
-      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
-      text: `${i}:` + "x".repeat(MAX_DISCUSSION_CONTEXT_CHARS / 2),
-    }));
-    const bounded = boundDiscussionTranscript(transcript);
+  it("projects validated multi and custom suggestions into the ordinary controls", () => {
+    const multiQuestion = makeQuestion({ multiSelect: true });
+    const multiItems: WrappingSelectItem[] = [...items, { kind: "next", label: "Next" }];
+    let multi = reduce(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }, makeApplyContext({ questions: [multiQuestion], itemsByTab: [multiItems] })).state;
+    multi = reduce(multi, {
+      kind: "discussion_finished",
+      thread,
+      usage: emptyDiscussionUsage(),
+      resolution: {
+        id: "multi",
+        outcome: "Both apply.",
+        classification: "multi_options",
+        suggestion: { kind: "multi", optionLabels: ["A", "B"] },
+        transcript: [],
+        classifierUsage: emptyDiscussionUsage(),
+        createdAt: Date.now(),
+      },
+    }, makeApplyContext({ questions: [multiQuestion], itemsByTab: [multiItems] })).state;
+    expect(multi.multiSelectChecked).toEqual(new Set([0, 1]));
+    expect(multi.optionIndex).toBe(4);
+
+    let custom = apply(makeQuestionnaireState({ optionIndex: 2 }), { kind: "discussion_enter" }).state;
+    const customResult = apply(custom, {
+      kind: "discussion_finished",
+      thread,
+      usage: emptyDiscussionUsage(),
+      resolution: {
+        id: "custom",
+        outcome: "Use a hybrid.",
+        classification: "custom_answer",
+        suggestion: { kind: "custom", customAnswer: "Hybrid" },
+        transcript: [],
+        classifierUsage: emptyDiscussionUsage(),
+        createdAt: Date.now(),
+      },
+    });
+    custom = customResult.state;
+    expect(custom.inputMode).toBe(true);
+    expect(custom.optionIndex).toBe(3);
+    expect(custom.customDraftsByTab.get(0)).toBe("Hybrid");
+    expect(customResult.effects).toContainEqual({ kind: "set_input_buffer", value: "Hybrid" });
+  });
+
+  it("reserves the canonical sentinel label and bounds observable transcripts", () => {
+    expect(validateQuestionnaire({ questions: [makeQuestion({ options: [{ label: "Discuss this", description: "collision" }, { label: "B", description: "b" }] })] })).toMatchObject({ ok: false, error: "reserved_label" });
+    const bounded = boundDiscussionTranscript(Array.from({ length: 30 }, (_, index) => ({ role: "assistant" as const, text: `${index}: ${"x".repeat(4_000)}` })));
     expect(bounded.truncated).toBe(true);
-    expect(bounded.messages.length).toBeLessThanOrEqual(MAX_DISCUSSION_MESSAGES);
-    expect(bounded.messages.reduce((sum, message) => sum + message.text.length, 0)).toBeLessThanOrEqual(
-      MAX_DISCUSSION_CONTEXT_CHARS,
-    );
-    expect(bounded.messages.at(-1)?.text.startsWith(`${transcript.length - 1}:`)).toBe(true);
+    expect(bounded.messages.at(-1)?.text).toContain("29:");
   });
 });

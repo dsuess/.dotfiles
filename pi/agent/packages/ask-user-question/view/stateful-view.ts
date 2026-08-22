@@ -21,4 +21,4 @@ export interface StatefulView<P> extends Component {
  * Priority order: notes > submit > options. Matches the dispatcher
  * cascade exactly so the union is observably equivalent to today's reads.
  */
-export type ActiveView = "discussion" | "notes" | "options" | "submit";
+export type ActiveView = "notes" | "options" | "submit";

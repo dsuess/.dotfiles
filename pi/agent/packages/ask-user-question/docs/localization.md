@@ -1,84 +1,17 @@
 # Localization
 
-How the dialog picks its language, which languages ship, and how to add one.
+The package works without `@juicesharp/rpiv-i18n`; every string falls back to inline English. With the optional peer installed, locale resolution follows the i18n package's configured language and updates an open questionnaire at render time.
 
-## Enabling it
+Nine locale files ship in `locales/`: `de`, `en`, `es`, `fr`, `pt`, `pt-BR`, `ru`, `uk`, and `zh`.
 
-The extension works standalone: install only this package and you get the full dialog in
-English. Localization needs one more install:
+Translated chrome includes the three sentinel labels, compact returned-thread status/outcome/error text, questionnaire controls, review text, notes, previews, and RPC dialog prompts. Locale files contain only the current compact outcome/error strings for discussion threads.
 
-```sh
-pi install npm:@juicesharp/rpiv-i18n
-```
+Model-facing content remains English: tool descriptions, parameter schema descriptions, errors, and reserved-label validation. This keeps tool behavior stable across locales. The fixed English labels `Discuss this` and `Type something.` remain reserved even when their visible labels are localized.
 
-Restart your Pi session. If you installed through
-[`@juicesharp/rpiv-pi`](https://www.npmjs.com/package/@juicesharp/rpiv-pi) and ran
-`/rpiv-setup`, you already have it.
+To add a locale:
 
-The dependency is a genuinely optional peer. This package loads the SDK inside a
-`try`/`catch` at startup; when it is absent, every string falls back to its inline English
-literal at the call site. There is no warning and no crash — the dialog simply renders in
-English.
+1. Copy `locales/en.json` to `locales/<code>.json`.
+2. Keep every key and its placeholders/symbols.
+3. Translate values and restart Pi.
 
-## Picking a language
-
-With the SDK installed, the locale resolves in this order, first hit wins:
-
-1. `pi --locale <code>` on the command line
-2. `~/.config/rpiv-i18n/locale.json`
-3. `LANG` / `LC_ALL` from the environment
-4. English
-
-`/languages` opens an interactive picker and flips the strings live — the dialog reads its
-strings at render time, so an open questionnaire follows the change. Both `/languages` and
-`--locale` are registered by `@juicesharp/rpiv-i18n`, not by this package.
-
-## Shipped languages
-
-Nine locale files ship in `locales/`:
-
-| Code | Language |
-| --- | --- |
-| `de` | Deutsch |
-| `en` | English |
-| `es` | Español |
-| `fr` | Français |
-| `pt` | Português |
-| `pt-BR` | Português (Brasil) |
-| `ru` | Русский |
-| `uk` | Українська |
-| `zh` | 中文 |
-
-## What is translated, and what is not
-
-Translation covers the chrome you read: the `Discuss this`, `Type something.`, and `Next`
-sentinel rows; discussion headings, actors, input, actions, status/error labels, and hints;
-the footer hints; Submit/review chrome; preview and notes text; external-editor failures;
-and RPC/native-dialog prompts. Every shipped locale carries every new discussion key under
-the namespace `@juicesharp/rpiv-ask-user-question`; missing older keys still use English
-fallbacks.
-
-Everything the *model* reads stays English by design: the tool description, the parameter
-schema descriptions, error messages, and the reserved-label list. Those are prompt inputs,
-not UI, and translating them would change model behavior rather than your reading
-experience. It also means reserved-label validation compares against fixed English
-strings, so `Discuss this` and `Type something.` are rejected as authored option labels in
-every locale.
-
-## Adding a language
-
-No code change is required.
-
-1. Copy `locales/en.json` to `locales/<code>.json`, where `<code>` is a locale the SDK
-   supports.
-2. Translate the values. Keep every key, and keep the placeholders and leading symbols
-   (`↑/↓`, `⚠`) intact.
-3. Restart Pi and select the language with `/languages`.
-
-The loader iterates the SDK's supported-locale list over this directory at startup, so a
-new file is picked up automatically. See the
-[`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n) README,
-section "Contributing translations", for the full convention.
-
-Keys are looked up individually with an English fallback, so a partially translated file
-is safe — untranslated keys render in English rather than blank.
+Missing keys safely fall back to English.

@@ -23,9 +23,7 @@ export interface QuestionnaireState {
 	notesByTab: ReadonlyMap<number, string>;
 	/** Focused row in the Submit-tab picker (0 = Submit, 1 = Cancel). Reset on tab switch. */
 	submitChoiceIndex: number;
-	/** The question whose discussion panel owns focus, or null while the structured question is visible. */
-	discussionOpenTab?: number | null;
-	/** Per-question draft, transcript, activity, error, running state, and nested usage. */
+	/** Per-question persisted child-thread metadata and latest bounded resolution. */
 	discussionsByTab?: ReadonlyMap<number, QuestionDiscussionState>;
 	/** Canonical mirror of the in-flight notes editor; runtime mirrors after `forward_notes_keystroke`. */
 	notesDraft: string;

@@ -11,9 +11,11 @@ function formatDiscussionContext(result: QuestionnaireResult): string {
 	if (contexts.length === 0) return "";
 	const segments = contexts.map((context) => {
 		const transcript = context.messages
-			.map((message) => `${message.role === "user" ? "User" : "Discussion agent"}: ${message.text}`)
+			.map((message) => `${message.role === "user" ? "User" : "Discussion thread"}: ${message.text}`)
 			.join(" | ");
-		return `\"${context.question}\": ${transcript}${context.truncated ? " [context truncated]" : ""}`;
+		const outcome = context.outcome ? ` Outcome: ${context.outcome}.` : "";
+		const classified = context.classification ? ` Classification: ${context.classification}.` : "";
+		return `\"${context.question}\":${outcome}${classified} ${transcript}${context.truncated ? " [context truncated]" : ""}`;
 	});
 	return ` Discussion context: ${segments.join(" ")}`;
 }
@@ -23,7 +25,7 @@ function formatHandoff(result: QuestionnaireResult): string {
 	if (!handoff) return HANDOFF_PREFIX;
 	const choices = handoff.options.map((option) => `${option.label} — ${option.description}`).join("; ");
 	const transcript = handoff.transcript
-		.map((message) => `${message.role === "user" ? "User" : "Discussion agent"}: ${message.text}`)
+		.map((message) => `${message.role === "user" ? "User" : "Discussion thread"}: ${message.text}`)
 		.join(" | ");
 	return `${HANDOFF_PREFIX} Question: ${handoff.question} Choices: ${choices}. Reason: ${handoff.reason}.${
 		transcript ? ` Discussion: ${transcript}.` : ""
@@ -70,7 +72,7 @@ export function buildHandoffUserMessage(result: QuestionnaireResult): string {
 	const choices = handoff.options.map((option, index) => `${index + 1}. ${option.label} — ${option.description}`).join("\n");
 	const transcript = handoff.transcript.length
 		? handoff.transcript
-				.map((message) => `${message.role === "user" ? "Me" : "Discussion agent"}: ${message.text}`)
+				.map((message) => `${message.role === "user" ? "Me" : "Discussion thread"}: ${message.text}`)
 				.join("\n")
 		: "(no completed discussion turns)";
 	const partial = handoff.partialAnswers.length

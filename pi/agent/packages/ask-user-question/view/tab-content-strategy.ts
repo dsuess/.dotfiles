@@ -106,6 +106,29 @@ export class QuestionTabStrategy implements TabContentStrategy {
 			out.push(new Text(this.config.theme.bold(question.question), 1, 0));
 			out.push(new Spacer(1));
 		}
+		const discussion = state.discussionsByTab?.get(state.currentTab);
+		if (discussion?.launching) {
+			out.push(new Text(this.config.theme.fg("warning", t("discussion.launching", "Opening discussion thread…")), 1, 0));
+			out.push(new Spacer(1));
+		} else if (discussion?.resolution) {
+			const suffix = discussion.resolution.classification === "context_only"
+				? t("discussion.context_only", "Context returned; choose the answer if appropriate.")
+				: t("discussion.confirm", "A suggested answer is selected; press Enter to confirm or choose another answer.");
+			out.push(
+				new Text(
+					this.config.theme.fg(
+						"muted",
+						`${t("discussion.outcome", "Discussion outcome")}: ${discussion.resolution.outcome}\n${suffix}`,
+					),
+					1,
+					0,
+				),
+			);
+			out.push(new Spacer(1));
+		} else if (discussion?.error) {
+			out.push(new Text(this.config.theme.fg("error", `${t("discussion.error", "Discussion error")}: ${discussion.error}`), 1, 0));
+			out.push(new Spacer(1));
+		}
 		return out;
 	}
 

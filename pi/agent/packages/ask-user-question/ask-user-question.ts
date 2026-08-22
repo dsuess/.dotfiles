@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { formatParentEntries, runDiscussionTurn } from "./discussion/runtime.js";
+import { runDiscussionFork } from "./discussion/runtime.js";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import { loadConfig, resolveCollapseKey, validateGuidanceFields } from "./config.js";
 import {
@@ -12,7 +12,6 @@ import {
 // none of the ~560ms TUI render graph that QuestionnaireSession lazy-loads.
 import { hasDialogUI, runRpcQuestionnaire } from "./rpc-fallback.js";
 import { displayLabel, t } from "./state/i18n-bridge.js";
-import type { QuestionnaireDiscussionRequest } from "./state/questionnaire-session.js";
 import { sentinelsToAppend } from "./state/row-intent.js";
 import {
 	buildHandoffUserMessage,
@@ -122,18 +121,13 @@ export const DEFAULT_PROMPT_SNIPPET = `Ask the user up to ${MAX_QUESTIONS} struc
 export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	`Use ask_user_question whenever the user's request is underspecified and you cannot proceed without concrete decisions — you can ask up to ${MAX_QUESTIONS} questions per invocation.`,
 	`Each question MUST have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Every option requires a concise label (1-5 words) and a description explaining what the choice means or its trade-offs. The extension adds "Discuss this" before the automatically appended "Type something." row on every question; the user may press Esc to abandon the questionnaire. Do NOT author "Other", "Discuss this", or "Type something." labels yourself — reserved labels are rejected at runtime.`,
-	`"Discuss this" lets the user ask a tool-capable child agent for clarification, then explicitly return to the unchanged choices or continue in normal chat. Do not assume discussion selected or rewrote an answer.`,
+	`In a terminal, "Discuss this" opens a persisted tool-capable child Pi thread. The user runs /resolve to return its bounded outcome to the unchanged choices; classified suggestions still require ordinary confirmation. RPC/ACP hosts hand off directly to normal chat. Do not assume discussion selected or rewrote an answer.`,
 	`Set multiSelect: true when multiple answers are valid. Provide an options[].preview markdown string when an option benefits from richer side-by-side context (mockups, code snippets, diagrams, configs) — single-select only. The "Type something." row is appended to every question; in preview mode it expands to the full pane width while typing so the custom answer is not cramped into the narrow options column. If you recommend a specific option, make that the first option and append "(Recommended)" to its label.`,
 	"Do not stack multiple ask_user_question calls back-to-back — group all clarifying questions into one invocation.",
 ];
 
 export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
-	const activeDiscussionControllers = new Set<AbortController>();
-	pi.on("session_shutdown", () => {
-		for (const controller of activeDiscussionControllers) controller.abort();
-		activeDiscussionControllers.clear();
-	});
 	pi.registerTool({
 		name: ASK_USER_QUESTION_TOOL_NAME,
 		label: "Ask User Question",
@@ -145,7 +139,7 @@ export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 
 Usage notes:
 - Every question receives "Discuss this" after the authored choices and the automatically appended "Type something." row on every question after it; users may press Esc to abandon the questionnaire. Do NOT author "Other", "Discuss this", or "Type something." labels yourself — reserved labels are rejected at runtime.
-- "Discuss this" keeps the questionnaire open while an isolated child agent answers clarification requests with the active model and child-compatible active capabilities. The user then returns to the unchanged choices or explicitly continues in normal chat.
+- In a terminal, "Discuss this" suspends the questionnaire and opens a persisted, tool-capable child Pi thread with the active model and compatible active capabilities. The user runs /resolve to return to the unchanged choices; a classified suggestion still requires normal confirmation. RPC/ACP hosts hand off directly to normal chat.
 - Use multiSelect: true when multiple answers are valid. The "Type something." row is available on every question, including when options carry a \`preview\`; in preview mode it expands to the full pane width while typing so the custom answer is not cramped into the narrow options column.
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label.
 
@@ -161,7 +155,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 		promptGuidelines: guidance.promptGuidelines ?? DEFAULT_PROMPT_GUIDELINES,
 		parameters: QuestionParamsSchema,
 
-		async execute(_toolCallId, params, parentSignal, _onUpdate, ctx) {
+		async execute(toolCallId, params, parentSignal, _onUpdate, ctx) {
 			const typed = params as unknown as QuestionParams;
 			if (!ctx.hasUI) return buildToolResult(ERROR_NO_UI, { answers: [], cancelled: true, error: "no_ui" });
 
@@ -181,38 +175,6 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 				return { ...response, terminate: true as const };
 			};
 
-			const runEmbeddedDiscussion = async (request: QuestionnaireDiscussionRequest) => {
-				const model = ctx.model;
-				if (!model) throw new Error("No active model is available for discussion");
-				const controller = new AbortController();
-				const abort = () => controller.abort();
-				request.signal.addEventListener("abort", abort, { once: true });
-				parentSignal?.addEventListener("abort", abort, { once: true });
-				activeDiscussionControllers.add(controller);
-				try {
-					const parentEntries = ctx.sessionManager.buildContextEntries() as unknown as Array<Record<string, unknown>>;
-					return await runDiscussionTurn({
-						question: request.question,
-						options: request.options,
-						userPrompt: request.userPrompt,
-						transcript: request.transcript,
-						parentContext: formatParentEntries(parentEntries),
-						systemPrompt: ctx.getSystemPrompt(),
-						cwd: ctx.cwd,
-						model: { provider: model.provider, id: model.id },
-						thinkingLevel: ctx.thinkingLevel ?? "off",
-						activeTools: pi.getActiveTools(),
-						projectTrusted: ctx.isProjectTrusted(),
-						signal: controller.signal,
-						onActivity: request.onActivity,
-					});
-				} finally {
-					request.signal.removeEventListener("abort", abort);
-					parentSignal?.removeEventListener("abort", abort);
-					activeDiscussionControllers.delete(controller);
-				}
-			};
-
 			// Emit event for external listeners (e.g., notification plugins)
 			emitAskUserPromptEvent(pi, typed);
 
@@ -225,7 +187,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			if ((ctx as { mode?: string }).mode === "rpc" && hasDialogUI(ctx.ui)) {
 				emitAskUserBlockedEvent(pi, true);
 				try {
-					return finalizeQuestionnaire(await runRpcQuestionnaire(ctx.ui, typed, runEmbeddedDiscussion));
+					return finalizeQuestionnaire(await runRpcQuestionnaire(ctx.ui, typed));
 				} finally {
 					emitAskUserBlockedEvent(pi, false);
 				}
@@ -310,7 +272,32 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 									return undefined;
 								}
 							},
-							runDiscussion: runEmbeddedDiscussion,
+							runDiscussion: async (request) => {
+								const model = ctx.model;
+								if (!model) throw new Error("No active model is available for discussion");
+								const controller = new AbortController();
+								const abort = () => controller.abort();
+								request.signal.addEventListener("abort", abort, { once: true });
+								parentSignal?.addEventListener("abort", abort, { once: true });
+								try {
+									return await runDiscussionFork({
+										...request,
+										parentSessionFile: ctx.sessionManager.getSessionFile(),
+										parentToolCallId: toolCallId,
+										systemPrompt: ctx.getSystemPrompt(),
+										cwd: ctx.cwd,
+										model: { provider: model.provider, id: model.id },
+										thinkingLevel: ctx.thinkingLevel ?? "off",
+										activeTools: pi.getActiveTools(),
+										projectTrusted: ctx.isProjectTrusted(),
+										tui,
+										signal: controller.signal,
+									});
+								} finally {
+									request.signal.removeEventListener("abort", abort);
+									parentSignal?.removeEventListener("abort", abort);
+								}
+							},
 							collapseKey,
 						});
 						sessionRef.current = session;
@@ -339,7 +326,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 				// model the user never saw the questions.
 				if (result === undefined) {
 					if (hasDialogUI(ctx.ui)) {
-						return finalizeQuestionnaire(await runRpcQuestionnaire(ctx.ui, typed, runEmbeddedDiscussion));
+						return finalizeQuestionnaire(await runRpcQuestionnaire(ctx.ui, typed));
 					}
 					return buildToolResult(ERROR_NO_CUSTOM_UI, { answers: [], cancelled: true, error: "no_custom_ui" });
 				}

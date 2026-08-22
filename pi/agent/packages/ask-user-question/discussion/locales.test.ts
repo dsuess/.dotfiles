@@ -5,26 +5,28 @@ import { describe, expect, it } from "vitest";
 
 const REQUIRED_DISCUSSION_KEYS = [
   "sentinel.discuss",
+  "discussion.launching",
+  "discussion.outcome",
+  "discussion.context_only",
+  "discussion.confirm",
+  "discussion.error",
+  "rpc.multi_choose",
+] as const;
+const REMOVED_PANEL_KEYS = [
   "discussion.heading",
   "discussion.empty",
   "discussion.you",
   "discussion.agent",
   "discussion.running_cancel",
-  "discussion.error",
-  "discussion.cancelled",
   "discussion.input_label",
   "discussion.send",
-  "discussion.ask",
   "discussion.back",
   "discussion.continue",
-  "discussion.unavailable",
-  "discussion.input",
   "discussion.hint",
-  "rpc.multi_choose",
 ] as const;
 
 describe("discussion localization", () => {
-  it("ships every new discussion key in every locale with a non-empty value", () => {
+  it("ships the compact returned-outcome keys in every locale and no panel chrome", () => {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const localeDir = join(packageRoot, "locales");
     const files = readdirSync(localeDir).filter((name) => name.endsWith(".json"));
@@ -35,6 +37,7 @@ describe("discussion localization", () => {
         expect(locale[key], `${file}:${key}`).toEqual(expect.any(String));
         expect((locale[key] as string).trim().length, `${file}:${key}`).toBeGreaterThan(0);
       }
+      for (const key of REMOVED_PANEL_KEYS) expect(locale, `${file}:${key}`).not.toHaveProperty(key);
     }
   });
 });

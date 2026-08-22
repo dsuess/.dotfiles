@@ -43,7 +43,6 @@ export function makeQuestionnaireState(over: Partial<QuestionnaireState> = {}): 
 		customDraftsByTab: over.customDraftsByTab ?? new Map(),
 		notesByTab: over.notesByTab ?? new Map(),
 		submitChoiceIndex: over.submitChoiceIndex ?? 0,
-		discussionOpenTab: over.discussionOpenTab ?? null,
 		discussionsByTab: over.discussionsByTab ?? new Map(),
 		notesDraft: over.notesDraft ?? "",
 		collapsed: over.collapsed ?? false,

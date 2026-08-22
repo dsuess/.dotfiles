@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ASK_USER_QUESTION_TOOL_NAME } from "./ask-user-question.js";
+import { isDiscussionChild } from "./discussion/child.js";
 
 /**
  * Strip-or-restore `ask_user_question` to match `ctx.hasUI`. Reads the active
@@ -25,6 +26,13 @@ import { ASK_USER_QUESTION_TOOL_NAME } from "./ask-user-question.js";
 export function reconcileAskUserQuestionTool(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	const active = pi.getActiveTools();
 	const hasTool = active.includes(ASK_USER_QUESTION_TOOL_NAME);
+	// A discussion child must never regain questionnaire recursion when its own
+	// before_agent_start reconciliation runs. The child runtime also blocks the
+	// tool at execution time, but keeping it out of the prompt is the primary guard.
+	if (isDiscussionChild()) {
+		if (hasTool) pi.setActiveTools(active.filter((name) => name !== ASK_USER_QUESTION_TOOL_NAME));
+		return;
+	}
 	// !hasUI → strip so the tool never reaches the LLM's tool list in
 	// non-interactive runs; hasUI → restore. The in-handler guards in
 	// ask-user-question.ts (!hasUI, and the custom()-undefined → dialog-walker /

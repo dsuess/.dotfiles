@@ -1,19 +1,29 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import type { DiscussionMessage, DiscussionUsage } from "./types.js";
+import type { TUI } from "@earendil-works/pi-tui";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+  DiscussionMessage,
+  DiscussionResolution,
+  DiscussionThread,
+  DiscussionUsage,
+  QuestionDiscussionState,
+} from "./types.js";
 import {
   boundDiscussionTranscript,
   emptyDiscussionUsage,
   MAX_DISCUSSION_MESSAGE_CHARS,
+  MAX_DISCUSSION_OUTCOME_CHARS,
   mergeDiscussionUsage,
 } from "./types.js";
 
-export const MAX_PARENT_CONTEXT_CHARS = 32_000;
-export const MAX_DISCUSSION_OUTPUT_CHARS = 12_000;
-export const MAX_CHILD_STDERR_CHARS = 4_000;
-export const MAX_CHILD_PROMPT_CHARS = 72_000;
+export const DISCUSSION_CHILD_MARKER = "PI_ASK_USER_QUESTION_DISCUSSION_CHILD";
+export const DISCUSSION_SYSTEM_PROMPT_PATH = "PI_ASK_USER_QUESTION_DISCUSSION_SYSTEM_PROMPT";
+export const DISCUSSION_THREAD_ENTRY = "rpiv:ask-user-question:discussion-thread";
+export const DISCUSSION_KICKOFF_ENTRY = "rpiv:ask-user-question:discussion-kickoff";
+export const DISCUSSION_RESOLUTION_ENTRY = "rpiv:ask-user-question:discussion-resolution";
 
 export const CHILD_TOOL_EXCLUSIONS = new Set([
   "ask_user_question",
@@ -24,145 +34,59 @@ export const CHILD_TOOL_EXCLUSIONS = new Set([
   "complete_stage",
 ]);
 
-export interface DiscussionTurnRequest {
+export interface DiscussionThreadMetadata {
+  questionIndex: number;
+  question: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect: boolean;
+  parentSessionFile: string;
+  parentToolCallId: string;
+  forkAnchorId: string;
+}
+
+export interface DiscussionForkRequest {
+  questionIndex: number;
   question: string;
   options: ReadonlyArray<{ label: string; description: string }>;
-  userPrompt: string;
-  transcript: readonly DiscussionMessage[];
-  parentContext: string;
+  multiSelect: boolean;
+  parentSessionFile: string | undefined;
+  parentToolCallId: string;
   systemPrompt: string;
   cwd: string;
   model: { provider: string; id: string };
   thinkingLevel: string;
   activeTools: readonly string[];
   projectTrusted: boolean;
+  tui: Pick<TUI, "start" | "stop" | "renderNow">;
+  thread?: DiscussionThread;
+  lastConsumedResolutionId?: string;
   signal?: AbortSignal;
-  onActivity?: (message: string) => void;
 }
 
-export interface DiscussionTurnResult {
-  response: string;
+export interface DiscussionForkResult {
+  thread?: DiscussionThread;
+  resolution?: DiscussionResolution;
+  /** Total usage for this child thread, not a delta. */
   usage: DiscussionUsage;
-  truncated: boolean;
-  tools: string[];
+  error?: string;
 }
 
 interface SpawnedProcess {
-  stdout: NodeJS.ReadableStream;
-  stderr: NodeJS.ReadableStream;
-  on(event: "close", listener: (code: number | null) => void): this;
-  on(event: "error", listener: (error: Error) => void): this;
+  once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  once(event: "error", listener: (error: Error) => void): this;
   kill(signal?: NodeJS.Signals): boolean;
-  killed: boolean;
 }
 
 export interface DiscussionRuntimeDependencies {
   spawnProcess: (command: string, args: string[], options: Parameters<typeof spawn>[2]) => SpawnedProcess;
   getInvocation: (args: string[]) => { command: string; args: string[] };
+  openSession: (path: string) => SessionManager;
 }
 
-export class DiscussionTurnCancelledError extends Error {
-  constructor() {
-    super("Discussion turn cancelled");
-    this.name = "DiscussionTurnCancelledError";
-  }
-}
-
-export function filterChildTools(activeTools: readonly string[]): string[] {
-  return activeTools.filter((name) => !CHILD_TOOL_EXCLUSIONS.has(name));
-}
-
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .flatMap((part) => {
-      if (!part || typeof part !== "object") return [];
-      const value = part as Record<string, unknown>;
-      if (value.type === "text" && typeof value.text === "string") return [value.text];
-      if (value.type === "toolCall" && typeof value.name === "string") return [`[tool call: ${value.name}]`];
-      return [];
-    })
-    .join("\n");
-}
-
-/** Format compaction-aware parent messages without exposing private thinking blocks or image data. */
-export function formatParentContext(
-  messages: ReadonlyArray<{ role: string; content?: unknown; summary?: string }>,
-): string {
-  const sections: string[] = [];
-  for (const message of messages) {
-    const role = message.role;
-    if (role === "assistant" || role === "user" || role === "toolResult" || role === "custom") {
-      const text = contentText(message.content);
-      if (text) sections.push(`${role}: ${text}`);
-    } else if (role === "compactionSummary" || role === "branchSummary") {
-      sections.push(`${role}: ${message.summary ?? ""}`);
-    }
-  }
-  const full = sections.join("\n\n");
-  if (full.length <= MAX_PARENT_CONTEXT_CHARS) return full;
-  return `[Earlier parent context omitted]\n${full.slice(-MAX_PARENT_CONTEXT_CHARS)}`;
-}
-
-export function formatParentEntries(entries: ReadonlyArray<Record<string, unknown>>): string {
-  const messages: Array<{ role: string; content?: unknown; summary?: string }> = [];
-  for (const entry of entries) {
-    if (entry.type === "message" && entry.message && typeof entry.message === "object") {
-      messages.push(entry.message as { role: string; content?: unknown; summary?: string });
-    } else if (entry.type === "custom_message") {
-      messages.push({ role: "custom", content: entry.content });
-    } else if (entry.type === "compaction") {
-      messages.push({ role: "compactionSummary", summary: typeof entry.summary === "string" ? entry.summary : "" });
-      if (Array.isArray(entry.retainedTail)) {
-        messages.push(...(entry.retainedTail as Array<{ role: string; content?: unknown; summary?: string }>));
-      }
-    } else if (entry.type === "branch_summary") {
-      messages.push({ role: "branchSummary", summary: typeof entry.summary === "string" ? entry.summary : "" });
-    }
-  }
-  return formatParentContext(messages);
-}
-
-export function buildDiscussionPrompt(request: DiscussionTurnRequest): string {
-  const choices = request.options
-    .map(
-      (option, index) =>
-        `${index + 1}. ${option.label.slice(0, 60)} — ${option.description.slice(0, 2_000)}`,
-    )
-    .join("\n");
-  const boundedTranscript = boundDiscussionTranscript(request.transcript);
-  const transcript = boundedTranscript.messages.length
-    ? boundedTranscript.messages
-        .map((message) => `${message.role === "user" ? "User" : "Discussion agent"}: ${message.text}`)
-        .join("\n")
-    : "(no prior discussion)";
-  const parentContext =
-    request.parentContext.length <= MAX_PARENT_CONTEXT_CHARS
-      ? request.parentContext
-      : `[Earlier parent context omitted]\n${request.parentContext.slice(-MAX_PARENT_CONTEXT_CHARS)}`;
-  const prompt = [
-    "You are handling one clarification turn inside an active structured questionnaire.",
-    "Answer the user's clarification directly. You may inspect or change the workspace only through the inherited active capabilities when doing so is genuinely required.",
-    "Do not answer the structured question for the user, rewrite its choices, dismiss the questionnaire, or expose private reasoning. Recommendations are allowed; the user remains in control.",
-    "Keep the final response concise and useful.",
-    "",
-    `Original question: ${request.question.slice(0, MAX_DISCUSSION_MESSAGE_CHARS)}`,
-    "Authored choices:",
-    choices,
-    "",
-    "Relevant parent conversation context:",
-    parentContext || "(none)",
-    "",
-    "Prior discussion for this question:",
-    transcript,
-    "",
-    "Current clarification request:",
-    request.userPrompt.slice(0, MAX_DISCUSSION_MESSAGE_CHARS),
-  ].join("\n");
-  if (prompt.length <= MAX_CHILD_PROMPT_CHARS) return prompt;
-  const headLength = 16_000;
-  return `${prompt.slice(0, headLength)}\n[Middle context omitted]\n${prompt.slice(-(MAX_CHILD_PROMPT_CHARS - headLength))}`;
+interface SecurePromptFiles {
+  dir: string;
+  systemPath: string;
+  cleanup: () => Promise<void>;
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -172,20 +96,35 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
     return { command: process.execPath, args: [currentScript, ...args] };
   }
   const execName = basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  return isGenericRuntime ? { command: "pi", args } : { command: process.execPath, args };
+  return /^(node|bun)(\.exe)?$/.test(execName) ? { command: "pi", args } : { command: process.execPath, args };
 }
 
-function usageFromMessage(message: Record<string, unknown>): DiscussionUsage {
-  const value = (message.usage ?? {}) as Record<string, unknown>;
-  const cost = (value.cost ?? {}) as Record<string, unknown>;
+export function filterChildTools(activeTools: readonly string[]): string[] {
+  return activeTools.filter((name) => !CHILD_TOOL_EXCLUSIONS.has(name));
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((part) => {
+      if (!part || typeof part !== "object") return [];
+      const value = part as Record<string, unknown>;
+      return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
+    })
+    .join("\n");
+}
+
+function usageFrom(value: unknown): DiscussionUsage {
+  const usage = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const cost = (usage.cost && typeof usage.cost === "object" ? usage.cost : {}) as Record<string, unknown>;
   const number = (input: unknown) => (typeof input === "number" && Number.isFinite(input) ? input : 0);
   return {
-    input: number(value.input),
-    output: number(value.output),
-    cacheRead: number(value.cacheRead),
-    cacheWrite: number(value.cacheWrite),
-    totalTokens: number(value.totalTokens),
+    input: number(usage.input),
+    output: number(usage.output),
+    cacheRead: number(usage.cacheRead),
+    cacheWrite: number(usage.cacheWrite),
+    totalTokens: number(usage.totalTokens),
     cost: {
       input: number(cost.input),
       output: number(cost.output),
@@ -196,159 +135,325 @@ function usageFromMessage(message: Record<string, unknown>): DiscussionUsage {
   };
 }
 
-function finalAssistantText(message: Record<string, unknown>): string {
-  if (message.role !== "assistant") return "";
-  return contentText(message.content);
+function isDiscussionThread(value: unknown): value is DiscussionThreadMetadata {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Record<string, unknown>;
+  return (
+    typeof data.questionIndex === "number" &&
+    typeof data.question === "string" &&
+    typeof data.parentSessionFile === "string" &&
+    typeof data.parentToolCallId === "string" &&
+    typeof data.forkAnchorId === "string" &&
+    Array.isArray(data.options)
+  );
 }
 
-async function makeSecureTurnFiles(cwd: string, systemPrompt: string, prompt: string) {
-  // mkdtemp creates a collision-resistant directory in the sandboxed workspace;
-  // chmod pins permissions even under an unexpectedly permissive umask.
+function isResolution(value: unknown): value is DiscussionResolution {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Record<string, unknown>;
+  return (
+    typeof data.id === "string" &&
+    typeof data.outcome === "string" &&
+    typeof data.classification === "string" &&
+    Array.isArray(data.transcript) &&
+    typeof data.createdAt === "number"
+  );
+}
+
+function entryMessages(entries: readonly SessionEntry[], afterId: string): { messages: DiscussionMessage[]; usage: DiscussionUsage } {
+  const start = entries.findIndex((entry) => entry.id === afterId);
+  const messages: DiscussionMessage[] = [];
+  let usage = emptyDiscussionUsage();
+  for (const entry of entries.slice(start < 0 ? 0 : start + 1)) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as unknown as Record<string, unknown>;
+    if (message.role === "user") {
+      const text = textFromContent(message.content);
+      if (text) messages.push({ role: "user", text });
+      continue;
+    }
+    if (message.role === "assistant") {
+      usage = mergeDiscussionUsage(usage, usageFrom(message.usage));
+      const text = textFromContent(message.content);
+      if (text) messages.push({ role: "assistant", text });
+      continue;
+    }
+    if (message.role === "toolResult") {
+      usage = mergeDiscussionUsage(usage, usageFrom(message.usage));
+      const text = textFromContent(message.content);
+      if (text) messages.push({ role: "assistant", text: `[tool: ${String(message.toolName ?? "tool")}]\n${text}` });
+    }
+  }
+  return { messages, usage };
+}
+
+/** Read the child-only observable state that the parent is allowed to project. */
+export function readDiscussionThread(sessionFile: string, openSession: (path: string) => SessionManager = SessionManager.open): {
+  thread?: DiscussionThread;
+  resolution?: DiscussionResolution;
+  usage: DiscussionUsage;
+} {
+  const session = openSession(sessionFile);
+  const entries = session.getEntries();
+  const metadataEntry = entries.find(
+    (entry) => entry.type === "custom" && entry.customType === DISCUSSION_THREAD_ENTRY && isDiscussionThread(entry.data),
+  );
+  if (!metadataEntry || metadataEntry.type !== "custom" || !isDiscussionThread(metadataEntry.data)) {
+    return { usage: emptyDiscussionUsage() };
+  }
+  const metadata = metadataEntry.data;
+  const transcript = entryMessages(entries, metadataEntry.id);
+  const resolutions = entries
+    .filter((entry) => entry.type === "custom" && entry.customType === DISCUSSION_RESOLUTION_ENTRY)
+    .flatMap((entry) => {
+      if (entry.type !== "custom" || !entry.data || typeof entry.data !== "object") return [];
+      const record = entry.data as Record<string, unknown>;
+      return isResolution(record.resolution) ? [{ entry, resolution: record.resolution }] : [];
+    });
+  let classifierUsage = emptyDiscussionUsage();
+  for (const candidate of resolutions) classifierUsage = mergeDiscussionUsage(classifierUsage, candidate.resolution.classifierUsage);
+  const newest = resolutions.at(-1)?.resolution;
+  const bounded = boundDiscussionTranscript(transcript.messages);
+  const resolution = newest
+    ? {
+        ...newest,
+        transcript: bounded.messages,
+        ...(bounded.truncated || newest.truncated ? { truncated: true } : {}),
+      }
+    : undefined;
+  return {
+    thread: {
+      sessionFile,
+      sessionId: session.getSessionId(),
+      parentSessionFile: metadata.parentSessionFile,
+      forkAnchorId: metadata.forkAnchorId,
+      parentToolCallId: metadata.parentToolCallId,
+      metadataEntryId: metadataEntry.id,
+    },
+    resolution,
+    usage: mergeDiscussionUsage(transcript.usage, classifierUsage),
+  };
+}
+
+function findForkAnchor(entries: readonly SessionEntry[], toolCallId: string): string | undefined {
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as unknown as Record<string, unknown>;
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    const called = message.content.some(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        (part as Record<string, unknown>).type === "toolCall" &&
+        (part as Record<string, unknown>).id === toolCallId,
+    );
+    if (called && entry.parentId) return entry.parentId;
+  }
+  return undefined;
+}
+
+function buildKickoff(metadata: DiscussionThreadMetadata): string {
+  const choices = metadata.options
+    .map((option, index) => `${index + 1}. ${option.label.slice(0, 60)} — ${option.description.slice(0, 2_000)}`)
+    .join("\n");
+  return [
+    "You are in a persisted child discussion for an active structured questionnaire.",
+    "Help the user investigate the question. Do not call ask_user_question, delegation, or parent workflow-completion tools.",
+    "When the user is ready to return, they can run /resolve [optional concise outcome]. Ctrl+D leaves this child unresolved and returns to the unchanged questionnaire.",
+    "The parent will require normal confirmation for any classified answer suggestion.",
+    "",
+    `Original question: ${metadata.question.slice(0, MAX_DISCUSSION_MESSAGE_CHARS)}`,
+    "Authored choices:",
+    choices,
+  ].join("\n").slice(0, 24_000);
+}
+
+export function createDiscussionThread(
+  request: Pick<
+    DiscussionForkRequest,
+    "questionIndex" | "question" | "options" | "multiSelect" | "parentSessionFile" | "parentToolCallId"
+  >,
+  openSession: (path: string) => SessionManager = SessionManager.open,
+): DiscussionThread {
+  if (!request.parentSessionFile) throw new Error("Cannot start a discussion because the parent session is not persisted.");
+  const parent = openSession(request.parentSessionFile);
+  const anchor = findForkAnchor(parent.getEntries(), request.parentToolCallId);
+  if (!anchor) {
+    throw new Error("Cannot start a discussion because the questionnaire tool-call fork anchor is unavailable.");
+  }
+  const childFile = parent.createBranchedSession(anchor);
+  if (!childFile) throw new Error("Cannot create a persisted discussion child session.");
+  const metadata: DiscussionThreadMetadata = {
+    questionIndex: request.questionIndex,
+    question: request.question,
+    options: request.options.map(({ label, description }) => ({ label, description })),
+    multiSelect: request.multiSelect,
+    parentSessionFile: request.parentSessionFile,
+    parentToolCallId: request.parentToolCallId,
+    forkAnchorId: anchor,
+  };
+  // createBranchedSession changes this temporary manager to the new child. Do
+  // not reopen its deferred file before appending metadata: an anchor before the
+  // current tool call can legitimately contain no assistant entry yet, so Pi
+  // writes the child file only on this first append.
+  const metadataEntryId = parent.appendCustomEntry(DISCUSSION_THREAD_ENTRY, metadata);
+  parent.appendCustomMessageEntry(DISCUSSION_KICKOFF_ENTRY, buildKickoff(metadata), false);
+  // Pi intentionally defers a newly branched file that contains no assistant
+  // entry. A questionnaire can be the first assistant action, so force the
+  // manager's own serializer here rather than inventing a fake assistant turn.
+  const deferredManager = parent as unknown as { _rewriteFile?: () => void };
+  if (typeof deferredManager._rewriteFile !== "function") {
+    throw new Error("Cannot persist the discussion child session with this Pi runtime.");
+  }
+  deferredManager._rewriteFile();
+  return {
+    sessionFile: childFile,
+    sessionId: parent.getSessionId(),
+    parentSessionFile: request.parentSessionFile,
+    forkAnchorId: anchor,
+    parentToolCallId: request.parentToolCallId,
+    metadataEntryId,
+  };
+}
+
+async function makeSecurePromptFile(cwd: string, systemPrompt: string): Promise<SecurePromptFiles> {
   const dir = await mkdtemp(join(cwd, ".pi-ask-user-question-"));
   await chmod(dir, 0o700);
   const systemPath = join(dir, "system.md");
-  const promptPath = join(dir, "prompt.md");
   await writeFile(systemPath, systemPrompt, { encoding: "utf8", mode: 0o600 });
-  await writeFile(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
-  return {
-    dir,
-    systemPath,
-    promptPath,
-    cleanup: async () => {
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
+  return { dir, systemPath, cleanup: async () => rm(dir, { recursive: true, force: true }) };
 }
 
-export async function runDiscussionTurn(
-  request: DiscussionTurnRequest,
+function childEnvironment(systemPath: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (
+      key === "PI_SESSION_ID" ||
+      key === "PI_SESSION_FILE" ||
+      key === "PI_PROVIDER" ||
+      key === "PI_MODEL" ||
+      key === "PI_REASONING_LEVEL" ||
+      key.startsWith("HERDR_") ||
+      key.startsWith("PI_HERDR_")
+    ) {
+      delete env[key];
+    }
+  }
+  env[DISCUSSION_CHILD_MARKER] = "1";
+  env[DISCUSSION_SYSTEM_PROMPT_PATH] = systemPath;
+  return env;
+}
+
+function waitForChild(child: SpawnedProcess, signal: AbortSignal | undefined): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      fn();
+    };
+    const abort = () => child.kill("SIGTERM");
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    child.once("close", (code, closeSignal) => finish(() => resolve({ code, signal: closeSignal })));
+    child.once("error", (error) => finish(() => reject(error)));
+  });
+}
+
+/**
+ * Suspend the parent TUI while a real interactive Pi process owns the terminal.
+ * The child records a resolution in its own persisted session; ordinary exits add
+ * nothing, so returning to this result cannot fabricate a questionnaire answer.
+ */
+export async function runDiscussionFork(
+  request: DiscussionForkRequest,
   dependencies: Partial<DiscussionRuntimeDependencies> = {},
-): Promise<DiscussionTurnResult> {
-  if (request.signal?.aborted) throw new DiscussionTurnCancelledError();
-  const tools = filterChildTools(request.activeTools);
-  const childSystemPrompt = `${request.systemPrompt}\n\n# Embedded questionnaire discussion\nDo not invoke questionnaire, delegation, or parent-workflow completion tools. Return only observable final guidance; never expose private reasoning.`;
-  const files = await makeSecureTurnFiles(request.cwd, childSystemPrompt, buildDiscussionPrompt(request));
-  const args = [
-    "--mode",
-    "json",
-    "--print",
-    "--no-session",
-    "--system-prompt",
-    files.systemPath,
-    "--model",
-    `${request.model.provider}/${request.model.id}`,
-    "--thinking",
-    request.thinkingLevel,
-    request.projectTrusted ? "--approve" : "--no-approve",
-  ];
-  if (tools.length > 0) args.push("--tools", tools.join(","));
-  else args.push("--no-tools");
-  args.push(`@${files.promptPath}`);
-
-  const getInvocationImpl = dependencies.getInvocation ?? getPiInvocation;
-  const spawnImpl = dependencies.spawnProcess ?? ((command, childArgs, options) => spawn(command, childArgs, options) as ChildProcessWithoutNullStreams);
-  const invocation = getInvocationImpl(args);
-  let usage = emptyDiscussionUsage();
-  let response = "";
-  let stderr = "";
-  let buffer = "";
-  let stopReason: string | undefined;
-  let errorMessage: string | undefined;
-  let aborted = false;
-  let lastActivity: string | undefined;
-  const emitActivity = (message: string) => {
-    if (message === lastActivity) return;
-    lastActivity = message;
-    request.onActivity?.(message);
-  };
-
+): Promise<DiscussionForkResult> {
+  const openSession = dependencies.openSession ?? SessionManager.open;
+  let thread = request.thread;
   try {
-    emitActivity("Starting discussion agent");
-    const child = spawnImpl(invocation.command, invocation.args, {
+    if (!thread) thread = createDiscussionThread(request, openSession);
+  } catch (error) {
+    return { usage: emptyDiscussionUsage(), error: error instanceof Error ? error.message : String(error) };
+  }
+
+  let files: SecurePromptFiles | undefined;
+  let stopped = false;
+  try {
+    files = await makeSecurePromptFile(request.cwd, request.systemPrompt);
+    const tools = filterChildTools(request.activeTools);
+    const args = [
+      "--session",
+      thread.sessionFile,
+      "--model",
+      `${request.model.provider}/${request.model.id}`,
+      "--thinking",
+      request.thinkingLevel,
+      request.projectTrusted ? "--approve" : "--no-approve",
+    ];
+    if (tools.length > 0) args.push("--tools", tools.join(","));
+    else args.push("--no-tools");
+
+    const getInvocation = dependencies.getInvocation ?? getPiInvocation;
+    const spawnProcess = dependencies.spawnProcess ?? ((command, childArgs, options) => spawn(command, childArgs, options) as ChildProcess);
+    const invocation = getInvocation(args);
+    request.tui.stop({ preserveScreen: true });
+    stopped = true;
+    const child = spawnProcess(invocation.command, invocation.args, {
       cwd: request.cwd,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PI_DISCUSSION_CHILD: "1" },
+      stdio: "inherit",
+      env: childEnvironment(files.systemPath),
     });
-
-    const processLine = (line: string) => {
-      if (!line.trim()) return;
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-      if (event.type === "tool_execution_start") {
-        const toolName = typeof event.toolName === "string" ? event.toolName : "capability";
-        emitActivity(`Using ${toolName}`);
-      }
-      if (event.type === "message_update") emitActivity("Writing response");
-      if (event.type === "message_end" && event.message && typeof event.message === "object") {
-        const message = event.message as Record<string, unknown>;
-        if (message.role === "assistant") {
-          usage = mergeDiscussionUsage(usage, usageFromMessage(message));
-          response = finalAssistantText(message) || response;
-          stopReason = typeof message.stopReason === "string" ? message.stopReason : stopReason;
-          errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : errorMessage;
-        }
-      }
-    };
-
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) processLine(line);
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-MAX_CHILD_STDERR_CHARS);
-    });
-
-    let forceKill: ReturnType<typeof setTimeout> | undefined;
-    let childClosed = false;
-    const abortChild = () => {
-      aborted = true;
-      child.kill("SIGTERM");
-      forceKill = setTimeout(() => {
-        if (!childClosed) child.kill("SIGKILL");
-      }, 2_000);
-      forceKill.unref?.();
-    };
-    if (request.signal?.aborted) abortChild();
-    else request.signal?.addEventListener("abort", abortChild, { once: true });
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.on("close", (code) => {
-        childClosed = true;
-        resolve(code ?? 0);
-      });
-      child.on("error", reject);
-    });
-    request.signal?.removeEventListener("abort", abortChild);
-    if (forceKill) clearTimeout(forceKill);
-    if (buffer.trim()) processLine(buffer);
-
-    if (aborted || request.signal?.aborted) throw new DiscussionTurnCancelledError();
-    if (exitCode !== 0 || stopReason === "error") {
-      throw new Error(errorMessage || stderr || `Discussion agent exited with code ${exitCode}`);
+    const exit = await waitForChild(child, request.signal);
+    const state = readDiscussionThread(thread.sessionFile, openSession);
+    const resolution = state.resolution?.id !== request.lastConsumedResolutionId ? state.resolution : undefined;
+    if (exit.code !== 0 && !resolution) {
+      return { thread: state.thread ?? thread, usage: state.usage, error: `Discussion child exited with code ${exit.code ?? "unknown"}.` };
     }
-    if (!response.trim()) throw new Error(errorMessage || stderr || "Discussion agent returned no final response");
-    const truncated = response.length > MAX_DISCUSSION_OUTPUT_CHARS || stopReason === "length";
-    if (response.length > MAX_DISCUSSION_OUTPUT_CHARS) {
-      response = `${response.slice(0, MAX_DISCUSSION_OUTPUT_CHARS)}\n[response truncated]`;
-    } else if (stopReason === "length") {
-      response = `${response}\n[response truncated by provider]`;
+    return { thread: state.thread ?? thread, resolution, usage: state.usage };
+  } catch (error) {
+    let usage = emptyDiscussionUsage();
+    try {
+      usage = readDiscussionThread(thread.sessionFile, openSession).usage;
+    } catch {
+      // A failed spawn or corrupt child file must leave the parent questionnaire usable.
     }
-    emitActivity("Discussion response ready");
-    return { response, usage, truncated, tools };
+    return { thread, usage, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    await files.cleanup();
+    try {
+      await files?.cleanup();
+    } finally {
+      if (stopped) {
+        request.tui.start();
+        request.tui.renderNow(true);
+      }
+    }
   }
 }
 
-/** Test helper: assert secure on-disk modes while a fake child is running. */
+/** Test helper: assert prompt-file permissions while a fake child is running. */
 export async function readSecureTurnFile(path: string): Promise<{ content: string; mode: number }> {
   const [content, metadata] = await Promise.all([readFile(path, "utf8"), stat(path)]);
   return { content, mode: metadata.mode & 0o777 };
+}
+
+/** Converts child-state fields into a compact failure-safe outcome. */
+export function contextOnlyResolution(
+  id: string,
+  outcome: string,
+  transcript: readonly DiscussionMessage[],
+  classifierUsage: DiscussionUsage = emptyDiscussionUsage(),
+): DiscussionResolution {
+  const bounded = boundDiscussionTranscript(transcript);
+  return {
+    id,
+    outcome: outcome.slice(0, MAX_DISCUSSION_OUTCOME_CHARS),
+    classification: "context_only",
+    transcript: bounded.messages,
+    ...(bounded.truncated ? { truncated: true } : {}),
+    classifierUsage,
+    createdAt: Date.now(),
+  };
 }

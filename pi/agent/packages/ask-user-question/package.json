@@ -1,6 +1,6 @@
 {
   "name": "@dsuess/pi-ask-user-question",
-  "version": "2.3.1-local.0",
+  "version": "2.4.0-local.0",
   "private": true,
   "description": "Locally maintained Pi structured-question extension, forked from @juicesharp/rpiv-ask-user-question 2.3.1.",
   "keywords": ["pi-package", "pi-extension", "questionnaire"],
@@ -36,9 +36,9 @@
     "typebox": "1.1.24"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.82.1",
-    "@earendil-works/pi-coding-agent": "0.82.1",
-    "@earendil-works/pi-tui": "0.82.1",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2",
     "@types/node": "22.20.1",
     "typescript": "6.0.3",
     "vitest": "4.1.10"

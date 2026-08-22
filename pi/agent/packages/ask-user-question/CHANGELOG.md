@@ -5,16 +5,20 @@ All notable changes to `@juicesharp/rpiv-ask-user-question` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.1-local.0]
+## [2.4.0-local.0]
 
 ### Added
-- A reserved `Discuss this` action on every question, with per-question transcript/draft/error state and bounded nested usage.
-- Isolated tool-capable child Pi clarification turns with active model, system/context, cwd, sandbox, and child-compatible active capabilities.
-- Responsive terminal and native-dialog discussion flows with Back, cancellation/retry, and explicit normal-chat handoff.
-- Additive discussion result metadata and exactly-once non-decline handoff continuation.
+- Persisted terminal Pi child sessions for `Discuss this`, forked before the active questionnaire tool call with `parentSession` provenance.
+- Child-only `/resolve [outcome]`, bounded observable transcript/outcome persistence, and one no-workspace-tool classifier call with usage accounting.
+- Confirmation-only return suggestions for exact options, multi-option sets, and custom answers.
 
 ### Changed
-- The package is maintained and deployed locally through the dotfiles GNU Stow workflow; upstream npm 2.3.1 remains the attributed baseline.
+- Replaced prior clarification execution with native terminal child threads and direct RPC/ACP normal-chat handoff.
+- The child inherits the effective model, thinking level, system instructions, trust, cwd, sandbox, and compatible active tools while excluding recursion, delegation, parent workflow actions, and parent Herdr/session identity.
+- Updated development API pins and compatibility documentation for Pi 0.84.2.
+
+### Removed
+- Obsolete clarification editor, activity/action controls, and their locale keys.
 
 ## [2.3.1] - 2026-07-31
 

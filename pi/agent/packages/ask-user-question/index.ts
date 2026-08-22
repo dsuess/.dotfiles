@@ -18,6 +18,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAskUserQuestionTool } from "./ask-user-question.js";
+import { registerDiscussionChildRuntime } from "./discussion/child.js";
 import { registerAskUserQuestionReconciler } from "./reconcile.js";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.js";
 
@@ -49,6 +50,7 @@ export {
 } from "./events.js";
 
 export default function (pi: ExtensionAPI) {
+	registerDiscussionChildRuntime(pi);
 	registerAskUserQuestionTool(pi);
 	registerAskUserQuestionReconciler(pi);
 }

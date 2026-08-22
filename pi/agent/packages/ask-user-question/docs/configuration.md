@@ -108,7 +108,4 @@ tool, so changes take effect on the next Pi restart.
 [`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n) rather than
 by this package — see [localization.md](./localization.md).
 
-No other package-specific environment variables are read. Clarification turns use Pi's active
-model/provider and its existing credential resolution, so model authentication must be configured.
-The child inherits the current process environment and whole-process sandbox; the extension does
-not define a second credential store.
+Terminal discussion children receive internal, one-shot environment markers for the child mode and a private parent-system-prompt file. They are not user configuration. The child uses Pi's active model/provider and existing credential resolution, inherits the whole-process sandbox, and does not define a second credential store. Parent session and Herdr/broker identity variables are removed before the child starts.

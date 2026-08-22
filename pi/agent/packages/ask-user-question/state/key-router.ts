@@ -1,5 +1,5 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import type { DiscussionUsage } from "../discussion/types.js";
+import type { DiscussionResolution, DiscussionThread, DiscussionUsage } from "../discussion/types.js";
 import type { QuestionAnswer } from "../tool/types.js";
 import { ROW_INTENT_META } from "./row-intent.js";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.js";
@@ -24,14 +24,13 @@ export type QuestionnaireAction =
 	| { kind: "input_replace"; value: string }
 	| { kind: "tab_switch"; nextTab: number }
 	| { kind: "discussion_enter" }
-	| { kind: "discussion_back" }
-	| { kind: "discussion_draft"; value: string }
-	| { kind: "discussion_start" }
-	| { kind: "discussion_activity"; message: string }
-	| { kind: "discussion_success"; response: string; usage: DiscussionUsage; truncated?: boolean }
-	| { kind: "discussion_failure"; error: string }
-	| { kind: "discussion_cancel" }
-	| { kind: "discussion_handoff"; reason: string }
+	| {
+			kind: "discussion_finished";
+			thread?: DiscussionThread;
+			resolution?: DiscussionResolution;
+			usage: DiscussionUsage;
+			error?: string;
+		}
 	| { kind: "confirm"; answer: QuestionAnswer; autoAdvanceTab?: number }
 	| { kind: "toggle"; index: number }
 	| { kind: "multi_confirm"; selected: string[]; autoAdvanceTab?: number }
@@ -181,9 +180,6 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 	) {
 		return { kind: "toggle_collapsed" };
 	}
-
-	// The focused discussion panel owns routing until the user explicitly returns.
-	if (state.discussionOpenTab != null) return { kind: "ignore" };
 
 	// Collapsed-mode lockout: while collapsed, swallow every keystroke except cancel so
 	// the user can read the now-uncovered transcript without accidentally mutating

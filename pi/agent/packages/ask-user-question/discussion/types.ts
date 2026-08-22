@@ -3,7 +3,7 @@ import type { QuestionAnswer, QuestionData } from "../tool/types.js";
 export const MAX_DISCUSSION_MESSAGES = 12;
 export const MAX_DISCUSSION_MESSAGE_CHARS = 4_000;
 export const MAX_DISCUSSION_CONTEXT_CHARS = 16_000;
-export const MAX_DISCUSSION_ACTIVITY_ITEMS = 8;
+export const MAX_DISCUSSION_OUTCOME_CHARS = 1_200;
 
 export interface DiscussionCost {
   input: number;
@@ -13,6 +13,7 @@ export interface DiscussionCost {
   total: number;
 }
 
+/** Pi-compatible usage returned by the child conversation and its resolver. */
 export interface DiscussionUsage {
   input: number;
   output: number;
@@ -22,26 +23,68 @@ export interface DiscussionUsage {
   cost: DiscussionCost;
 }
 
+/** Observable-only discussion context. Thinking and image blocks are never copied here. */
 export interface DiscussionMessage {
   role: "user" | "assistant";
   text: string;
   truncated?: boolean;
 }
 
+export type DiscussionClassification =
+  | "context_only"
+  | "single_option"
+  | "multi_options"
+  | "custom_answer";
+
+export interface DiscussionAnswerSuggestion {
+  kind: "option" | "multi" | "custom";
+  optionLabels?: string[];
+  customAnswer?: string;
+}
+
+export interface DiscussionResolution {
+  id: string;
+  outcome: string;
+  classification: DiscussionClassification;
+  suggestion?: DiscussionAnswerSuggestion;
+  transcript: DiscussionMessage[];
+  truncated?: boolean;
+  classifierUsage: DiscussionUsage;
+  classifierFailed?: boolean;
+  createdAt: number;
+}
+
+/** Durable identity of the per-question child session. */
+export interface DiscussionThread {
+  sessionFile: string;
+  sessionId?: string;
+  parentSessionFile: string;
+  forkAnchorId: string;
+  parentToolCallId: string;
+  metadataEntryId?: string;
+}
+
+/** Per-question parent state. It intentionally has no embedded-editor/panel state. */
 export interface QuestionDiscussionState {
-  draft: string;
-  transcript: readonly DiscussionMessage[];
-  running: boolean;
-  activity: readonly string[];
-  error?: string;
+  thread?: DiscussionThread;
+  lastConsumedResolutionId?: string;
+  resolution?: DiscussionResolution;
+  /** Cumulative child-conversation plus classifier usage for this thread. */
   usage: DiscussionUsage;
+  launching: boolean;
+  error?: string;
 }
 
 export interface QuestionDiscussionContext {
   questionIndex: number;
   question: string;
+  thread: DiscussionThread;
+  outcome?: string;
+  classification?: DiscussionClassification;
+  suggestion?: DiscussionAnswerSuggestion;
   messages: DiscussionMessage[];
   truncated?: boolean;
+  usage: DiscussionUsage;
 }
 
 export interface QuestionnaireHandoff {
@@ -66,13 +109,7 @@ export function emptyDiscussionUsage(): DiscussionUsage {
 }
 
 export function emptyQuestionDiscussion(): QuestionDiscussionState {
-  return {
-    draft: "",
-    transcript: [],
-    running: false,
-    activity: [],
-    usage: emptyDiscussionUsage(),
-  };
+  return { launching: false, usage: emptyDiscussionUsage() };
 }
 
 export function mergeDiscussionUsage(a: DiscussionUsage, b: DiscussionUsage): DiscussionUsage {
@@ -129,13 +166,23 @@ export function buildDiscussionContexts(
   const contexts: QuestionDiscussionContext[] = [];
   for (let questionIndex = 0; questionIndex < questions.length; questionIndex++) {
     const discussion = discussions.get(questionIndex);
-    if (!discussion || discussion.transcript.length === 0) continue;
-    const bounded = boundDiscussionTranscript(discussion.transcript);
+    if (!discussion?.thread) continue;
+    const resolution = discussion.resolution;
+    const bounded = boundDiscussionTranscript(resolution?.transcript ?? []);
     contexts.push({
       questionIndex,
       question: questions[questionIndex]!.question,
+      thread: discussion.thread,
+      ...(resolution
+        ? {
+            outcome: resolution.outcome,
+            classification: resolution.classification,
+            ...(resolution.suggestion ? { suggestion: resolution.suggestion } : {}),
+          }
+        : {}),
       messages: bounded.messages,
-      ...(bounded.truncated ? { truncated: true } : {}),
+      ...(bounded.truncated || resolution?.truncated ? { truncated: true } : {}),
+      usage: discussion.usage,
     });
   }
   return contexts;
