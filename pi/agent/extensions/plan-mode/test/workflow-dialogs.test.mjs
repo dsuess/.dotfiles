@@ -307,9 +307,12 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.match(prompt, /Clarify the overall outcome/);
 		assert.match(prompt, /"kind": "range"/);
 		assert.match(prompt, /types are advisory context/i);
+		assert.match(prompt, /explicitly answer every user question/i);
+		assert.match(prompt, /Do not submit while any question or required user decision is open/i);
+		assert.match(prompt, /After every question has an explicit answer or agreed resolution/i);
 		assert.match(prompt, /collect-then-batch clarification workflow/i);
 		assert.match(prompt, /submit_plan exactly once/i);
-		assert.doesNotMatch(prompt, /resolve every \?|cleaned edited draft|direct edits present/i);
+		assert.doesNotMatch(prompt, /genuinely unresolved decision|resolve every \?|cleaned edited draft|direct edits present/i);
 		assert.equal(harness.notifications.some(({ message, level }) => level === "info" && /approval remains pending/.test(message)), true);
 		const revised = VALID_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");
 		const resubmitted = await submit(harness, revised);

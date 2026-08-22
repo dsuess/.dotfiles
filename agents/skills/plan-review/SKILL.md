@@ -39,7 +39,9 @@ Do not search by modification time in Pi. The extension's **Review** action open
 that exact validated revision in tuicr and supplies the saved comments as structured feedback containing
 stable IDs, review/file/line/range anchors, side, lifecycle state, optional advisory type, and content. The
 canonical plan itself is not edited. Pi comments are ordinary natural-language feedback: do not reinterpret
-them as Claude's marker protocol below.
+them as Claude's marker protocol below. Every question expressed in that feedback—whether it ends in `?`,
+uses an interrogative, or otherwise asks for information or a choice—requires an explicit, attributable
+answer before a revised plan may be submitted.
 
 ## Telling the user how to invoke this (do this whenever you present a plan)
 
@@ -55,7 +57,9 @@ approving starts implementation and these annotations are never seen.
 In Pi plan mode, the interactive approval dialog already has a **Review** option. Tell the user to choose
 **Review**, add anchored comments in the same-terminal tuicr session, and quit tuicr. Pi remains gated on
 missing, empty, malformed, or failed review rounds; **Change** is the fallback outside interactive TUI mode.
-No second submit keystroke or "process my annotations" message is needed.
+No second submit keystroke or "process my annotations" message is needed. If review feedback leaves a
+user-owned choice open, Pi keeps planning active while the agent asks for and receives that decision; the
+revised plan is submitted only after the complete review discussion closes.
 
 ## The two markers
 
@@ -102,8 +106,13 @@ Be careful about false positives:
 ### Step 2 — Acknowledge what you parsed (do not revise yet)
 
 In Pi, acknowledge every structured comment by its anchor or ID and explain how you will reconcile it
-against repository evidence; comment types are advisory context only. Use the normal collect-then-batch
-clarification workflow and ask only when the comment and repository evidence do not settle a decision.
+against repository evidence; comment types are advisory context only. Inventory every user question in the
+comments individually, including natural-language interrogatives and requests for a choice that are not
+marker-prefixed or phrased with a trailing `?`. For each question, visibly provide an attributable answer
+or mark the required user decision as open. Ground an answer in repository evidence, a clearly stated
+assumption, or the user's decision, and state whether it changes the plan. Never silently turn an
+answerable question into plan text. Use the normal collect-then-batch clarification workflow for every
+user-owned decision that remains open.
 
 Briefly reflect back what you found so the user can confirm you read their marks correctly:
 - the list of `!` directives you will apply, and
@@ -114,12 +123,17 @@ If there are open questions, the revision waits.
 
 ### Step 3 — Resolve every `?` question interactively
 
-In Pi, present only the genuinely unresolved decisions identified from the structured comments and
-reconcile conflicting comments explicitly. This is not a marker-driven question gate.
+In Pi, resolve each question in the structured-comment inventory rather than treating only unresolved
+decisions as needing attention. When repository evidence or a stated assumption settles a question, give
+that answer visibly by its anchor or ID and say whether the plan changes. When a question exposes a
+user-owned choice or remains ambiguous after investigation, leave it open, reconcile any conflict with
+other feedback explicitly, and batch all such choices through the normal clarification workflow. This is
+question accountability, not a marker-driven interpretation of tuicr comment types.
 
-Present the `?` questions and discuss them with the user. Default to surfacing all of them together (so
-the user sees the full set and can answer in one pass), but stay genuinely interactive — if an answer
-raises a follow-up, pursue it; if the user wants to go one at a time, follow their lead.
+Present every unresolved question—whether it came from Pi structured feedback or a Claude `?` marker—and
+discuss it with the user. Default to surfacing all of them together (so the user sees the full set and can
+answer in one pass), but stay genuinely interactive — if an answer raises a follow-up, pursue it; if the
+user wants to go one at a time, follow their lead.
 
 While resolving:
 - Offer your own analysis or a recommendation for each question rather than just asking it back blankly —
@@ -146,14 +160,25 @@ it with the same Ctrl+G reminder from above. **Stay in plan mode** — do not be
 of this skill is a revised plan for the user to review, not executed changes. Do not hand-write into
 `~/.claude/plans/` yourself; let ExitPlanMode own that file.
 
-In Pi plan mode, once all supplied comments are reconciled and any genuine user decisions are resolved,
-submit the single complete canonical revision through `submit_plan` instead. No marker conversion or
-annotation stripping applies. The trusted extension owns
-`.pi/plans/` persistence and reopens its four-action interactive approval dialog. Never use ordinary
-mutation tools to rewrite the Pi plan file.
+In Pi plan mode, submit the single complete canonical revision through `submit_plan` only after every
+question in the structured-comment inventory has an explicit answer or agreed resolution and all supplied
+comments are reconciled. Any open user-owned decision keeps planning active and blocks submission. Record
+user-supplied decisions in the revised plan's canonical `Questions & Answers` section when applicable. No
+marker conversion or annotation stripping applies. The trusted extension owns `.pi/plans/` persistence and
+reopens its four-action interactive approval dialog. Never use ordinary mutation tools to rewrite the Pi
+plan file.
 
 ## Edge cases
 
+- **Pi feedback contains an answerable question:** answer it explicitly by comment anchor or ID, cite the
+  evidence or state the assumption, and say whether the plan changes. Do not silently fold the answer into
+  the revision.
+- **Pi feedback contains a question without `?`:** treat an interrogative or a request for information or
+  a choice as a question even when it has no marker syntax; inventory and resolve it like every other
+  review question.
+- **Pi feedback contains an unresolved user-owned choice:** batch it with every other open choice, keep
+  planning active, and do not call `submit_plan` until the user answers. Put an applicable user decision
+  in the revised plan's `Questions & Answers` section.
 - **Only `!` lines, no `?` lines:** no discussion is needed. Acknowledge the directives and go straight to
   the revised plan (Step 4).
 - **Only `?` lines, no `!` lines:** discuss all questions, then produce the revised plan reflecting the
@@ -167,6 +192,30 @@ mutation tools to rewrite the Pi plan file.
   question to discuss.
 
 ## Example
+
+### Pi structured feedback
+
+A tuicr round returns these comments:
+
+- `line-18`: "Why does this need a new queue instead of the existing dispatcher?"
+- `range-32-35`: "Could retries be capped at three, or should operators configure that?"
+- `review`: "Use the billing terminology from `docs/glossary.md`."
+
+Correct behavior:
+
+1. Acknowledge all three comments. Identify the first two as questions even though only one has a trailing
+   `?`.
+2. Inspect the repository. Reply to `line-18` with the dispatcher evidence and say that the plan changes
+   to reuse it. For `range-32-35`, explain that no repository rule chooses a cap, so the operator-owned
+   choice remains open. Reconcile the terminology feedback as advisory guidance.
+3. Ask for the retry decision together with any other open choices; do not call `submit_plan` yet.
+4. After the user decides, record that decision in `Questions & Answers` if applicable, then submit one
+   complete canonical revision.
+
+What would be wrong: silently changing the plan to use the dispatcher, or choosing three retries, without
+an explicit answer attributable to the corresponding user question.
+
+### Claude marker feedback
 
 Suppose the plan file comes back looking like this:
 
