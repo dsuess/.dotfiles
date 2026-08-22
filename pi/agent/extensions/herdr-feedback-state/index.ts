@@ -7,92 +7,72 @@ import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
 } from "../plan-mode/events.ts";
+import {
+	HERDR_BLOCKED_EVENT,
+	HERDR_FEEDBACK_SNAPSHOT_EVENT,
+	type HerdrFeedbackSource,
+} from "./events.ts";
 
-/** Event consumed by Herdr's official Pi integration. */
-const HERDR_BLOCKED_EVENT = "herdr:blocked";
 const WAITING_LABEL = "waiting for feedback";
 const BLOCKING_UI_METHODS = ["select", "confirm", "input", "editor", "custom"] as const;
 
 type BlockingUIMethod = (typeof BLOCKING_UI_METHODS)[number];
-type ContentLike = { type?: unknown; text?: unknown };
-type MessageLike = {
-	role?: unknown;
-	stopReason?: unknown;
-	content?: unknown;
-};
 type UIContextLike = Record<BlockingUIMethod, (...args: unknown[]) => unknown>;
 
-function assistantText(message: unknown): string {
-	const candidate = message as MessageLike | undefined;
-	if (candidate?.role !== "assistant") return "";
-	if (candidate.stopReason !== undefined && candidate.stopReason !== "stop") return "";
-	if (typeof candidate.content === "string") return candidate.content.trim();
-	if (!Array.isArray(candidate.content)) return "";
-	const content = candidate.content as ContentLike[];
-
-	// A tool-calling message is not a free-form request even when its preamble
-	// contains a question; the tool owns any blocked state it creates.
-	if (content.some((part) => part.type === "toolCall")) return "";
-
-	return content
-		.filter((part): part is ContentLike & { text: string } => part.type === "text" && typeof part.text === "string")
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
+function sameSource(left: HerdrFeedbackSource | undefined, right: HerdrFeedbackSource | undefined): boolean {
+	return left?.id === right?.id && left?.label === right?.label;
 }
 
-function endsWithQuestion(line: string): boolean {
-	return /\?(?:\s|[*_`~"'’”)}\]])*$/u.test(line);
-}
-
-function isChoiceLine(line: string): boolean {
-	return /^(?:[-*+•]\s+|\d{1,2}[.)]\s+|[A-Za-z][.)]\s+|\[[ xX]\]\s+)/u.test(line)
-		|| /^(?:options?|choices?):$/iu.test(line);
-}
-
-/** Conservatively identifies a settled plain-chat response that awaits an answer. */
-export function asksForFeedback(text: string): boolean {
-	const lines = text.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-	if (lines.length === 0) return false;
-	if (endsWithQuestion(lines.at(-1)!)) return true;
-
-	// Also support a question followed only by a short markdown choice list.
-	for (let index = lines.length - 2; index >= 0; index -= 1) {
-		if (endsWithQuestion(lines[index]!) && lines.slice(index + 1).every(isChoiceLine)) return true;
-	}
-	return false;
-}
-
-export function latestSettledAssistantText(entries: readonly unknown[]): string {
-	for (let index = entries.length - 1; index >= 0; index -= 1) {
-		const entry = entries[index] as { type?: unknown; message?: MessageLike } | undefined;
-		if (entry?.type !== "message") continue;
-		return assistantText(entry.message);
-	}
-	return "";
-}
-
-export default function (pi: ExtensionAPI) {
-	let latestText = "";
-	let blockingUICount = 0;
-	let blockingUIActive = false;
-	let freeformBlocked = false;
-	let questionnaireBlocked = false;
-	let workflowBlocked = false;
-	let reportedBlocked = false;
+export default function feedbackStateExtension(pi: ExtensionAPI): void {
+	const sources = new Map<string, HerdrFeedbackSource>();
 	let rootSession = false;
+	let workflowActive = false;
+	let workflowLabel = WAITING_LABEL;
+	let installation = 0;
+	let nextUIOperation = 0;
+	let pendingUIClears = new Set<string>();
 	let clearBlockingUITimer: ReturnType<typeof setTimeout> | undefined;
 	let restoreUI: (() => void) | undefined;
 	let unsubscribeQuestionnaire: (() => void) | undefined;
 	let unsubscribeWorkflow: (() => void) | undefined;
-	let installation = 0;
+	let lastSnapshotKey = "";
+	let legacyBlocked = false;
 
-	function syncBlockedState(): void {
+	function snapshot(): HerdrFeedbackSource[] {
+		return [...sources.values()]
+			.map((source) => ({ ...source }))
+			.sort((left, right) => left.id.localeCompare(right.id));
+	}
+
+	function publishSnapshot(force = false): void {
 		if (!rootSession) return;
-		const active = blockingUIActive || freeformBlocked || questionnaireBlocked || workflowBlocked;
-		if (active === reportedBlocked) return;
-		reportedBlocked = active;
-		pi.events.emit(HERDR_BLOCKED_EVENT, active ? { active, label: WAITING_LABEL } : { active });
+		const current = snapshot();
+		const key = JSON.stringify(current);
+		if (!force && key === lastSnapshotKey) return;
+		lastSnapshotKey = key;
+		pi.events.emit(HERDR_FEEDBACK_SNAPSHOT_EVENT, { sources: current });
+
+		// The generated direct-socket integration used by --yolo only understands
+		// a boolean edge. Keep it derived from this reducer, never from prose or
+		// individual producer edges.
+		const active = current.length > 0;
+		if (active === legacyBlocked) return;
+		legacyBlocked = active;
+		pi.events.emit(HERDR_BLOCKED_EVENT, active
+			? { active: true, label: current[0]?.label ?? WAITING_LABEL }
+			: { active: false });
+	}
+
+	function setSource(id: string, label: string): void {
+		const next = { id, label };
+		if (sameSource(sources.get(id), next)) return;
+		sources.set(id, next);
+		publishSnapshot();
+	}
+
+	function clearSource(id: string): void {
+		if (!sources.delete(id)) return;
+		publishSnapshot();
 	}
 
 	function clearPendingBlockingUI(): void {
@@ -100,22 +80,22 @@ export default function (pi: ExtensionAPI) {
 		clearBlockingUITimer = undefined;
 	}
 
-	function beginBlockingUI(): void {
+	function beginBlockingUI(): string {
 		clearPendingBlockingUI();
-		blockingUICount += 1;
-		blockingUIActive = true;
-		syncBlockedState();
+		const id = `ui:${++nextUIOperation}`;
+		setSource(id, WAITING_LABEL);
+		return id;
 	}
 
-	function endBlockingUI(generation: number): void {
+	function endBlockingUI(id: string, generation: number): void {
 		if (generation !== installation) return;
-		blockingUICount = Math.max(0, blockingUICount - 1);
-		if (blockingUICount > 0 || clearBlockingUITimer) return;
+		pendingUIClears.add(id);
+		if (clearBlockingUITimer) return;
 		clearBlockingUITimer = setTimeout(() => {
 			clearBlockingUITimer = undefined;
-			if (generation !== installation || blockingUICount > 0) return;
-			blockingUIActive = false;
-			syncBlockedState();
+			if (generation !== installation) return;
+			for (const sourceId of pendingUIClears) clearSource(sourceId);
+			pendingUIClears.clear();
 		}, 0);
 	}
 
@@ -129,20 +109,20 @@ export default function (pi: ExtensionAPI) {
 			if (typeof original !== "function") continue;
 			originals.set(method, original);
 			function wrapped(this: unknown, ...args: unknown[]) {
-				beginBlockingUI();
+				const sourceId = beginBlockingUI();
 				try {
 					return Promise.resolve(original.apply(this, args)).then(
 						(value) => {
-							endBlockingUI(generation);
+							endBlockingUI(sourceId, generation);
 							return value;
 						},
 						(error) => {
-							endBlockingUI(generation);
+							endBlockingUI(sourceId, generation);
 							throw error;
 						},
 					);
 				} catch (error) {
-					endBlockingUI(generation);
+					endBlockingUI(sourceId, generation);
 					throw error;
 				}
 			}
@@ -159,79 +139,63 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	function updateQuestionnaireBlocked(data: unknown): void {
+	function updateQuestionnaire(data: unknown): void {
 		const payload = data as AskUserBlockedEventPayload | undefined;
-		questionnaireBlocked = payload?.active === true;
-		syncBlockedState();
+		if (payload?.active === true) setSource("questionnaire", WAITING_LABEL);
+		else clearSource("questionnaire");
 	}
 
-	function updateWorkflowBlocked(data: unknown): void {
+	function updateWorkflow(data: unknown): void {
 		const payload = data as PlanModeWorkflowStateEvent | undefined;
-		workflowBlocked = payload?.feedbackPending === true;
-		syncBlockedState();
+		workflowActive = payload?.feedbackPending === true;
+		workflowLabel = WAITING_LABEL;
+		if (workflowActive) setSource("plan-workflow", workflowLabel);
+		else clearSource("plan-workflow");
 	}
 
 	function subscribeFeedbackSources(): void {
-		if (!unsubscribeQuestionnaire) {
-			unsubscribeQuestionnaire = pi.events.on(ASK_USER_BLOCKED_EVENT, updateQuestionnaireBlocked);
-		}
-		if (!unsubscribeWorkflow) unsubscribeWorkflow = pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, updateWorkflowBlocked);
+		if (!unsubscribeQuestionnaire) unsubscribeQuestionnaire = pi.events.on(ASK_USER_BLOCKED_EVENT, updateQuestionnaire);
+		if (!unsubscribeWorkflow) unsubscribeWorkflow = pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, updateWorkflow);
 	}
 
 	function resetSessionState(disposeSubscriptions = false): void {
 		installation += 1;
 		clearPendingBlockingUI();
+		pendingUIClears.clear();
 		restoreUI?.();
 		restoreUI = undefined;
-		blockingUICount = 0;
-		blockingUIActive = false;
-		questionnaireBlocked = false;
+		for (const id of [...sources.keys()]) {
+			if (id !== "plan-workflow") sources.delete(id);
+		}
+		if (workflowActive) sources.set("plan-workflow", { id: "plan-workflow", label: workflowLabel });
+		else sources.delete("plan-workflow");
+		lastSnapshotKey = "";
+		legacyBlocked = false;
 		if (disposeSubscriptions) {
 			unsubscribeQuestionnaire?.();
 			unsubscribeQuestionnaire = undefined;
 			unsubscribeWorkflow?.();
 			unsubscribeWorkflow = undefined;
-			workflowBlocked = false;
+			workflowActive = false;
+			sources.clear();
 		}
 	}
 
-	// Subscribe before any session_start handler can publish restored feedback state.
+	// Subscribe before any session_start handler can publish restored workflow
+	// state. The durable plan producer re-emits its snapshot on restoration.
 	subscribeFeedbackSources();
 
 	pi.on("session_start", (_event, ctx) => {
 		subscribeFeedbackSources();
 		resetSessionState();
 		rootSession = ctx.mode === "tui";
-		reportedBlocked = false;
-		latestText = rootSession ? latestSettledAssistantText(ctx.sessionManager.getBranch()) : "";
-		freeformBlocked = rootSession && asksForFeedback(latestText);
 		if (!rootSession) return;
-
 		installBlockingUI(ctx.ui as UIContextLike);
-		syncBlockedState();
-	});
-
-	pi.on("message_end", (event) => {
-		if (rootSession && event.message.role === "assistant") latestText = assistantText(event.message);
-	});
-
-	pi.on("agent_start", () => {
-		if (!rootSession) return;
-		latestText = "";
-		freeformBlocked = false;
-		syncBlockedState();
-	});
-
-	pi.on("agent_settled", () => {
-		if (!rootSession) return;
-		freeformBlocked = asksForFeedback(latestText);
-		syncBlockedState();
+		publishSnapshot(true);
 	});
 
 	pi.on("session_shutdown", () => {
 		rootSession = false;
 		resetSessionState(true);
-		freeformBlocked = false;
-		reportedBlocked = false;
 	});
 }

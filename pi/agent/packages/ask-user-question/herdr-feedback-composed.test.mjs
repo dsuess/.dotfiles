@@ -42,6 +42,7 @@ function createHarness() {
 	const reports = [];
 	let tool;
 	const pi = {
+		registerCommand() {},
 		events: {
 			on(name, handler) {
 				if (!bus.has(name)) bus.set(name, []);
@@ -206,7 +207,7 @@ describe("real questionnaire producer to Herdr feedback bridge", () => {
 			delete process.env.HTTP_PROXY;
 			delete process.env.http_proxy;
 
-			const reporter = (await import("../../extensions/herdr-agent-state.ts?questionnaire-composed")).default;
+			const reporter = (await import("../../extensions/herdr-status-reporter.ts?questionnaire-composed")).default;
 			const harness = createHarness();
 			reporter(harness.pi);
 			let idle = false;
