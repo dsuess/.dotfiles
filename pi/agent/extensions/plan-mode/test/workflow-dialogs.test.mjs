@@ -177,6 +177,34 @@ test("Escape keeps approval pending and manual reopening remains available", asy
 	} finally { await harness.cleanup(); }
 });
 
+test("completing a validated plan publishes the completed workflow state without feedback", async () => {
+	const harness = await createHarness({ actions: ["run"] });
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		for (const itemId of ["A", "B", "C"]) {
+			await harness.tools.get("plan_progress").execute("progress", {
+				itemId,
+				status: "in_progress",
+			}, undefined, undefined, harness.ctx);
+			await harness.tools.get("plan_progress").execute("progress", {
+				itemId,
+				status: "completed",
+				evidence: "Verified",
+			}, undefined, undefined, harness.ctx);
+		}
+		await harness.tools.get("complete_plan").execute("complete", {
+			summary: "All parts complete",
+			tests: ["npm test"],
+		}, undefined, undefined, harness.ctx);
+		assert.deepEqual(harness.workflowStates.at(-1), {
+			mode: "completed",
+			feedbackPending: false,
+		});
+	} finally { await harness.cleanup(); }
+});
+
 test("fast approval starts an equivalent optimizer revision and queues direct parallel execution", async () => {
 	const harness = await createHarness({
 		actions: ["fast"],

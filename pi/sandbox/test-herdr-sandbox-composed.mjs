@@ -59,6 +59,7 @@ test("sandbox wrapper establishes Herdr authority before an unresolved plan wait
 		await mkdir(path.join(home, ".pi/sandbox/node_modules/.bin"), { recursive: true });
 		await mkdir(path.join(home, ".pi/agent/extensions/herdr-feedback-state"), { recursive: true });
 		await mkdir(path.join(home, ".pi/agent/extensions/plan-mode"), { recursive: true });
+		await mkdir(path.join(home, ".pi/agent/packages/ask-user-question"), { recursive: true });
 		await mkdir(realBin, { recursive: true });
 		await mkdir(workspace, { recursive: true });
 		await writeFile(path.join(home, ".pi/agent/settings.json"), "{}\n");
@@ -70,6 +71,7 @@ test("sandbox wrapper establishes Herdr authority before an unresolved plan wait
 		await cp(path.join(ROOT, "pi/agent/extensions/herdr-agent-state.ts"), path.join(home, ".pi/agent/extensions/herdr-agent-state.ts"));
 		await cp(path.join(ROOT, "pi/agent/extensions/herdr-feedback-state/index.ts"), path.join(home, ".pi/agent/extensions/herdr-feedback-state/index.ts"));
 		await cp(path.join(ROOT, "pi/agent/extensions/plan-mode/events.ts"), path.join(home, ".pi/agent/extensions/plan-mode/events.ts"));
+		await cp(path.join(ROOT, "pi/agent/packages/ask-user-question/events.ts"), path.join(home, ".pi/agent/packages/ask-user-question/events.ts"));
 		await writeFile(path.join(home, ".pi/sandbox/unrestricted-network.mjs"), `
 import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);

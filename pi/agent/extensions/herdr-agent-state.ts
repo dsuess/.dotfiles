@@ -7,8 +7,10 @@
 // Local hardening: sandboxed Pi uses the status-only HTTP broker transport below.
 // Reinstalling this generated integration must preserve that transport.
 
+import { existsSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
+import { PLAN_MODE_WORKFLOW_STATE_EVENT } from "./plan-mode/events.ts";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
@@ -173,7 +175,7 @@ function readSessionRef(ctx: any): SessionRef {
   let id: string | undefined;
   try {
     const candidate = ctx?.sessionManager?.getSessionFile?.();
-    if (typeof candidate === "string" && candidate.startsWith("/")) file = candidate;
+    if (typeof candidate === "string" && candidate.startsWith("/") && existsSync(candidate)) file = candidate;
   } catch {
     // The session ID below remains a stable fallback while Pi creates its file.
   }
@@ -264,6 +266,7 @@ export default function (pi) {
   if (!enabled()) return;
 
   let agentActive = false;
+  let completedWorkflow = false;
   let blockedCount = 0;
   let blockedMessage: string | undefined;
   let rootSession = false;
@@ -324,6 +327,9 @@ export default function (pi) {
   function effectiveState() {
     if (blockedCount > 0) {
       return { state: "blocked" as const, message: blockedMessage };
+    }
+    if (completedWorkflow) {
+      return { state: "idle" as const, message: undefined };
     }
     if (agentActive) {
       return { state: "working" as const, message: undefined };
@@ -478,6 +484,7 @@ export default function (pi) {
     deliveryFailureNotified = false;
     retryIndex = 0;
     agentActive = false;
+    completedWorkflow = false;
     blockedCount = 0;
     blockedMessage = undefined;
     latestContext = ctx;
@@ -496,6 +503,12 @@ export default function (pi) {
 
     blockedCount += 1;
     blockedMessage = data.label;
+    publishState();
+  });
+
+  pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data) => {
+    if (!ownsAuthority()) return;
+    completedWorkflow = data?.mode === "completed";
     publishState();
   });
 
@@ -521,6 +534,7 @@ export default function (pi) {
     // Preserve the existing session-before-turn ordering even when the
     // canonical reference has not changed.
     sessionAcknowledged = false;
+    completedWorkflow = false;
     agentActive = true;
     updateDesired(false, owner);
     void startReconciliation(owner);

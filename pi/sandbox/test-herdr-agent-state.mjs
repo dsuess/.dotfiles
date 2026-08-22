@@ -341,6 +341,88 @@ test("blocked state takes precedence over a settled lifecycle transition", async
 	}
 });
 
+test("a completed workflow event reports idle before settlement and yields to feedback or a new run", async () => {
+	const restore = preserveHerdrEnvironment();
+	const requests = [];
+	const broker = createHttpServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk.toString("utf8");
+		});
+		request.on("end", () => {
+			requests.push({ body: JSON.parse(body) });
+			response.writeHead(200);
+			response.end('{"ok":true}');
+		});
+	});
+	const brokerPort = await listen(broker);
+
+	try {
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-7";
+		delete process.env.HERDR_SOCKET_PATH;
+		process.env.HERDR_PI_STATUS_PORT = String(brokerPort);
+		process.env.HERDR_PI_STATUS_TOKEN = "status-token";
+		delete process.env.HTTP_PROXY;
+		delete process.env.http_proxy;
+
+		const harness = createComposedHarness();
+		const ctx = composedTuiContext("completed-session", () => false, composedUI());
+		await harness.install();
+		await harness.emitLifecycle("session_start", { reason: "startup" }, ctx);
+		await waitFor(
+			() => requests.some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "completed-session"
+				&& body.request.params.state === "working"),
+			"active implementation state",
+		);
+
+		const completionStart = requests.length;
+		harness.emitWorkflow({ mode: "completed", feedbackPending: false });
+		await waitFor(
+			() => requests.slice(completionStart).some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "completed-session"
+				&& body.request.params.state === "idle"),
+			"acknowledged completed-plan idle state without agent_settled",
+		);
+		assert.deepEqual(requestStates(requests.slice(completionStart)), ["idle"]);
+
+		const nextRunStart = requests.length;
+		await harness.emitLifecycle("agent_start", {}, ctx);
+		await waitFor(
+			() => requests.slice(nextRunStart).some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "completed-session"
+				&& body.request.params.state === "working"),
+			"new run superseding completed-plan idle",
+		);
+		assert.equal(requestStates(requests.slice(nextRunStart)).at(-1), "working");
+
+		const feedbackStart = requests.length;
+		harness.emitWorkflow({ mode: "completed", feedbackPending: true });
+		await waitFor(
+			() => requests.slice(feedbackStart).some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "completed-session"
+				&& body.request.params.state === "blocked"),
+			"feedback overriding completed-plan idle",
+		);
+		assert.deepEqual(requestStates(requests.slice(feedbackStart)), ["blocked"]);
+
+		const feedbackClearStart = requests.length;
+		harness.emitWorkflow({ mode: "completed", feedbackPending: false });
+		await waitFor(
+			() => requests.slice(feedbackClearStart).some(({ body }) => body.request.method === "pane.report_agent"
+				&& body.request.params.agent_session_id === "completed-session"
+				&& body.request.params.state === "idle"),
+			"cleared feedback restoring completed-plan idle",
+		);
+		assert.deepEqual(requestStates(requests.slice(feedbackClearStart)), ["idle"]);
+		await harness.emitLifecycle("session_shutdown", {}, ctx);
+	} finally {
+		restore();
+		await close(broker);
+	}
+});
+
 test("broker delivery retries a failed acknowledgement before advancing the state queue", async () => {
 	const restore = preserveHerdrEnvironment();
 	const requests = [];

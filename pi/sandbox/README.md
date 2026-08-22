@@ -193,6 +193,15 @@ depend on a future lifecycle event. These reports are authoritative to Herdr,
 so screen detection is skipped. On reload, the retiring reporter stops before
 its replacement can report.
 
+Green status has two inputs: Pi's ordinary settled lifecycle and the durable
+`plan-mode:workflow-state` event when its persisted mode is `completed`. The
+latter is a completed-plan-only semantic override, so it may report `idle`
+before a later `agent_settled`; the next `agent_start` reasserts `working`.
+An active feedback wait remains `blocked` until cleared. Do not infer these
+states from the screen or bypass the broker: diagnose stale reports through
+broker acknowledgement plus `herdr agent get <pane>` and
+`herdr agent explain <pane>`.
+
 A listening broker process or one successful canary alone does not prove
 terminal-state reliability. Regression coverage must exhaust both immediate
 attempts for terminal `idle` and durable `blocked`, restore delivery, and verify

@@ -154,7 +154,8 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 
 ## Lifecycle and host behavior
 
-- Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; older child-session executions continue in their existing session files.
+- Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; older child-session executions continue in their existing session files. Every refresh emits `plan-mode:workflow-state` with the persisted mode and `feedbackPending`, including restored completed sessions and the `complete_plan` transition.
+- Herdr normally reports green from Pi's settled lifecycle. A persisted `mode: "completed"` is the only semantic green override: it reports idle without waiting for `agent_settled`. The next agent run clears that override and reports working. An active feedback wait remains blocked until it clears; blocked and paused workflow modes are not green overrides.
 - After an agent turn settles—or immediately after restoring an idle branch—any unconsumed approval or mandatory checkpoint whose persisted `presented` flag is false opens through the current TUI or RPC context, regardless of whether planning began by command, flag, shortcut, or palette.
 - A decision is marked presented before the extension awaits input, preventing duplicate dialogs. Escape leaves it pending, and `/plan-actions` or `/plan-stage-actions` reopens it manually.
 - TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
