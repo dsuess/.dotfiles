@@ -7,8 +7,10 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MINIMUM_TUICR_VERSION = [0, 19, 1] as const;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
-const PLAN_REVIEW_THEME_NAME = "pi-plan-review-neutral-additions";
+const PLAN_REVIEW_THEME_NAME = "pi-plan-review-mocha";
 const PLAN_REVIEW_THEME_SOURCE = new URL("./tuicr-plan-review-theme.toml", import.meta.url);
+const PLAN_REVIEW_SYNTAX_THEME_NAME = "pi-plan-review-mocha-markdown.tmTheme";
+const PLAN_REVIEW_SYNTAX_THEME_SOURCE = new URL(`./${PLAN_REVIEW_SYNTAX_THEME_NAME}`, import.meta.url);
 
 export type TuicrCommentLocation =
 	| { kind: "review"; path: null; startLine: null; endLine: null; side: null }
@@ -218,10 +220,16 @@ async function prepareIsolatedConfiguration(configHome: string): Promise<void> {
 	}
 	const themes = path.join(target, "themes");
 	await mkdir(themes, { recursive: true, mode: 0o700 });
-	await writeFile(path.join(themes, `${PLAN_REVIEW_THEME_NAME}.toml`), await readFile(PLAN_REVIEW_THEME_SOURCE, "utf8"), {
-		encoding: "utf8",
-		mode: 0o600,
-	});
+	await Promise.all([
+		writeFile(path.join(themes, `${PLAN_REVIEW_THEME_NAME}.toml`), await readFile(PLAN_REVIEW_THEME_SOURCE, "utf8"), {
+			encoding: "utf8",
+			mode: 0o600,
+		}),
+		writeFile(path.join(themes, PLAN_REVIEW_SYNTAX_THEME_NAME), await readFile(PLAN_REVIEW_SYNTAX_THEME_SOURCE, "utf8"), {
+			encoding: "utf8",
+			mode: 0o600,
+		}),
+	]);
 }
 
 function isolatedEnvironment(reviewRoot: string, configHome: string): NodeJS.ProcessEnv {

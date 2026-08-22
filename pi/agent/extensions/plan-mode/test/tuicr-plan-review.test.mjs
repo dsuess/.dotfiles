@@ -114,16 +114,25 @@ test("runs a compatible tuicr review in isolated storage and restores Pi's termi
 	const fake = compatibleSpawn({
 		onLaunch(args, options) {
 			reviewedSnapshot = args[1];
-			assert.deepEqual(args.slice(2), ["--theme", "pi-plan-review-neutral-additions", "--no-update-check"]);
+			assert.deepEqual(args.slice(2), ["--theme", "pi-plan-review-mocha", "--no-update-check"]);
 			assert.equal(options.cwd, path.dirname(args[1]));
 			assert.match(options.env.XDG_CONFIG_HOME, /pi-plan-tuicr-/);
 			assert.notEqual(options.env.XDG_CONFIG_HOME, process.env.XDG_CONFIG_HOME || path.join(process.env.HOME, ".config"));
 			assert.notEqual(options.env.HOME, process.env.HOME);
 			assert.match(options.env.XDG_DATA_HOME, /pi-plan-tuicr-/);
-			const theme = readFileSync(path.join(options.env.XDG_CONFIG_HOME, "tuicr", "themes", "pi-plan-review-neutral-additions.toml"), "utf8");
-			assert.match(theme, /^diff_add = "#ffffff"$/m);
-			assert.match(theme, /^diff_add_bg = "#18181c"$/m);
-			assert.match(theme, /^syntax_add_bg = "#18181c"$/m);
+			const themes = path.join(options.env.XDG_CONFIG_HOME, "tuicr", "themes");
+			const theme = readFileSync(path.join(themes, "pi-plan-review-mocha.toml"), "utf8");
+			const syntaxTheme = readFileSync(path.join(themes, "pi-plan-review-mocha-markdown.tmTheme"), "utf8");
+			const panelBackground = theme.match(/^panel_bg = "(#[0-9a-f]{6})"$/m)?.[1];
+			const dimForeground = theme.match(/^fg_dim = "(#[0-9a-f]{6})"$/m)?.[1];
+			assert.equal(panelBackground, "#1e1e2e");
+			assert.equal(dimForeground, panelBackground);
+			assert.match(theme, /^syntax_theme = "pi-plan-review-mocha-markdown\.tmTheme"$/m);
+			assert.match(theme, /^diff_add = "#cdd6f4"$/m);
+			assert.match(theme, /^diff_add_bg = "#1e1e2e"$/m);
+			assert.match(theme, /^syntax_add_bg = "#1e1e2e"$/m);
+			assert.match(syntaxTheme, /Pi Plan Review Mocha Markdown/);
+			assert.match(syntaxTheme, /markup\.heading\.markdown/);
 		},
 	});
 	try {

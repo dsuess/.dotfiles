@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>Pi Plan Review Mocha Markdown</string>
+  <key>settings</key>
+  <array>
+    <dict>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#cdd6f4</string>
+        <key>background</key>
+        <string>#1e1e2e</string>
+        <key>caret</key>
+        <string>#fab387</string>
+        <key>selection</key>
+        <string>#45475a</string>
+        <key>lineHighlight</key>
+        <string>#313244</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Headings</string>
+      <key>scope</key>
+      <string>markup.heading.markdown, heading.1.markdown, heading.2.markdown, heading.3.markdown, heading.4.markdown, heading.5.markdown, heading.6.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#cba6f7</string>
+        <key>fontStyle</key>
+        <string>bold</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Emphasis</string>
+      <key>scope</key>
+      <string>markup.italic.markdown, markup.bold.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#f5c2e7</string>
+        <key>fontStyle</key>
+        <string>italic</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Links</string>
+      <key>scope</key>
+      <string>markup.underline.link.markdown, string.other.link.markdown, meta.link.inline.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#89b4fa</string>
+        <key>fontStyle</key>
+        <string>underline</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Code</string>
+      <key>scope</key>
+      <string>markup.inline.raw.string.markdown, markup.raw.block.markdown, fenced_code.block.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#a6e3a1</string>
+        <key>background</key>
+        <string>#181825</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Lists</string>
+      <key>scope</key>
+      <string>markup.list.markdown, punctuation.definition.list.begin.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#fab387</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Quotes</string>
+      <key>scope</key>
+      <string>markup.quote.markdown, punctuation.definition.blockquote.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#a6adc8</string>
+        <key>fontStyle</key>
+        <string>italic</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Markdown punctuation</string>
+      <key>scope</key>
+      <string>punctuation.definition.heading.markdown, punctuation.definition.bold.markdown, punctuation.definition.italic.markdown, punctuation.definition.string.begin.markdown, punctuation.definition.string.end.markdown</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#6c7086</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
