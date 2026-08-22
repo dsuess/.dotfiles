@@ -108,4 +108,4 @@ tool, so changes take effect on the next Pi restart.
 [`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n) rather than
 by this package — see [localization.md](./localization.md).
 
-Terminal discussion children receive internal, one-shot environment markers for the child mode and a private parent-system-prompt file. They are not user configuration. The child uses Pi's active model/provider and existing credential resolution, inherits the whole-process sandbox, and does not define a second credential store. Parent session and Herdr/broker identity variables are removed before the child starts.
+Terminal discussion children receive internal environment markers and a private parent-system-prompt file. These values are not user settings. The child uses Pi's active model and credential resolution. Its built-ins use the parent Gondolin controller. Native built-ins remain disabled. Parent session and Herdr identity variables are removed before the child starts.

@@ -31,6 +31,8 @@ let modelSwitchAllowed = true;
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
 const persistedDefaults = [];
+const gondolinCompositionStages = [];
+const busHandlers = new Map();
 let defaultWriteAllowed = true;
 const modelDefaults = {
 	load() {
@@ -45,7 +47,17 @@ const modelDefaults = {
 	},
 };
 const pi = {
-	events: { on() { return () => {}; }, emit() {} },
+	events: {
+		on(name, handler) {
+			if (!busHandlers.has(name)) busHandlers.set(name, []);
+			busHandlers.get(name).push(handler);
+			return () => {};
+		},
+		emit(name, payload) {
+			if (name === "gondolin-sandbox:verify-tools") gondolinCompositionStages.push(payload.stage);
+			for (const handler of busHandlers.get(name) ?? []) handler(payload);
+		},
+	},
 	registerFlag() {}, getFlag() { return false; }, registerShortcut() {}, registerEntryRenderer() {},
 	registerCommand(name, definition) { commands.set(name, definition); },
 	registerTool(definition) { tools.set(definition.name, definition); allTools.add(definition.name); activeTools.push(definition.name); },
@@ -107,6 +119,9 @@ try {
 	assert.equal(activeModel.id, "gpt-5.6-sol");
 	assert.equal(thinkingLevel, "high");
 	assert.equal(activeTools.includes("edit"), false);
+	const userBashPreflight = { command: "touch blocked-in-planning", result: undefined };
+	pi.events.emit("gondolin-sandbox:before-user-bash", userBashPreflight);
+	assert.equal(userBashPreflight.result.result.exitCode, 126, "known user Bash mutation is blocked before sandbox execution");
 	const planningPrompt = await handlers.get("before_agent_start")[0]({ systemPrompt: "base" }, ctx);
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
 	assert.match(planningPrompt.systemPrompt, /ask all currently known blockers together in one ask_user_question call/i);
@@ -226,6 +241,9 @@ try {
 	activeModel = models[1];
 	await handlers.get("model_select")[0]({ model: activeModel, source: "cycle" }, ctx);
 	assert.match(notifications.at(-1).message, /defaults could not be saved/i, "settings failures warn instead of claiming persistence");
+	assert.ok(gondolinCompositionStages.includes("planning gate"), "planning transitions request source-aware Gondolin verification");
+	assert.ok(gondolinCompositionStages.includes("execution-tool transition"), "execution transitions request source-aware Gondolin verification");
+	assert.ok(gondolinCompositionStages.includes("original-tool restore"), "original-tool restoration requests source-aware Gondolin verification");
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

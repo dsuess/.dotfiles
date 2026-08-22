@@ -71,6 +71,9 @@ import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-rev
 
 const GATED_MODES = new Set(["planning", "approval"]);
 const MAX_INVALID_SUBMISSIONS = 3;
+const GONDOLIN_VERIFY_TOOLS_EVENT = "gondolin-sandbox:verify-tools";
+const GONDOLIN_BEFORE_USER_BASH_EVENT = "gondolin-sandbox:before-user-bash";
+const GONDOLIN_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 function isGated(state: PlanModeState): boolean {
 	return GATED_MODES.has(state.mode);
@@ -222,17 +225,28 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			: names;
 	}
 
+	function verifySandboxToolComposition(stage: string): void {
+		const payload: { stage: string; error?: string } = { stage };
+		pi.events.emit(GONDOLIN_VERIFY_TOOLS_EVENT, payload);
+		if (!payload.error) return;
+		pi.setActiveTools(pi.getActiveTools().filter((name) => !GONDOLIN_BUILTINS.has(name)));
+		throw new Error(`Plan mode Gondolin tool verification failed after ${stage}: ${payload.error}`);
+	}
+
 	function applyPlanningGate(): void {
 		pi.setActiveTools(planningToolNames());
+		verifySandboxToolComposition("planning gate");
 	}
 
 	function hideWorkflowTools(): void {
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !WORKFLOW_TOOLS.has(name)));
+		verifySandboxToolComposition("workflow-tool hide");
 	}
 
 	function restoreOriginalTools(ctx: ExtensionContext): void {
 		const { restored, missing } = getRestorableTools(state.originalActiveTools, allToolNames());
 		pi.setActiveTools(restored);
+		verifySandboxToolComposition("original-tool restore");
 		if (missing.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(`Plan mode: tools no longer registered and not restored: ${missing.join(", ")}`, "warning");
 		}
@@ -265,6 +279,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	function applyExecutionTools(ctx?: ExtensionContext): void {
 		const { active, missing } = getExecutionToolNames(state, allToolNames());
 		pi.setActiveTools(active);
+		verifySandboxToolComposition("execution-tool transition");
 		if (missing.length > 0 && ctx?.hasUI) ctx.ui.notify(`Plan execution skipped missing tools: ${missing.join(", ")}`, "warning");
 	}
 
@@ -828,9 +843,9 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		if (reason) return { block: true, reason };
 	});
 
-	pi.on("user_bash", async (event) => {
+	function evaluatePlanningUserBash(command: string) {
 		if (!isGated(state)) return;
-		const analysis = analyzeBashMutation(event.command);
+		const analysis = analyzeBashMutation(command);
 		if (!analysis.blocked) return;
 		return {
 			result: {
@@ -840,7 +855,17 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				truncated: false,
 			},
 		};
+	}
+
+	// The Gondolin user_bash router may load before plan mode. This synchronous
+	// preflight runs the same known-mutator policy before that router can issue an
+	// execution RPC; the ordinary user_bash hook remains fallback coverage.
+	pi.events.on(GONDOLIN_BEFORE_USER_BASH_EVENT, (payload: { command?: string; result?: unknown }) => {
+		if (typeof payload.command !== "string") return;
+		payload.result = evaluatePlanningUserBash(payload.command);
 	});
+
+	pi.on("user_bash", async (event) => evaluatePlanningUserBash(event.command));
 
 	pi.on("input", async (event) => {
 		if (event.source === "extension" || state.mode !== "planning" || state.counters.invalidSubmissions === 0) return;
@@ -1017,7 +1042,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 		await restoreTaskMetadata(ctx);
 		await backfillExecutionProgressReport(ctx);
-		if (honorFlag && !hasPersistedWorkflow && pi.getFlag("plan") === true && state.mode === "off") {
+		const inheritedChildPlanning = process.env.PI_SUBAGENT_PLANNING === "1";
+		if (honorFlag && !hasPersistedWorkflow && (pi.getFlag("plan") === true || inheritedChildPlanning) && state.mode === "off") {
 			const result = enterPlanning(state, snapshotOriginalTools()) as TransitionResult;
 			if (result.ok) commitTransition(result);
 		}

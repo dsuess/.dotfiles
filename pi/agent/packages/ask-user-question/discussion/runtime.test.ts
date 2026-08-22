@@ -40,8 +40,8 @@ function parentWithQuestionnaireTool() {
 }
 
 describe("discussion fork runtime", () => {
-  it("preserves tool order while excluding recursion, delegation, and parent workflow tools", () => {
-    expect(filterChildTools(["write", "read", "ask_user_question", "edit", "plan_progress", "bash"])).toEqual([
+  it("preserves audited tool order while excluding recursion, workflow, duplicates, and unknown tools", () => {
+    expect(filterChildTools(["write", "read", "ask_user_question", "edit", "plan_progress", "bash", "read", "unknown_tool"])).toEqual([
       "write",
       "read",
       "edit",
@@ -93,11 +93,11 @@ describe("discussion fork runtime", () => {
         multiSelect: false,
         parentSessionFile: parent.getSessionFile(),
         parentToolCallId: "tool-1",
-        systemPrompt: "Parent instructions",
+        systemPrompt: "Parent instructions\n[PI PLANNING MODE ACTIVE]",
         cwd: process.cwd(),
         model: { provider: "provider", id: "model" },
         thinkingLevel: "high",
-        activeTools: ["read", "edit", "ask_user_question", "subagent"],
+        activeTools: ["read", "edit", "ask_user_question", "subagent", "submit_plan"],
         projectTrusted: true,
         tui,
         thread,
@@ -105,8 +105,13 @@ describe("discussion fork runtime", () => {
       {
         spawnProcess: vi.fn((_command, args, options) => {
           systemPath = (options?.env as Record<string, string>)["PI_ASK_USER_QUESTION_DISCUSSION_SYSTEM_PROMPT"]!;
-          expect(args).toEqual(expect.arrayContaining(["--session", thread.sessionFile, "--tools", "read,edit"]));
+          expect(args).toEqual(expect.arrayContaining(["--session", thread.sessionFile, "--no-builtin-tools"]));
+          expect(args).not.toContain("--tools");
+          expect(args).not.toContain("--no-tools");
           expect((options?.env as Record<string, string>)["PI_ASK_USER_QUESTION_DISCUSSION_CHILD"]).toBe("1");
+          expect((options?.env as Record<string, string>)["PI_GONDOLIN_BUILTIN_TOOLS"]).toBe("read,edit");
+          expect((options?.env as Record<string, string>)["PI_GONDOLIN_HOST_TOOLS"]).toBe("");
+          expect((options?.env as Record<string, string>)["PI_SUBAGENT_PLANNING"]).toBe("1");
           void readSecureTurnFile(systemPath).then((file) => {
             expect(file.mode).toBe(0o600);
             expect(file.content).toContain("Parent instructions");

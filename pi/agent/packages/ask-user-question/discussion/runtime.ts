@@ -4,6 +4,10 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  childToolCliArgs,
+  splitChildCapabilities,
+} from "../../../extensions/gondolin-sandbox/child-capabilities.js";
 import type {
   DiscussionMessage,
   DiscussionResolution,
@@ -100,7 +104,8 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 export function filterChildTools(activeTools: readonly string[]): string[] {
-  return activeTools.filter((name) => !CHILD_TOOL_EXCLUSIONS.has(name));
+  const capabilities = splitChildCapabilities(activeTools, { excluded: CHILD_TOOL_EXCLUSIONS });
+  return [...capabilities.builtins, ...capabilities.hostAdapters];
 }
 
 function textFromContent(content: unknown): string {
@@ -324,7 +329,12 @@ async function makeSecurePromptFile(cwd: string, systemPrompt: string): Promise<
   return { dir, systemPath, cleanup: async () => rm(dir, { recursive: true, force: true }) };
 }
 
-function childEnvironment(systemPath: string): NodeJS.ProcessEnv {
+function childEnvironment(
+  systemPath: string,
+  builtinTools: readonly string[],
+  hostTools: readonly string[],
+  planningMode: boolean,
+): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (
@@ -333,6 +343,7 @@ function childEnvironment(systemPath: string): NodeJS.ProcessEnv {
       key === "PI_PROVIDER" ||
       key === "PI_MODEL" ||
       key === "PI_REASONING_LEVEL" ||
+      key === "NODE_TEST_CONTEXT" ||
       key.startsWith("HERDR_") ||
       key.startsWith("PI_HERDR_")
     ) {
@@ -341,6 +352,10 @@ function childEnvironment(systemPath: string): NodeJS.ProcessEnv {
   }
   env[DISCUSSION_CHILD_MARKER] = "1";
   env[DISCUSSION_SYSTEM_PROMPT_PATH] = systemPath;
+  env.PI_GONDOLIN_BUILTIN_TOOLS = builtinTools.join(",");
+  env.PI_GONDOLIN_HOST_TOOLS = hostTools.join(",");
+  if (planningMode) env.PI_SUBAGENT_PLANNING = "1";
+  else delete env.PI_SUBAGENT_PLANNING;
   return env;
 }
 
@@ -382,7 +397,10 @@ export async function runDiscussionFork(
   let stopped = false;
   try {
     files = await makeSecurePromptFile(request.cwd, request.systemPrompt);
-    const tools = filterChildTools(request.activeTools);
+    const capabilities = splitChildCapabilities(request.activeTools, { excluded: CHILD_TOOL_EXCLUSIONS });
+    const planningMode =
+      request.activeTools.includes("submit_plan") &&
+      /\[PI PLANNING MODE ACTIVE\]/.test(request.systemPrompt);
     const args = [
       "--session",
       thread.sessionFile,
@@ -392,8 +410,7 @@ export async function runDiscussionFork(
       request.thinkingLevel,
       request.projectTrusted ? "--approve" : "--no-approve",
     ];
-    if (tools.length > 0) args.push("--tools", tools.join(","));
-    else args.push("--no-tools");
+    args.push(...childToolCliArgs(capabilities));
 
     const getInvocation = dependencies.getInvocation ?? getPiInvocation;
     const spawnProcess = dependencies.spawnProcess ?? ((command, childArgs, options) => spawn(command, childArgs, options) as ChildProcess);
@@ -404,7 +421,12 @@ export async function runDiscussionFork(
       cwd: request.cwd,
       shell: false,
       stdio: "inherit",
-      env: childEnvironment(files.systemPath),
+      env: childEnvironment(
+        files.systemPath,
+        capabilities.builtins,
+        capabilities.hostAdapters,
+        planningMode,
+      ),
     });
     const exit = await waitForChild(child, request.signal);
     const state = readDiscussionThread(thread.sessionFile, openSession);

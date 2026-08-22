@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+	childToolCliArgs,
+	splitChildCapabilities,
+} from "../gondolin-sandbox/child-capabilities.js";
 
 const EXCLUDED_CHILD_TOOLS = new Set([
 	"subagent",
@@ -145,7 +149,8 @@ export function classifyActivity(event) {
 }
 
 export function filterChildTools(activeTools = []) {
-	return activeTools.filter((name) => typeof name === "string" && !EXCLUDED_CHILD_TOOLS.has(name));
+	const capabilities = splitChildCapabilities(activeTools, { excluded: EXCLUDED_CHILD_TOOLS });
+	return [...capabilities.builtins, ...capabilities.hostAdapters];
 }
 
 export function isInheritedPlanningMode(activeTools = [], systemPrompt = "") {
@@ -205,7 +210,7 @@ function buildChildSystemPrompt(systemPrompt) {
 	return inherited ? `${inherited}\n\n${guardrails}\n` : `${guardrails}\n`;
 }
 
-function createChildEnvironment(baseEnv, planningMode) {
+function createChildEnvironment(baseEnv, planningMode, builtinTools, hostTools) {
 	const env = { ...baseEnv };
 	for (const name of [
 		"PI_SESSION_ID",
@@ -214,10 +219,15 @@ function createChildEnvironment(baseEnv, planningMode) {
 		"PI_MODEL",
 		"PI_REASONING_LEVEL",
 		"PI_SUBAGENT_PLANNING",
+		"PI_GONDOLIN_BUILTIN_TOOLS",
+		"PI_GONDOLIN_HOST_TOOLS",
+		"NODE_TEST_CONTEXT",
 	]) {
 		delete env[name];
 	}
 	env.PI_SUBAGENT_CHILD = "1";
+	env.PI_GONDOLIN_BUILTIN_TOOLS = builtinTools.join(",");
+	env.PI_GONDOLIN_HOST_TOOLS = hostTools.join(",");
 	if (planningMode) env.PI_SUBAGENT_PLANNING = "1";
 	return env;
 }
@@ -329,7 +339,7 @@ export async function runSubagent(options, dependencies = {}) {
 		await writeFile(promptPath, buildChildSystemPrompt(systemPrompt), { encoding: "utf8", mode: 0o600 });
 		await chmod(promptPath, 0o600);
 
-		const childTools = filterChildTools(activeTools);
+		const capabilities = splitChildCapabilities(activeTools, { excluded: EXCLUDED_CHILD_TOOLS });
 		const args = [
 			"--mode", "json",
 			"--print",
@@ -341,8 +351,7 @@ export async function runSubagent(options, dependencies = {}) {
 			"--system-prompt", promptPath,
 		];
 		if (thinkingLevel) args.push("--thinking", thinkingLevel);
-		if (childTools.length > 0) args.push("--tools", childTools.join(","));
-		else args.push("--no-tools");
+		args.push(...childToolCliArgs(capabilities));
 
 		const activity = [];
 		let malformedLines = 0;
@@ -415,7 +424,7 @@ export async function runSubagent(options, dependencies = {}) {
 			try {
 				child = spawnImpl(piCommand, args, {
 					cwd,
-					env: createChildEnvironment(baseEnv, planningMode),
+					env: createChildEnvironment(baseEnv, planningMode, capabilities.builtins, capabilities.hostAdapters),
 					shell: false,
 					stdio: ["pipe", "pipe", "pipe"],
 				});

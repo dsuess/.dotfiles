@@ -194,7 +194,7 @@ cmd_software() {
         brew update
 
         echo "🔧 Installing CLI tools..."
-        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick 1broseidon/tap/ketch tuicr herdr
+        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick qemu lz4 e2fsprogs 1broseidon/tap/ketch tuicr herdr
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
@@ -276,10 +276,10 @@ cmd_config() {
             if [[ -f "$pkg" ]]; then
                 dir="$(cd -P "$(dirname "$pkg")" && pwd)"
                 echo "📦 Installing npm deps in $dir"
-                if [[ "$pkg" == */agent/packages/*/package.json && -f "$dir/package-lock.json" ]]; then
+                if [[ -f "$dir/package-lock.json" ]]; then
                     (cd "$dir" && npm ci --omit=dev --ignore-scripts)
                 else
-                    (cd "$dir" && npm install --omit=dev)
+                    (cd "$dir" && npm install --omit=dev --ignore-scripts --no-package-lock)
                 fi
             fi
         done
@@ -287,19 +287,51 @@ cmd_config() {
         echo "⚠️  npm not found — skipping pi extension npm deps."
     fi
 
-    # Install the pinned whole-process sandbox runtime. Keep its npm cache
-    # separate from the user's normal cache (which may contain credentials or
-    # machine-specific ownership problems).
-    if command -v npm >/dev/null 2>&1 && [[ -f ~/.pi/sandbox/package-lock.json ]]; then
-        echo "📦 Installing Pi sandbox runtime"
-        mkdir -p ~/.cache/pi-sandbox/npm
-        (
-            cd ~/.pi/sandbox
-            npm_config_cache=~/.cache/pi-sandbox/npm npm ci --omit=dev --ignore-scripts
-        )
-    else
-        echo "⚠️  npm or the Pi sandbox lockfile is missing — sandboxed pi will fail closed."
+    # Install Gondolin's exact host dependency and build the digest-addressed
+    # guest image only when its reviewed inputs changed. Runtime and image
+    # caches are separate from ordinary package-manager credentials.
+    if ! command -v npm >/dev/null 2>&1 || [[ ! -f ~/.pi/sandbox/package-lock.json ]]; then
+        echo "❌ npm or the Pi Gondolin lockfile is missing — normal pi will fail closed." >&2
+        exit 1
     fi
+    if ! command -v node >/dev/null 2>&1 || ! node -e '
+        const [major, minor] = process.versions.node.split(".").map(Number);
+        process.exit(major > 23 || (major === 23 && minor >= 6) ? 0 : 1);
+    '; then
+        echo "❌ Node.js 23.6 or newer is required for Pi Gondolin." >&2
+        exit 1
+    fi
+    case "$(uname -m)" in
+        arm64|aarch64) gondolin_qemu=qemu-system-aarch64 ;;
+        x86_64|amd64) gondolin_qemu=qemu-system-x86_64 ;;
+        *) echo "❌ Unsupported Gondolin architecture: $(uname -m)" >&2; exit 1 ;;
+    esac
+    for prerequisite in "$gondolin_qemu" cpio lz4 tar; do
+        if ! command -v "$prerequisite" >/dev/null 2>&1; then
+            echo "❌ '$prerequisite' is required to build/run the Pi Gondolin image." >&2
+            echo "   macOS: brew install qemu lz4 e2fsprogs" >&2
+            echo "   Debian/Ubuntu: install the matching qemu-system package plus lz4 cpio e2fsprogs" >&2
+            exit 1
+        fi
+    done
+    gondolin_e2fs_path=""
+    if command -v mke2fs >/dev/null 2>&1; then
+        gondolin_e2fs_path="$(dirname "$(command -v mke2fs)")"
+    elif [[ -x /opt/homebrew/opt/e2fsprogs/sbin/mke2fs ]]; then
+        gondolin_e2fs_path=/opt/homebrew/opt/e2fsprogs/sbin
+    else
+        echo "❌ mke2fs from e2fsprogs is required to build the Pi Gondolin image." >&2
+        exit 1
+    fi
+
+    echo "📦 Installing Pi Gondolin runtime"
+    mkdir -p ~/.cache/pi-gondolin/npm
+    (
+        cd ~/.pi/sandbox
+        npm_config_cache=~/.cache/pi-gondolin/npm npm ci --omit=dev --ignore-scripts
+        PATH="$gondolin_e2fs_path:$PATH" node build-gondolin-image.mjs --quiet
+        node build-gondolin-image.mjs --verify --quiet
+    )
 
     if [[ "$PLATFORM" == "Darwin" ]]; then
         configure_macos_keyboard

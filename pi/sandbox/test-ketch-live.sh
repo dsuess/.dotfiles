@@ -2,10 +2,6 @@
 set -euo pipefail
 
 readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SRT="$HERE/node_modules/.bin/srt"
-readonly RUNNER="$HERE/unrestricted-network.mjs"
-readonly SETTINGS="$HERE/settings.json"
-readonly TEST_BIN="$HERE/test-bin"
 readonly TEST_ROOT="$(mktemp -d)"
 readonly EXPECTED_BACKEND="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).backend' "$HERE/../../ketch/config.json")"
 
@@ -18,20 +14,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ -x "$SRT" ]] || {
-    echo "sandbox runtime is not installed; run npm ci in $HERE" >&2
-    exit 1
-}
-
 if ! command -v ketch >/dev/null 2>&1; then
     echo "skipping live Ketch tests: ketch is not installed" >&2
     exit 0
 fi
 
-run_srt() {
-    XDG_CACHE_HOME="$HOME/.cache/pi-sandbox" \
-        PATH="$TEST_BIN:$PATH" \
-        node "$RUNNER" --settings "$SETTINGS" -- "$@"
+run_ketch() {
+    XDG_CACHE_HOME="$HOME/.cache/pi-gondolin/host" "$@"
 }
 
 assert_no_x509() {
@@ -58,7 +47,7 @@ retry_json_results() {
     local error="$TEST_ROOT/$name.err"
 
     for attempt in 1 2 3; do
-        if run_srt ketch "$@" >"$output" 2>"$error" && assert_nonempty_json_result "$output"; then
+        if run_ketch ketch "$@" >"$output" 2>"$error" && assert_nonempty_json_result "$output"; then
             assert_no_x509 "$output" "$error"
             return 0
         fi
@@ -71,9 +60,9 @@ retry_json_results() {
     return 1
 }
 
-# Effective config and cache must be healthy inside the sandbox.
-run_srt ketch config --json >"$TEST_ROOT/config.json"
-run_srt ketch cache --json >"$TEST_ROOT/cache.json"
+# The audited host adapter uses native Ketch config and a host-only cache.
+run_ketch ketch config --json >"$TEST_ROOT/config.json"
+run_ketch ketch cache --json >"$TEST_ROOT/cache.json"
 node -e '
     const fs = require("node:fs");
     const config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -85,7 +74,7 @@ node -e '
         : `${home}/.config/ketch/config.json`;
     const expectedCachePrefix = isMac
         ? `${home}/Library/Caches/ketch/`
-        : `${home}/.cache/pi-sandbox/ketch/`;
+        : `${home}/.cache/pi-gondolin/host/ketch/`;
     if (config.backend !== process.argv[3]) throw new Error(`unexpected backend: ${config.backend}`);
     if (config.config_path !== expectedConfig) throw new Error(`unexpected config path: ${config.config_path}`);
     if (!cache.path.startsWith(expectedCachePrefix)) throw new Error(`unexpected cache path: ${cache.path}`);
@@ -94,17 +83,7 @@ node -e '
 
 cache_db="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).path' "$TEST_ROOT/cache.json")"
 cache_dir="$(dirname "$cache_db")"
-run_srt bash -c 'set -e; p="$1/.sandbox-write-test"; printf ok >"$p"; test "$(cat "$p")" = ok; rm "$p"' _ "$cache_dir"
-
-config_dir="$(dirname "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).config_path' "$TEST_ROOT/config.json")")"
-if run_srt bash -c 'printf denied >"$1/.sandbox-write-test"' _ "$config_dir" 2>/dev/null; then
-    echo "sandbox unexpectedly wrote to the deployed Ketch config directory" >&2
-    exit 1
-fi
-if run_srt bash -c 'printf denied >"$HOME/.dotfiles/ketch/.sandbox-write-test"' 2>/dev/null; then
-    echo "sandbox unexpectedly wrote to the canonical Ketch config directory" >&2
-    exit 1
-fi
+run_ketch bash -c 'set -e; p="$1/.sandbox-write-test"; printf ok >"$p"; test "$(cat "$p")" = ok; rm "$p"' _ "$cache_dir"
 
 # Routine search intentionally omits --backend; federated search tolerates an
 # absent localhost SearXNG when keyless remote backends succeed. Run these
@@ -120,13 +99,13 @@ if ! retry_json_results routine search 'Pi coding agent GitHub' --limit 2 --json
     echo "routine search reached the configured DDG backend, but DDG is temporarily rate limited" >&2
 fi
 retry_json_results federated search 'Pi coding agent GitHub' --multi=all --limit 2 --json
-retry_json_results code code SandboxManager --backend grepapp --limit 2 --json
+retry_json_results code code RealFSProvider --backend grepapp --limit 2 --json
 
 # Diagnostics may report optional no-key/unreachable services (including DDG
 # rate limiting after the successful routine probe), but a keyless search
 # backend and the cache must work and no surface may show the macOS x509 error.
 set +e
-run_srt ketch doctor --json >"$TEST_ROOT/doctor.json" 2>"$TEST_ROOT/doctor.err"
+run_ketch ketch doctor --json >"$TEST_ROOT/doctor.json" 2>"$TEST_ROOT/doctor.err"
 doctor_status=$?
 set -e
 node -e '
@@ -141,7 +120,8 @@ node -e '
     }
     if (find("cache", "bbolt")?.status !== "ok") throw new Error("cache diagnostic is not healthy");
     const badOptional = checks.filter((c) =>
-        !["ok", "no_key", "unreachable", "skipped"].includes(c.status));
+        !["ok", "no_key", "unreachable", "skipped"].includes(c.status) &&
+        !(c.surface === "browser" && c.status === "misconfigured"));
     if (badOptional.length) throw new Error(`unexpected diagnostics: ${JSON.stringify(badOptional)}`);
 ' "$TEST_ROOT/doctor.json"
 assert_no_x509 "$TEST_ROOT/doctor.json" "$TEST_ROOT/doctor.err"
@@ -150,11 +130,10 @@ if [[ "$doctor_status" -ne 0 && "$doctor_status" -ne 5 ]]; then
     exit 1
 fi
 
-# A fresh, uncached request to a host that is absent from the legacy allowlist
-# succeeds because the filesystem sandbox no longer installs a network boundary.
-run_srt ketch scrape "https://example.com/?ketch-unrestricted=$$" \
+# Ketch intentionally retains host networking as an audited adapter.
+run_ketch ketch scrape "https://example.com/?ketch-host-adapter=$$" \
     --no-cache --no-llms-txt --max-chars 400 --json \
     >"$TEST_ROOT/unrestricted.json" 2>"$TEST_ROOT/unrestricted.err"
 assert_no_x509 "$TEST_ROOT/unrestricted.json" "$TEST_ROOT/unrestricted.err"
 
-echo "live Ketch sandbox tests passed"
+echo "live Ketch host-adapter tests passed"

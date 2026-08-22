@@ -2,14 +2,25 @@
 set -euo pipefail
 
 readonly SANDBOX_DIR="$HOME/.pi/sandbox"
-readonly SRT_BIN="$SANDBOX_DIR/node_modules/.bin/srt"
-readonly SRT_SETTINGS="$SANDBOX_DIR/settings.json"
-readonly SRT_UNRESTRICTED_NETWORK="$SANDBOX_DIR/unrestricted-network.mjs"
+readonly GONDOLIN_CLIENT="$SANDBOX_DIR/client-cli.mjs"
+readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
+readonly GONDOLIN_IMAGE_BUILDER="$SANDBOX_DIR/build-gondolin-image.mjs"
+readonly GONDOLIN_SETTINGS="$SANDBOX_DIR/settings.json"
+readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
 readonly HERDR_STATUS_BROKER="$SANDBOX_DIR/herdr-status-broker.mjs"
+readonly REPOSITORY_SCOPE="$SANDBOX_DIR/repository-scope.mjs"
 
 HERDR_BROKER_PID=""
 HERDR_BROKER_DIR=""
-EFFECTIVE_POLICY_DIR=""
+HANDSHAKE_DIR=""
+PI_CHILD_PID=""
+CONTROLLER_LEASE=""
+CONTROLLER_SOCKET=""
+CONTROLLER_WORKSPACE_KEY=""
+CONTROLLER_WORKSPACE_ROOT=""
+CONTROLLER_POLICY_GENERATION=""
+CONTROLLER_IMAGE_GENERATION=""
+CONTROLLER_VM_ID=""
 
 cleanup_herdr_broker() {
     [[ -n "$HERDR_BROKER_PID" ]] || return 0
@@ -24,9 +35,34 @@ cleanup_herdr_broker() {
     [[ -z "$HERDR_BROKER_DIR" ]] || /bin/rm -rf -- "$HERDR_BROKER_DIR"
 }
 
+release_controller_lease() {
+    [[ -n "$CONTROLLER_LEASE" && -n "${HOST_NODE-}" ]] || return 0
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        PATH="${CONTROLLER_PATH-}" \
+        TMPDIR="${TMPDIR:-/tmp}" \
+        "$HOST_NODE" "$GONDOLIN_CLIENT" release \
+        --socket "$CONTROLLER_SOCKET" \
+        --lease "$CONTROLLER_LEASE" \
+        --workspace-key "$CONTROLLER_WORKSPACE_KEY" \
+        --workspace-root "$CONTROLLER_WORKSPACE_ROOT" \
+        --policy-generation "$CONTROLLER_POLICY_GENERATION" \
+        --image-generation "$CONTROLLER_IMAGE_GENERATION" \
+        --vm-id "$CONTROLLER_VM_ID" \
+        >/dev/null 2>&1 || true
+    CONTROLLER_LEASE=""
+}
+
 cleanup_launcher() {
     cleanup_herdr_broker
-    [[ -z "$EFFECTIVE_POLICY_DIR" ]] || /bin/rm -rf -- "$EFFECTIVE_POLICY_DIR"
+    release_controller_lease
+    [[ -z "$HANDSHAKE_DIR" ]] || /bin/rm -rf -- "$HANDSHAKE_DIR"
+}
+
+forward_signal() {
+    local signal="$1"
+    [[ -n "$PI_CHILD_PID" ]] || return 0
+    kill -"$signal" "$PI_CHILD_PID" 2>/dev/null || true
 }
 
 die() {
@@ -38,21 +74,14 @@ readonly LAUNCH_DIR="$(builtin pwd -P)"
 
 BOOTSTRAP_EXCLUDED_ROOTS=("$LAUNCH_DIR")
 CANDIDATE_WORKTREE_ROOT=""
-WORKTREE_ROOT=""
-BARE_COMMON_DIR=""
+EXPECTED_WORKSPACE_ROOT=""
+EXPECTED_WORKSPACE_KEY=""
 
 path_is_within() {
     local candidate="$1"
     local root="$2"
 
     [[ "$root" == "/" || "$candidate" == "$root" || "$candidate" == "$root/"* ]]
-}
-
-sandbox_path_is_literal() {
-    local candidate="$1"
-
-    [[ "$candidate" != *'*'* && "$candidate" != *'?'* &&
-        "$candidate" != *'['* && "$candidate" != *']'* ]]
 }
 
 canonical_directory() {
@@ -148,8 +177,8 @@ canonical_executable() {
 }
 
 # Resolve bootstrap tools only from absolute PATH directories outside every
-# untrusted repository candidate. SRT has not applied the OS sandbox yet, so
-# executing a repository-local shim here would bypass the boundary.
+# untrusted repository candidate. The Gondolin tool boundary is not ready yet,
+# so a repository-local shim would execute on the trusted host.
 safe_path_entries() {
     local entry resolved_dir
     local entries=()
@@ -196,66 +225,20 @@ find_real_pi() {
     return 1
 }
 
-trusted_git() {
-    /usr/bin/env -i \
-        HOME=/ \
-        XDG_CONFIG_HOME=/nonexistent \
-        PATH="${HOST_GIT%/*}:/usr/bin:/bin" \
-        LC_ALL=C \
-        GIT_CONFIG_NOSYSTEM=1 \
-        GIT_CONFIG_SYSTEM=/dev/null \
-        GIT_CONFIG_GLOBAL=/dev/null \
-        GIT_OPTIONAL_LOCKS=0 \
-        GIT_TERMINAL_PROMPT=0 \
-        "$HOST_GIT" "$@"
-}
-
-git_scalar() {
-    local value
-
-    value="$(trusted_git "$@" 2>/dev/null)" || return 1
-    [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
-    printf '%s\n' "$value"
-}
-
-discover_repository_scopes() {
-    local inside top_level_raw top_level
-    local git_dir_raw git_dir common_raw common_dir common_is_bare
-
-    [[ -n "$CANDIDATE_WORKTREE_ROOT" ]] || return 0
-    HOST_GIT="$(find_host_executable git)" || return 0
-    readonly HOST_GIT
-
-    inside="$(git_scalar -C "$LAUNCH_DIR" rev-parse --is-inside-work-tree)" || return 0
-    [[ "$inside" == "true" ]] || return 0
-
-    top_level_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --show-toplevel)" || return 0
-    top_level="$(canonical_directory "$top_level_raw")" || return 0
-    [[ "$top_level" == "$CANDIDATE_WORKTREE_ROOT" ]] || return 0
-    path_is_within "$LAUNCH_DIR" "$top_level" || return 0
-    sandbox_path_is_literal "$top_level" || return 0
-
-    git_dir_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --absolute-git-dir)" || return 0
-    git_dir="$(canonical_directory "$git_dir_raw")" || return 0
-    common_raw="$(git_scalar -C "$LAUNCH_DIR" rev-parse --path-format=absolute --git-common-dir)" || return 0
-    common_dir="$(canonical_directory "$common_raw")" || return 0
-
-    WORKTREE_ROOT="$top_level"
-    add_bootstrap_exclusion "$top_level"
-    add_bootstrap_exclusion "$git_dir"
-
-    # A linked worktree receives its external common directory only when Git
-    # identifies that repository as bare. Non-bare common metadata stays out.
-    if ! path_is_within "$common_dir" "$top_level"; then
-        common_is_bare="$(git_scalar --git-dir="$common_dir" rev-parse --is-bare-repository)" || return 0
-        if [[ "$common_is_bare" == "true" ]] &&
-            path_is_within "$git_dir" "$common_dir/worktrees" &&
-            sandbox_path_is_literal "$common_dir"
-        then
-            BARE_COMMON_DIR="$common_dir"
-            add_bootstrap_exclusion "$common_dir"
-        fi
-    fi
+discover_repository_scope() {
+    [[ -r "$REPOSITORY_SCOPE" ]] || die "repository scope module is missing: $REPOSITORY_SCOPE"
+    local result
+    result="$(trusted_node --input-type=module - "$REPOSITORY_SCOPE" "$LAUNCH_DIR" "${PATH-}" <<'NODE'
+import { pathToFileURL } from "node:url";
+const [modulePath, launchDirectory, pathValue] = process.argv.slice(2);
+const module = await import(pathToFileURL(modulePath).href);
+process.stdout.write(JSON.stringify(module.discoverRepositoryScope({ launchDirectory, pathValue })));
+NODE
+)" || die "repository scope discovery failed"
+    EXPECTED_WORKSPACE_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).canonicalWorkspaceRoot)' "$result")" ||
+        die "repository workspace result is invalid"
+    EXPECTED_WORKSPACE_KEY="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceKey)' "$result")" ||
+        die "repository workspace key is invalid"
 }
 
 yolo=false
@@ -274,24 +257,18 @@ if [[ "$yolo" == true ]]; then
     exec "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
 fi
 
-discover_repository_scopes
-
 case "$OSTYPE" in
-    darwin*)
-        [[ -x /usr/bin/sandbox-exec ]] || die "macOS sandbox-exec is unavailable"
-        ;;
-    linux*)
-        host_bwrap="$(find_host_executable bwrap)" ||
-            die "bubblewrap (bwrap) is required on Linux"
-        readonly HOST_BWRAP="$host_bwrap"
-        host_socat="$(find_host_executable socat)" ||
-            die "socat is required on Linux"
-        readonly HOST_SOCAT="$host_socat"
-        ;;
-    *)
-        die "only macOS and Linux are supported"
-        ;;
+    darwin*|linux*) ;;
+    *) die "only macOS and Linux are supported" ;;
 esac
+
+case "$(uname -m)" in
+    arm64|aarch64) qemu_name="qemu-system-aarch64" ;;
+    x86_64|amd64) qemu_name="qemu-system-x86_64" ;;
+    *) die "unsupported Gondolin architecture: $(uname -m)" ;;
+esac
+host_qemu="$(find_host_executable "$qemu_name")" || die "$qemu_name is required"
+readonly HOST_QEMU="$host_qemu"
 
 host_node="$(find_host_executable node)" || die "Node.js is required"
 readonly HOST_NODE="$host_node"
@@ -304,8 +281,11 @@ trusted_node() {
 }
 trusted_node -e '
     const [major, minor] = process.versions.node.split(".").map(Number);
-    process.exit(major > 20 || (major === 20 && minor >= 11) ? 0 : 1);
-' || die "Node.js 20.11 or newer is required"
+    process.exit(major > 23 || (major === 23 && minor >= 6) ? 0 : 1);
+' || die "Node.js 23.6 or newer is required"
+
+discover_repository_scope
+readonly EXPECTED_WORKSPACE_ROOT EXPECTED_WORKSPACE_KEY
 
 host_rg="$(find_host_executable rg)" || die "ripgrep (rg) is required"
 readonly HOST_RG="$host_rg"
@@ -318,93 +298,189 @@ trusted_mktemp() {
         LC_ALL=C \
         "$HOST_MKTEMP" "$@"
 }
-[[ -x "$SRT_BIN" ]] || die "sandbox runtime is not installed; run ./install.sh config"
-[[ -r "$SRT_SETTINGS" ]] || die "sandbox policy is missing or unreadable: $SRT_SETTINGS"
-[[ -r "$SRT_UNRESTRICTED_NETWORK" ]] ||
-    die "unrestricted-network sandbox launcher is missing or unreadable: $SRT_UNRESTRICTED_NETWORK"
 
-compose_effective_policy() {
-    local output="$1"
-
-    trusted_node -e '
-        const fs = require("node:fs");
-        const path = require("node:path");
-
-        const [basePath, outputPath, launchDir, worktreeRoot, bareCommonDir] = process.argv.slice(1);
-        const base = JSON.parse(fs.readFileSync(basePath, "utf8"));
-        if (!base || typeof base !== "object" || !base.filesystem) {
-            throw new Error("sandbox policy has no filesystem section");
-        }
-        for (const key of ["allowRead", "allowWrite", "denyWrite"]) {
-            if (!Array.isArray(base.filesystem[key])) {
-                throw new Error(`sandbox policy filesystem.${key} is not an array`);
-            }
-        }
-
-        const effective = structuredClone(base);
-        const appendExact = (items, value) => {
-            if (value && !items.includes(value)) items.push(value);
-        };
-        const contains = (parent, child) => {
-            const relative = path.relative(parent, child);
-            return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-        };
-
-        const scopes = [worktreeRoot, bareCommonDir]
-            .filter(Boolean)
-            .sort((a, b) => a.length - b.length)
-            .filter((scope, index, all) => !all.slice(0, index).some(parent => contains(parent, scope)));
-        for (const scope of scopes) {
-            if (scope !== launchDir || !effective.filesystem.allowRead.includes(".")) {
-                appendExact(effective.filesystem.allowRead, scope);
-            }
-            if (scope !== launchDir || !effective.filesystem.allowWrite.includes(".")) {
-                appendExact(effective.filesystem.allowWrite, scope);
-            }
-        }
-
-        // Mirror the runtime mandatory write carve-outs at the validated root.
-        // Initializing SRT from this root also retains its bounded subtree scan.
-        if (worktreeRoot) {
-            for (const relative of [
-                ".gitconfig", ".gitmodules", ".bashrc", ".bash_profile",
-                ".zshrc", ".zprofile", ".profile", ".ripgreprc", ".mcp.json",
-                ".vscode", ".idea", ".claude/commands", ".claude/agents",
-                ".git/hooks", ".git/config",
-            ]) {
-                appendExact(effective.filesystem.denyWrite, path.join(worktreeRoot, relative));
-            }
-        }
-        if (bareCommonDir) {
-            appendExact(effective.filesystem.denyWrite, path.join(bareCommonDir, "hooks"));
-            appendExact(effective.filesystem.denyWrite, path.join(bareCommonDir, "config"));
-        }
-        appendExact(effective.filesystem.denyWrite, outputPath);
-
-        const fd = fs.openSync(outputPath, "wx", 0o600);
-        try {
-            fs.writeFileSync(fd, `${JSON.stringify(effective, null, 2)}\n`);
-        } finally {
-            fs.closeSync(fd);
-        }
-    ' "$SRT_SETTINGS" "$output" "$LAUNCH_DIR" "$WORKTREE_ROOT" "$BARE_COMMON_DIR"
+controller_path_entries=()
+while IFS= read -r entry; do
+    duplicate=false
+    for existing in ${controller_path_entries[@]+"${controller_path_entries[@]}"}; do
+        [[ "$entry" == "$existing" ]] && duplicate=true && break
+    done
+    [[ "$duplicate" == true ]] || controller_path_entries+=("$entry")
+done < <(safe_path_entries)
+CONTROLLER_PATH="$(IFS=:; printf '%s' "${controller_path_entries[*]}")"
+readonly CONTROLLER_PATH
+trusted_controller_node() {
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        PATH="$CONTROLLER_PATH" \
+        TMPDIR="${TMPDIR:-/tmp}" \
+        LC_ALL=C \
+        "$HOST_NODE" "$@"
 }
 
-umask 077
-EFFECTIVE_POLICY_DIR="$(trusted_mktemp -d /tmp/pi-sandbox-policy.XXXXXX)" ||
-    die "cannot create the effective sandbox policy directory"
-readonly EFFECTIVE_POLICY="$EFFECTIVE_POLICY_DIR/settings.json"
-trap cleanup_launcher EXIT
-compose_effective_policy "$EFFECTIVE_POLICY" || die "cannot compose the effective sandbox policy"
+[[ -r "$GONDOLIN_CLIENT" ]] || die "Gondolin client is missing: $GONDOLIN_CLIENT"
+[[ -r "$GONDOLIN_CONTROLLER" ]] || die "Gondolin controller is missing: $GONDOLIN_CONTROLLER"
+[[ -r "$GONDOLIN_IMAGE_BUILDER" ]] || die "Gondolin image verifier is missing: $GONDOLIN_IMAGE_BUILDER"
+[[ -r "$GONDOLIN_SETTINGS" ]] || die "Gondolin settings are missing: $GONDOLIN_SETTINGS"
+[[ -r "$GONDOLIN_EXTENSION" ]] || die "Gondolin routing extension is missing: $GONDOLIN_EXTENSION"
+GONDOLIN_IMAGE_DIR="$(trusted_controller_node "$GONDOLIN_IMAGE_BUILDER" --verify --print-path)" ||
+    die "the pinned Gondolin image is missing or corrupt; run ./install.sh config"
+readonly GONDOLIN_IMAGE_DIR
 
 real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
 readonly REAL_PI="$real_pi"
 readonly REAL_PI_DIR="${REAL_PI%/*}"
 
-# Put only the package binary ahead of the launching session's trusted PATH.
-# Nested Pi processes (including pi-subagents) then inherit the current OS
-# sandbox without trying to initialize a weaker nested sandbox. Preserve the
-# remaining first-match command resolution after excluding repository paths.
+BUILTIN_TOOL_NAMES=(read write edit bash grep find ls)
+HOST_TOOL_NAMES=(
+    ketch_search ketch_scrape ketch_code ketch_docs ketch_crawl
+    ask_user_question subagent submit_plan plan_progress complete_plan complete_stage
+)
+requested_builtins=()
+requested_hosts=()
+excluded_tools=()
+tools_explicit=false
+no_tools=false
+no_builtin_tools=false
+
+append_unique_tool() {
+    local group="$1" name="$2" existing
+    if [[ "$group" == builtin ]]; then
+        for existing in ${requested_builtins[@]+"${requested_builtins[@]}"}; do [[ "$existing" == "$name" ]] && return 0; done
+        requested_builtins+=("$name")
+    else
+        for existing in ${requested_hosts[@]+"${requested_hosts[@]}"}; do [[ "$existing" == "$name" ]] && return 0; done
+        requested_hosts+=("$name")
+    fi
+}
+
+classify_requested_tool() {
+    local name="$1" candidate
+    [[ -n "$name" ]] || return 0
+    for candidate in "${BUILTIN_TOOL_NAMES[@]}"; do
+        [[ "$candidate" == "$name" ]] && append_unique_tool builtin "$name" && return 0
+    done
+    for candidate in "${HOST_TOOL_NAMES[@]}"; do
+        [[ "$candidate" == "$name" ]] && append_unique_tool host "$name" && return 0
+    done
+    die "tool '$name' is not an audited sandbox tool or host adapter"
+}
+
+parse_requested_tool_list() {
+    local value="$1" name
+    local names=()
+    IFS=, read -r -a names <<<"$value"
+    for name in "${names[@]}"; do classify_requested_tool "$name"; done
+}
+
+parse_excluded_tool_list() {
+    local value="$1" name
+    local names=()
+    IFS=, read -r -a names <<<"$value"
+    for name in "${names[@]}"; do [[ -n "$name" ]] && excluded_tools+=("$name"); done
+}
+
+raw_args=(${pi_args[@]+"${pi_args[@]}"})
+pi_args=()
+index=0
+while (( index < ${#raw_args[@]} )); do
+    arg="${raw_args[$index]}"
+    case "$arg" in
+        --no-extensions|--no-extensions=*)
+            die "--no-extensions is incompatible with sandboxed mode; use --yolo for host built-ins"
+            ;;
+        --tools|-t)
+            ((index += 1))
+            (( index < ${#raw_args[@]} )) || die "$arg requires a comma-separated value"
+            tools_explicit=true
+            parse_requested_tool_list "${raw_args[$index]}"
+            ;;
+        --tools=*|-t=*)
+            tools_explicit=true
+            parse_requested_tool_list "${arg#*=}"
+            ;;
+        --exclude-tools|-xt)
+            ((index += 1))
+            (( index < ${#raw_args[@]} )) || die "$arg requires a comma-separated value"
+            parse_excluded_tool_list "${raw_args[$index]}"
+            ;;
+        --exclude-tools=*|-xt=*) parse_excluded_tool_list "${arg#*=}" ;;
+        --no-tools|-nt) no_tools=true ;;
+        --no-builtin-tools|-nbt) no_builtin_tools=true ;;
+        *) pi_args+=("$arg") ;;
+    esac
+    ((index += 1))
+done
+
+if [[ "$tools_explicit" == false ]]; then
+    requested_builtins=("${BUILTIN_TOOL_NAMES[@]}")
+    requested_hosts=("${HOST_TOOL_NAMES[@]}")
+fi
+if [[ "$no_tools" == true ]]; then
+    requested_builtins=()
+    requested_hosts=()
+elif [[ "$no_builtin_tools" == true ]]; then
+    requested_builtins=()
+fi
+if ((${#excluded_tools[@]})); then
+    filtered=()
+    for candidate in ${requested_builtins[@]+"${requested_builtins[@]}"}; do
+        excluded=false
+        for name in ${excluded_tools[@]+"${excluded_tools[@]}"}; do [[ "$candidate" == "$name" ]] && excluded=true; done
+        [[ "$excluded" == true ]] || filtered+=("$candidate")
+    done
+    requested_builtins=(${filtered[@]+"${filtered[@]}"})
+    filtered=()
+    for candidate in ${requested_hosts[@]+"${requested_hosts[@]}"}; do
+        excluded=false
+        for name in ${excluded_tools[@]+"${excluded_tools[@]}"}; do [[ "$candidate" == "$name" ]] && excluded=true; done
+        [[ "$excluded" == true ]] || filtered+=("$candidate")
+    done
+    requested_hosts=(${filtered[@]+"${filtered[@]}"})
+fi
+readonly REQUESTED_BUILTINS="$(IFS=,; printf '%s' "${requested_builtins[*]-}")"
+readonly REQUESTED_HOST_TOOLS="$(IFS=,; printf '%s' "${requested_hosts[*]-}")"
+pi_args+=(--no-builtin-tools)
+
+umask 077
+trap cleanup_launcher EXIT
+lease_json="$(trusted_controller_node "$GONDOLIN_CLIENT" acquire \
+    --launch-dir "$LAUNCH_DIR" \
+    --settings "$GONDOLIN_SETTINGS" \
+    --image-dir "$GONDOLIN_IMAGE_DIR" \
+    --client-id "launcher-$$")" || die "could not acquire the workspace Gondolin controller"
+trusted_node -e '
+const value = JSON.parse(process.argv[1]);
+const [expectedRoot, expectedKey] = process.argv.slice(2);
+const hex = value => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+if (value.version !== 1 || !hex(value.leaseToken) || !hex(value.workspaceKey) ||
+    !hex(value.policyGeneration) || !hex(value.imageGeneration) ||
+    value.workspaceKey !== expectedKey || value.workspaceRoot !== expectedRoot ||
+    typeof value.socketPath !== "string" || typeof value.workspaceRoot !== "string" ||
+    typeof value.vmId !== "string" || value.dockerHealthy !== true ||
+    typeof value.runtimeRoot !== "string") {
+    console.error(`expected ${expectedKey} ${expectedRoot}; received ${value.workspaceKey} ${value.workspaceRoot}`);
+    process.exit(1);
+}
+' "$lease_json" "$EXPECTED_WORKSPACE_ROOT" "$EXPECTED_WORKSPACE_KEY" ||
+    die "controller returned an invalid or mismatched lease manifest"
+CONTROLLER_LEASE="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).leaseToken)' "$lease_json")"
+CONTROLLER_SOCKET="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).socketPath)' "$lease_json")"
+CONTROLLER_WORKSPACE_KEY="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceKey)' "$lease_json")"
+CONTROLLER_WORKSPACE_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceRoot)' "$lease_json")"
+CONTROLLER_POLICY_GENERATION="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).policyGeneration)' "$lease_json")"
+CONTROLLER_IMAGE_GENERATION="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageGeneration)' "$lease_json")"
+CONTROLLER_VM_ID="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).vmId)' "$lease_json")"
+CONTROLLER_RUNTIME_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).runtimeRoot)' "$lease_json")"
+readonly CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT
+readonly CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT
+HANDSHAKE_DIR="$(trusted_mktemp -d "$CONTROLLER_RUNTIME_ROOT/handshake.XXXXXX")" ||
+    die "cannot create the Gondolin handshake directory"
+readonly HANDSHAKE_FILE="$HANDSHAKE_DIR/ready.json"
+
+# Put only the real Pi package ahead of the trusted caller PATH. Nested Pi
+# processes inherit the controller capability and do not re-enter this launcher.
+# Preserve first-match resolution after excluding repository paths.
 inner_path_entries=("$REAL_PI_DIR")
 while IFS= read -r entry; do
     duplicate=false
@@ -418,22 +494,31 @@ while IFS= read -r entry; do
 done < <(safe_path_entries)
 readonly inner_path="$(IFS=:; printf '%s' "${inner_path_entries[*]}")"
 
-# Do not leak ambient cloud, package-manager, SSH, or application credentials
-# into model-invoked subprocesses. Pi's explicitly accepted credentials remain
-# available through ~/.pi/agent/auth.json.
+# Keep ambient cloud, package-manager, SSH, and application credentials out of
+# the host Pi environment. Pi still uses its managed auth.json on the host.
 safe_env=(
     "HOME=$HOME"
     "PATH=$inner_path"
     "TMPDIR=/tmp"
-    "XDG_CACHE_HOME=$HOME/.cache/pi-sandbox"
-    "NPM_CONFIG_CACHE=$HOME/.cache/pi-sandbox/npm"
-    "PIP_CACHE_DIR=$HOME/.cache/pi-sandbox/pip"
-    "CONDA_PKGS_DIRS=$HOME/.cache/pi-sandbox/conda"
+    "XDG_CACHE_HOME=$HOME/.cache/pi-gondolin/host"
+    "NPM_CONFIG_CACHE=$HOME/.cache/pi-gondolin/host/npm"
+    "PIP_CACHE_DIR=$HOME/.cache/pi-gondolin/host/pip"
+    "CONDA_PKGS_DIRS=$HOME/.cache/pi-gondolin/host/conda"
     "UV_CACHE_DIR=$HOME/.cache/uv"
     "HF_HOME=$HOME/.cache/huggingface"
     "CARGO_HOME=$HOME/.cargo"
+    "PI_GONDOLIN_SANDBOX=1"
+    "PI_GONDOLIN_SOCKET=$CONTROLLER_SOCKET"
+    "PI_GONDOLIN_LEASE=$CONTROLLER_LEASE"
+    "PI_GONDOLIN_WORKSPACE_KEY=$CONTROLLER_WORKSPACE_KEY"
+    "PI_GONDOLIN_WORKSPACE_ROOT=$CONTROLLER_WORKSPACE_ROOT"
+    "PI_GONDOLIN_POLICY_GENERATION=$CONTROLLER_POLICY_GENERATION"
+    "PI_GONDOLIN_IMAGE_GENERATION=$CONTROLLER_IMAGE_GENERATION"
+    "PI_GONDOLIN_VM_ID=$CONTROLLER_VM_ID"
+    "PI_GONDOLIN_BUILTIN_TOOLS=$REQUESTED_BUILTINS"
+    "PI_GONDOLIN_HOST_TOOLS=$REQUESTED_HOST_TOOLS"
+    "PI_GONDOLIN_HANDSHAKE_FILE=$HANDSHAKE_FILE"
 )
-[[ -z "$WORKTREE_ROOT" ]] || safe_env+=("PI_SANDBOX_VALIDATED_WORKTREE=1")
 
 for name in \
     USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \
@@ -493,16 +578,19 @@ start_herdr_broker() {
 
 start_herdr_broker
 
-# SRT resolves relative policy paths and mandatory project protections from its
-# own cwd. Initialize it at the validated worktree root, then restore Pi's
-# physical launch directory inside the already-active sandbox.
-readonly SANDBOX_POLICY_ROOT="${WORKTREE_ROOT:-$LAUNCH_DIR}"
+requires_handshake=true
+for arg in "${pi_args[@]}"; do
+    case "$arg" in
+        -h|--help|-v|--version|--list-models|--list-models=*) requires_handshake=false ;;
+    esac
+done
+if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|update|list|config)$ ]]; then
+    requires_handshake=false
+fi
+
 set +e
-(
-    builtin cd -- "$SANDBOX_POLICY_ROOT" || exit 1
-    /usr/bin/env -i "${safe_env[@]}" \
-        "$HOST_NODE" "$SRT_UNRESTRICTED_NETWORK" --settings "$EFFECTIVE_POLICY" -- \
-        /bin/bash -c '
+/usr/bin/env -i "${safe_env[@]}" \
+    /bin/bash -c '
             builtin cd -- "$1" || exit 1
             shift
             real_pi="$1"
@@ -579,9 +667,73 @@ set +e
                 exec env PI_PLAN_MODE_DEFAULT_MODEL=1 "$real_pi" "${launch_args[@]}" "$@"
             fi
             exec "$real_pi" "${launch_args[@]}" "$@"
-        ' \
-        pi-sandbox-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"}
-)
+    ' \
+    pi-gondolin-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"} <&0 &
+PI_CHILD_PID=$!
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+trap 'forward_signal HUP' HUP
+
+if [[ "$requires_handshake" == true ]]; then
+    timeout_ms="${PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS:-15000}"
+    [[ "$timeout_ms" =~ ^[0-9]+$ && "$timeout_ms" -ge 100 ]] || timeout_ms=15000
+    attempts=$((timeout_ms / 25))
+    ((attempts > 0)) || attempts=1
+    handshake_ready=false
+    for ((attempt = 0; attempt < attempts; attempt += 1)); do
+        if [[ -s "$HANDSHAKE_FILE" ]]; then
+            if trusted_node -e '
+                const fs = require("node:fs");
+                const [file, workspaceKey, workspaceRoot, policy, image, vm] = process.argv.slice(1);
+                const value = JSON.parse(fs.readFileSync(file, "utf8"));
+                const expectedTools = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+                if (value.ok !== true || value.workspaceKey !== workspaceKey ||
+                    value.workspaceRoot !== workspaceRoot || value.policyGeneration !== policy ||
+                    value.imageGeneration !== image || value.vmId !== vm ||
+                    value.dockerHealthy !== true || !Array.isArray(value.tools) ||
+                    JSON.stringify([...value.tools].sort()) !== JSON.stringify(expectedTools)) {
+                    if (value.error) console.error(value.error);
+                    process.exit(1);
+                }
+            ' "$HANDSHAKE_FILE" "$CONTROLLER_WORKSPACE_KEY" "$CONTROLLER_WORKSPACE_ROOT" \
+                "$CONTROLLER_POLICY_GENERATION" "$CONTROLLER_IMAGE_GENERATION" "$CONTROLLER_VM_ID"
+            then
+                handshake_ready=true
+                break
+            fi
+            kill -TERM "$PI_CHILD_PID" 2>/dev/null || true
+            wait "$PI_CHILD_PID" 2>/dev/null || true
+            PI_CHILD_PID=""
+            die "the Gondolin routing extension rejected its controller or tool inventory"
+        fi
+        if ! kill -0 "$PI_CHILD_PID" 2>/dev/null; then
+            wait "$PI_CHILD_PID" 2>/dev/null
+            child_status=$?
+            PI_CHILD_PID=""
+            die "Pi exited before the Gondolin routing extension became ready (status $child_status)"
+        fi
+        /bin/sleep 0.025
+    done
+    if [[ "$handshake_ready" != true ]]; then
+        kill -TERM "$PI_CHILD_PID" 2>/dev/null || true
+        for _ in {1..100}; do
+            kill -0 "$PI_CHILD_PID" 2>/dev/null || break
+            /bin/sleep 0.01
+        done
+        kill -KILL "$PI_CHILD_PID" 2>/dev/null || true
+        wait "$PI_CHILD_PID" 2>/dev/null || true
+        PI_CHILD_PID=""
+        die "timed out waiting for the Gondolin routing extension handshake"
+    fi
+fi
+
+wait "$PI_CHILD_PID"
 status=$?
+if kill -0 "$PI_CHILD_PID" 2>/dev/null; then
+    wait "$PI_CHILD_PID"
+    child_status=$?
+    [[ "$status" -ne 0 ]] || status=$child_status
+fi
+PI_CHILD_PID=""
 set -e
 exit "$status"

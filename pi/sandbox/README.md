@@ -1,247 +1,274 @@
-# Pi whole-process sandbox
+# Pi Gondolin tool sandbox
 
-`~/bin/pi` wraps the installed Pi binary with
-[`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime).
-The OS boundary applies to Pi and its entire process tree: built-in tools, `!`
-commands, extension tools, MCP processes, `pi-subagents`, and native Ketch
-processes. It restricts filesystem access while deliberately leaving host
-network and Unix-socket access unrestricted.
+`~/bin/pi` keeps Pi on the host. It runs model-directed tools in a Gondolin Linux VM.
 
-The boundary is fail-closed. Missing dependencies, an invalid policy, or
-sandbox initialization failure stops the launch; there is no automatic
-unsandboxed fallback.
+The boundary has three parts:
 
-## Unsandboxed bypass
+- The host control plane runs Pi, model access, sessions, reviewed extensions, the Herdr broker, and the Gondolin controller.
+- The guest tool plane runs `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `!`, and `!!`.
+- Audited host adapters run Ketch, structured questions, child orchestration, and plan ledger operations.
 
-Pass `--yolo` to explicitly bypass the wrapper's sandbox:
+A custom Pi extension still runs on the host. Gondolin does not isolate extension code.
 
-```bash
-pi --yolo [args...]
+## Startup
+
+A normal launch uses this sequence:
+
+1. The launcher finds trusted Node.js, QEMU, Git, and the real Pi binary.
+2. The launcher verifies the pinned image and the versioned settings.
+3. The launcher acquires one workspace controller lease.
+4. The launcher disables all native Pi built-ins.
+5. The launcher passes private tool requests to the routing extension.
+6. The extension connects to the controller and checks each tool source.
+7. The launcher waits for the extension handshake.
+
+The launch stops if any step fails. The launcher never retries with host built-ins.
+
+The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM.
+
+A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires.
+
+## Host adapters
+
+The source manifest permits these model tools on the host:
+
+- `ketch_search`, `ketch_scrape`, `ketch_code`, `ketch_docs`, and `ketch_crawl`
+- `ask_user_question`
+- `subagent`
+- `submit_plan`, `plan_progress`, `complete_plan`, and `complete_stage`
+
+The manifest checks the tool name, source information, package version, and parameter schema. An unknown or changed tool stays inactive.
+
+Ketch uses host networking. The four execution workflow tools write only the validated plan and ledger state.
+
+Plan inspection tools and planning Bash use Gondolin. A known planning mutation stops before an execution RPC.
+
+Staged execution uses the same controller. Every subagent and discussion child starts without native Pi built-ins.
+
+## Filesystem settings
+
+`settings.json` has this schema:
+
+```json
+{
+  "version": 1,
+  "externalMounts": [
+    { "path": "~/src/shared", "access": "ro" }
+  ],
+  "network": {
+    "mode": "public-http",
+    "allowedHosts": [],
+    "allowWebSockets": false,
+    "tcpMappings": []
+  }
+}
 ```
 
-The wrapper consumes `--yolo` and launches the installed Pi binary directly,
-without sandbox prerequisite checks, policy enforcement, or environment
-filtering. The wrapper prints a warning because Pi and all model-invoked
-subprocesses then have the same host filesystem access and credentials as the
-calling shell.
+The controller mounts the canonical workspace root as read-write. A verified bare common directory is also read-write for linked worktrees.
+
+External mount destinations equal their canonical host paths. An external mount can use `ro` or `rw` access.
+
+The settings parser rejects these mounts:
+
+- A relative or missing path
+- `/` or the complete home directory
+- An overlapping mount
+- A Pi, controller, Docker, Ketch, credential, or host cache path
+- A custom guest destination
+
+Private workspace data uses these guest paths:
+
+| Guest path | Purpose |
+|---|---|
+| `/root/.cache` | Linux tool cache |
+| `/root/.npm` | npm cache |
+| `/root/.cargo` | Cargo cache |
+| `/var/lib/docker` | Guest Docker state |
+
+The private host root is `~/.cache/pi-gondolin/workspaces/<workspace-key>/`.
+
+The workspace provider blocks writes to Git hooks, Git settings, shell startup files, editor settings, and agent settings. It checks lexical and resolved paths.
+
+The provider checks both paths for rename and link operations. It also blocks writes through protected symlinks and pre-existing hard links.
+
+Pi state, Ketch state, private credentials, and the host Docker socket are not guest mounts.
+
+## Network settings
+
+The `network.mode` value has three choices:
+
+- `public-http` permits public HTTP and HTTPS destinations.
+- `allowlist` permits only `allowedHosts` entries.
+- `offline` disables guest networking.
+
+Gondolin blocks loopback, private, link-local, and metadata addresses. It checks redirects and connection-time DNS results.
+
+WebSockets are disabled by default. Set `allowWebSockets` to `true` to permit them.
+
+A TCP mapping is an explicit exception:
+
+```json
+{
+  "guestHost": "database.local",
+  "guestPort": 5432,
+  "connectHost": "127.0.0.1",
+  "connectPort": 15432
+}
+```
+
+Mapped TCP does not use HTTP request checks. Add only the minimum required target.
+
+## Guest image and Docker
+
+The exact Gondolin version is `0.12.0`. The image uses Alpine Linux and QEMU.
+
+The image contains Bash, certificates, Git, OpenSSH client, ripgrep, fd, Node.js, npm, Python, UV, RTK, Docker, Compose, and BuildKit.
+
+The image input digest covers the architecture, image settings, init script, Gondolin version, and pinned RTK assets.
+
+Built images use this path:
+
+```text
+~/.cache/pi-gondolin/images/<input-digest>/
+```
+
+The launcher verifies the Gondolin manifest, all asset checksums, and Pi image metadata.
+
+The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`.
+
+The host Docker socket and host Docker settings are not mounted. Privileged guest containers remain inside the VM boundary.
+
+One workspace controller prevents two Docker daemons from using the same data directory. Images, containers, and volumes remain after VM restart.
+
+## `/sandbox`
+
+Run `/sandbox` in the Pi TUI to inspect or change the sandbox.
+
+The view shows controller health, VM ID, Docker health, roots, mounts, network settings, and generation IDs.
+
+You can do these actions:
+
+- Add or remove an external mount.
+- Change mount access.
+- Change the network mode and allowed hosts.
+- Change WebSocket and TCP settings.
+- Restart the VM.
+- Reset Docker state for the current workspace.
+
+Each accepted settings change replaces the Stow source atomically. Then the controller drains active work and restarts once.
+
+Docker reset requires confirmation. It removes only the current workspace Docker directory.
+
+The footer shows a compact VM health marker. Detailed state remains in `/sandbox`.
 
 ## Installation
 
-Run:
+### macOS
+
+Install the required software:
+
+```bash
+brew install qemu lz4 e2fsprogs
+```
+
+macOS supplies `cpio` and `tar`.
+
+### Linux
+
+Install Node.js 23.6 or newer. Install QEMU, `cpio`, `lz4`, `tar`, and `e2fsprogs` with the system package manager.
+
+For Debian or Ubuntu on ARM64, run:
+
+```bash
+sudo apt install qemu-system-arm cpio lz4 tar e2fsprogs
+```
+
+Use the matching QEMU system package on x86_64. The rootless Linux bootstrap does not install these OS packages.
+
+Run the settings installer:
 
 ```bash
 ./install.sh config
 ```
 
-This stows the wrapper to `~/bin/pi`, stows this directory to
-`~/.pi/sandbox`, and runs `npm ci` for the pinned runtime.
+The installer uses Stow. It does not create manual target links.
 
-Both platforms require Node.js 20.11 or newer and `rg`. macOS uses the system
-`sandbox-exec`; Linux additionally requires `bwrap` and `socat`. The installer
-also provisions a pinned Ketch binary on Linux when none is on `PATH`, but
-Ketch is not a launcher prerequisite. The wrapper names any missing sandbox
-prerequisite and exits. A trusted `git` outside the candidate repository is
-optional: when it is unavailable, repository scope discovery fails narrow to
-the physical launch directory.
-
-## PATH contract
-
-Sandboxed Pi preserves the launching session's first-match command resolution
-across trusted PATH entries. The wrapper keeps canonical absolute directories
-in their original order, removes relative entries and directories inside the
-candidate worktree or its Git metadata, and deduplicates entries without
-changing precedence. It does not add the unfiltered host PATH afterward.
-
-Only the installed Pi binary's directory is moved to the front. This prevents
-nested Pi processes and subagents from re-entering `~/bin/pi` and attempting a
-weaker nested sandbox. Node.js, ripgrep, Git, platform tools, and system binary
-directories keep their order from the safe launching PATH. This preserves the
-user's package-manager choices without adding filesystem access or trusting
-repository-local shims during bootstrap.
-
-`--yolo` is intentionally outside this contract because it directly inherits
-the unfiltered host environment.
-
-## Policy
-
-`settings.json` is the trusted base policy. For each launch, the wrapper builds
-a private, ephemeral effective policy without changing the checked-in file:
-
-- Outside a valid Git working tree, the physical launch directory reads and
-  writes through to the host, preserving the original boundary.
-- Inside a valid working tree, the nearest working-tree root is recursively
-  readable and writable even when Pi starts in a nested directory. Pi still
-  starts in the physical launch directory.
-- A linked worktree whose common repository is verified as bare also receives
-  recursive access to that bare common directory. This permits ordinary Git
-  updates to objects, refs, logs, lockfiles, and linked-worktree administration.
-- A linked worktree backed by a non-bare repository receives no external common
-  directory grant. Its working-tree root is still granted normally.
-- Malformed or stale metadata, failed Git verification, paths the policy cannot
-  represent literally, or an unavailable trusted host Git never broaden the
-  boundary; the wrapper falls back to the physical launch directory.
-- Other home-directory reads and writes are denied unless explicitly listed.
-- Pi's own `~/.pi/agent` state is available so auth refresh, sessions,
-  packages, and trust decisions continue to work. Its Stow source,
-  `~/.dotfiles/pi/agent`, is also writable so runtime settings saves that
-  resolve the symlink can safely replace their target.
-- Ambient environment credentials and common credential files remain hidden.
-- Outbound network access is unrestricted. Pi and all descendants can reach
-  public, private, loopback, and metadata services using host networking.
-- macOS pseudo-terminal operations are allowed so Pi can put its interactive
-  terminal into raw mode.
-- macOS trust-service access is enabled so Go HTTPS clients such as Ketch can
-  verify certificates.
-- Apple Events remain blocked. Host Unix sockets are allowed as part of the
-  unrestricted traffic policy; the Herdr status integration still uses its
-  authenticated loopback broker rather than exposing its socket path.
-
-## Unrestricted network
-
-SRT's settings schema requires `network.allowedDomains` and has no supported
-"disable network policy" setting. `unrestricted-network.mjs` therefore
-validates and initializes the checked-in policy, removes that field from the
-in-memory configuration, and only then asks SRT to wrap Pi. SRT consequently
-retains filesystem, credential, PTY, and Apple Event controls but does not emit
-its network boundary or proxy environment. `allowAllUnixSockets` is also set so
-local socket traffic is unrestricted on every supported platform.
-
-This is intentionally unrestricted host networking, not a broad HTTP
-allowlist. Pi and every descendant can use arbitrary outbound protocols and can
-reach public sites, localhost, private networks, cloud metadata services, and
-host Unix sockets.
-
-The upstream `pi-ketch` package launches Ketch directly without a shell; Ketch
-and any configured browser inherit the same filesystem sandbox and unrestricted
-network.
-
-`enableWeakerNetworkIsolation` remains enabled on macOS so Go HTTPS clients can
-use `com.apple.trustd.agent` for certificate verification. Credential filtering
-and the Apple Events deny remain unchanged.
-
-Filesystem grants remain subject to higher-priority write denies. At a
-working-tree root, Git hooks and configuration plus protected root-level shell,
-agent, and editor execution configuration remain non-writable. The launcher
-suppresses SRT's redundant recursive dangerous-filename scan only for a
-Git-validated worktree, allowing tracked sources such as `zsh/.zshrc` while the
-root `.zshrc` stays denied. In a bare common directory, root-level `hooks/` and
-`config` remain non-writable while Git data and worktree administration stay
-writable.
-
-Repository discovery first excludes the untrusted candidate worktree and its
-candidate metadata from bootstrap executable lookup. It then uses a host Git
-outside those paths with ambient Git configuration and repository-selection
-environment variables removed. Only canonical, Git-verified paths are added to
-the effective policy. The temporary policy protects itself from writes and is
-removed when the wrapper exits.
-
-Edit the checked-in policy outside sandboxed Pi to add another filesystem path.
-The wrapper, policy, and plan-mode gate are write-protected from inside Pi,
-including when this dotfiles repository is the workspace.
-
-Run `npm run test:broker` for the Herdr broker API checks,
-`npm run test:wrapper` for launcher compatibility,
-`npm run test:repository` for repository scope and policy composition, and
-`npm run test:ketch-config` for cross-platform deployment. Run
-`npm run test:containment` from an unsandboxed terminal for native filesystem,
-unrestricted-network, normal-repository, and bare-worktree enforcement.
-`npm run test:ketch-live` verifies direct Ketch access to an arbitrary host.
-Native sandbox tests cannot apply another boundary when invoked from an
-already-sandboxed agent session.
-
-## Plan mode
-
-The plan-mode extension is a separate model-facing workflow guard. During
-planning it hides mutation and unknown custom tools, and it rejects shell
-commands that match a known-mutator denylist. The detector is intentionally
-**fail-open**: unclassified commands are allowed, so plan mode cannot promise
-that the workspace is absolutely read-only.
-
-Trusted extension code may atomically write the active plan/ledger under the
-project's `.pi/plans/`, and the user's configured editor may edit that plan for
-review. These trusted plan writes are distinct from model-facing mutation tools.
-
-The whole-process wrapper is the OS security boundary. It confines Pi and its
-process tree to policy-approved locations, but the current workspace is one of
-those writable locations. Therefore the sandbox does not turn arbitrary
-planning-mode shell programs into read-only operations; the denylist remains a
-workflow convenience rather than a complete mutation boundary.
-
-## Herdr status broker
-
-When Pi starts inside Herdr, the wrapper launches a small unsandboxed broker on
-a random loopback port. Pi receives that port and a per-process token instead
-of `HERDR_SOCKET_PATH`. The broker accepts only `pane.report_agent`,
-`pane.report_agent_session`, `pane.report_metadata`, and `pane.release_agent`;
-it fixes the pane, source, agent, display agent, and sequence values before
-forwarding to Herdr. All other Herdr
-methods are rejected, agent-session paths are confined to Pi's session tree,
-and the native Herdr Unix socket path is not passed into Pi's environment.
-
-The broker transport is a local adaptation in the generated
-`herdr-agent-state.ts`. Reinstalling Herdr's Pi integration may overwrite that
-file; preserve or restore the tracked broker transport. The wrapper never falls
-back to exposing the real Herdr socket.
-
-For a root TUI session, the reporter sends the current Pi session reference
-before its `idle`, `working`, or `blocked` lifecycle state, and waits for the
-broker acknowledgement. The session path is preferred after Pi creates it; the
-stable Pi session ID covers the short creation race. The reporter retains the
-latest desired state until it is acknowledged and retries automatically with
-bounded backoff. Terminal `idle` and long-lived `blocked` delivery must not
-depend on a future lifecycle event. These reports are authoritative to Herdr,
-so screen detection is skipped. On reload, the retiring reporter stops before
-its replacement can report.
-
-Green status has two inputs: Pi's ordinary settled lifecycle and the durable
-`plan-mode:workflow-state` event when its persisted mode is `completed`. The
-latter is a completed-plan-only semantic override, so it may report `idle`
-before a later `agent_settled`; the next `agent_start` reasserts `working`.
-An active feedback wait remains `blocked` until cleared. Do not infer these
-states from the screen or bypass the broker: diagnose stale reports through
-broker acknowledgement plus `herdr agent get <pane>` and
-`herdr agent explain <pane>`.
-
-A listening broker process or one successful canary alone does not prove
-terminal-state reliability. Regression coverage must exhaust both immediate
-attempts for terminal `idle` and durable `blocked`, restore delivery, and verify
-acknowledgement without another lifecycle event. Verify active panes after
-launch with:
+The installer runs this dependency command:
 
 ```bash
-herdr agent get <pane>
-herdr agent explain <pane>
+npm ci --omit=dev --ignore-scripts
 ```
 
-`get` must include the current Pi `agent_session`, and `explain` must report
-`screen_detection_skip_reason: full_lifecycle_hook_authority`. The public
-`rpiv:ask-user:blocked` lifecycle is the authoritative structured-question
-source; wrapping generic `ctx.ui` dialogs is fallback coverage for extensions
-without a semantic wait event. While a Pi plan action dialog or question is
-unresolved, the reported state must be `blocked` with `waiting for feedback`.
-A `working_literal` match, `default_known_agent_idle_fallback`, or a missing
-session reference means lifecycle authority failed. A Herdr-status warning
-marks an active delivery outage; the reporter retries automatically and clears
-the outage episode after acknowledgement. If state remains stale beyond the
-maximum retry backoff, inspect broker startup and Herdr forwarding rather than
-adding screen patterns.
+Then it builds a missing image or verifies the current image. A missing prerequisite stops the installation with an error.
 
-Model-invoked code can still spoof Pi's own reported state because it shares the
-broker capability with the extension. That narrow status mutation is inherent
-in making status reporting available inside the sandbox; it does not provide
-pane control, process launch, terminal input, or any other Herdr operation.
-`--yolo` bypasses this design together with the rest of the sandbox and retains
-Herdr's normal direct integration.
+macOS ARM64 has full native verification. Run the same native suite before you claim support for a Linux host.
 
-## Accepted credential risk
+## Image and Docker maintenance
 
-Pi's `auth.json` is intentionally available inside the sandbox. Model-invoked
-code can therefore read those credentials, and unrestricted network access is
-an exfiltration channel to any reachable destination. Ketch runs in the same
-process-tree boundary and can read every filesystem path granted to Pi,
-including the workspace, Pi auth, and managed Ketch configuration and cache.
-Fetched text remains untrusted source material and must not be treated as agent
-instructions.
+Verify the current image:
 
-On macOS, sandboxed child processes can also interact with
-permission-accessible pseudo-terminals; this is required by Pi's TUI.
+```bash
+node pi/sandbox/build-gondolin-image.mjs --verify --print-path
+```
+
+Rebuild the current image:
+
+```bash
+node pi/sandbox/build-gondolin-image.mjs --force
+```
+
+Use `/sandbox` to reset only the current workspace Docker state.
+
+You can also stop Pi and remove this directory:
+
+```text
+~/.cache/pi-gondolin/workspaces/<workspace-key>/docker
+```
+
+Do not connect the guest to the host Docker socket.
+
+## Unsandboxed bypass
+
+Use `--yolo` only when you explicitly need host built-ins:
+
+```bash
+pi --yolo [args...]
+```
+
+The launcher removes `--yolo` and starts the real Pi binary directly. It skips controller, image, settings, and environment checks.
+
+The command prints a warning. Host tools and credentials are then available to model-directed operations.
+
+## Verification
+
+Run unit and wrapper tests:
+
+```bash
+npm --prefix pi/sandbox test
+```
+
+Run native QEMU, Docker, network, tool, child, and Ketch tests:
+
+```bash
+npm --prefix pi/sandbox run test:native
+```
+
+Run extension regressions:
+
+```bash
+PI_PACKAGE_ROOT=/path/to/pi-coding-agent npm --prefix pi/agent/extensions/plan-mode test
+PI_PACKAGE_ROOT=/path/to/pi-coding-agent node --test pi/agent/extensions/subagent/test/*.test.mjs
+npm --prefix pi/agent/packages/ask-user-question test
+```
+
+The native canary verifies public HTTPS and blocked internal destinations. It also verifies Docker pull, BuildKit, Compose, and persistent state.
+
+The inventory test starts real normal and planning children. It checks replacement sources, host adapters, unknown tools, and handshake failure.
+
+## Accepted risks
+
+The host control plane and audited adapters are trusted. A defect in this code can affect the host.
+
+An allowed public server can receive any guest-readable data. Ketch also has host network access by design.
+
+QEMU escape and denial of service are accepted risks. Keep QEMU and the pinned dependencies current.

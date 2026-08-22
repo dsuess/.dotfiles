@@ -19,11 +19,15 @@ cd "$REPO_ROOT"
 node -e '
     const fs = require("node:fs");
     const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    if (!settings.packages.includes("npm:pi-ketch")) throw new Error("upstream pi-ketch package is not enabled");
-    if (!fs.existsSync(process.argv[2])) throw new Error("missing unrestricted-network sandbox launcher");
+    if (!settings.packages.includes("npm:pi-ketch@0.1.6")) throw new Error("pinned upstream pi-ketch package is not enabled");
+    for (const path of process.argv.slice(2)) {
+        if (!fs.existsSync(path)) throw new Error(`missing Gondolin resource: ${path}`);
+    }
 ' \
     "$REPO_ROOT/pi/agent/settings.json" \
-    "$REPO_ROOT/pi/sandbox/unrestricted-network.mjs"
+    "$REPO_ROOT/pi/sandbox/client.mjs" \
+    "$REPO_ROOT/pi/sandbox/controller.mjs" \
+    "$REPO_ROOT/pi/agent/extensions/gondolin-sandbox/index.ts"
 grep -F 'ketch|targz|ketch|https://github.com/1broseidon/ketch/releases/download/v0.13.0/' "$REPO_ROOT/install.sh" >/dev/null
 
 readonly EXPECTED_BACKEND="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).backend' "$REPO_ROOT/ketch/config.json")"
@@ -86,7 +90,9 @@ fi
 HOME="$TEST_ROOT/pi-home"
 mkdir -p "$HOME/.pi"
 stow pi -t "$HOME/.pi"
-[[ -e "$HOME/.pi/sandbox/unrestricted-network.mjs" ]]
+[[ -e "$HOME/.pi/sandbox/client.mjs" ]]
+[[ -e "$HOME/.pi/sandbox/controller.mjs" ]]
+[[ -e "$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts" ]]
 [[ ! -e "$HOME/.pi/sandbox/ketch-broker.mjs" ]]
 stow pi -t "$HOME/.pi"
 [[ -e "$HOME/.pi/agent/settings.json" ]]

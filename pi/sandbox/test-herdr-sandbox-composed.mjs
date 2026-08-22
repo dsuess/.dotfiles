@@ -11,12 +11,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../..");
 const WRAPPER = path.join(ROOT, "bin/pi");
 
-function waitForExit(child, stderr) {
+function waitForExit(child, diagnostic) {
 	return new Promise((resolve, reject) => {
 		child.once("error", reject);
 		child.once("exit", (code, signal) => {
 			if (code === 0) resolve();
-			else reject(new Error(`wrapper exited with ${code ?? signal}: ${stderr}`));
+			else reject(new Error(`wrapper exited with ${code ?? signal}: ${diagnostic()}`));
 		});
 	});
 }
@@ -64,28 +64,64 @@ test("sandbox wrapper establishes Herdr authority before an unresolved plan wait
 		await mkdir(workspace, { recursive: true });
 		await writeFile(path.join(home, ".pi/agent/settings.json"), "{}\n");
 		await writeFile(path.join(home, ".pi/sandbox/settings.json"), JSON.stringify({
-			network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
-			filesystem: { denyRead: ["~"], allowRead: ["."], allowWrite: [".", "/tmp"], denyWrite: [], allowGitConfig: false },
+			version: 1,
+			externalMounts: [],
+			network: { mode: "public-http", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
 		}));
 		await cp(path.join(HERE, "herdr-status-broker.mjs"), path.join(home, ".pi/sandbox/herdr-status-broker.mjs"));
+		await cp(path.join(HERE, "repository-scope.mjs"), path.join(home, ".pi/sandbox/repository-scope.mjs"));
 		await cp(path.join(ROOT, "pi/agent/extensions/herdr-agent-state.ts"), path.join(home, ".pi/agent/extensions/herdr-agent-state.ts"));
 		await cp(path.join(ROOT, "pi/agent/extensions/herdr-feedback-state/index.ts"), path.join(home, ".pi/agent/extensions/herdr-feedback-state/index.ts"));
+		await cp(path.join(ROOT, "pi/agent/extensions/herdr-feedback-state/events.ts"), path.join(home, ".pi/agent/extensions/herdr-feedback-state/events.ts"));
 		await cp(path.join(ROOT, "pi/agent/extensions/plan-mode/events.ts"), path.join(home, ".pi/agent/extensions/plan-mode/events.ts"));
 		await cp(path.join(ROOT, "pi/agent/packages/ask-user-question/events.ts"), path.join(home, ".pi/agent/packages/ask-user-question/events.ts"));
-		await writeFile(path.join(home, ".pi/sandbox/unrestricted-network.mjs"), `
-import { spawnSync } from "node:child_process";
+		await mkdir(path.join(home, ".pi/agent/extensions/gondolin-sandbox"), { recursive: true });
+		await writeFile(path.join(home, ".pi/agent/extensions/gondolin-sandbox/index.ts"), "export default function () {}\n");
+		await writeFile(path.join(home, ".pi/sandbox/controller.mjs"), "export {};\n");
+		await mkdir(path.join(root, "image"), { recursive: true });
+		await writeFile(path.join(home, ".pi/sandbox/build-gondolin-image.mjs"), `process.stdout.write(${JSON.stringify(path.join(root, "image") + "\\n")});\n`);
+		await writeFile(path.join(home, ".pi/sandbox/client-cli.mjs"), `
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] !== "--settings" || args[2] !== "--") process.exit(2);
-const result = spawnSync(args[3], args.slice(4), { stdio: "inherit", env: process.env });
-process.exit(result.status ?? 1);
+if (args[0] === "release") process.exit(0);
+const launch = fs.realpathSync(args[args.indexOf("--launch-dir") + 1]);
+const runtimeRoot = ${JSON.stringify(path.join(root, "runtime"))};
+fs.mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 });
+process.stdout.write(JSON.stringify({
+  version: 1, socketPath: runtimeRoot + "/controller.sock",
+  leaseToken: "a".repeat(64),
+  workspaceKey: createHash("sha256").update(JSON.stringify([launch, null])).digest("hex"),
+  workspaceRoot: launch,
+  bareCommonDirectory: null, policyGeneration: "c".repeat(64), imageGeneration: "d".repeat(64),
+  vmId: "composed-vm", dockerHealthy: true, controllerPid: process.pid, runtimeRoot,
+}) + "\\n");
 `);
-		await writeFile(path.join(home, ".pi/sandbox/node_modules/.bin/srt"), "#!/usr/bin/env bash\nexit 0\n");
-		await chmod(path.join(home, ".pi/sandbox/node_modules/.bin/srt"), 0o755);
+		for (const qemu of ["qemu-system-aarch64", "qemu-system-x86_64"]) {
+			await writeFile(path.join(realBin, qemu), "#!/bin/sh\nexit 0\n");
+			await chmod(path.join(realBin, qemu), 0o755);
+		}
 		await writeFile(path.join(realBin, "pi"), `#!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+if (process.argv.includes("--list-models")) {
+  process.stdout.write("Provider Model\\n");
+  process.exit(0);
+}
+if (process.env.PI_GONDOLIN_HANDSHAKE_FILE) {
+  await writeFile(process.env.PI_GONDOLIN_HANDSHAKE_FILE, JSON.stringify({
+    ok: true,
+    workspaceKey: process.env.PI_GONDOLIN_WORKSPACE_KEY,
+    workspaceRoot: process.env.PI_GONDOLIN_WORKSPACE_ROOT,
+    policyGeneration: process.env.PI_GONDOLIN_POLICY_GENERATION,
+    imageGeneration: process.env.PI_GONDOLIN_IMAGE_GENERATION,
+    vmId: process.env.PI_GONDOLIN_VM_ID,
+    dockerHealthy: true,
+    tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+  }));
+}
 const extensionPath = (relative) => pathToFileURL(path.join(process.env.HOME, ".pi/agent/extensions", relative)).href;
 const { default: reporter } = await import(extensionPath("herdr-agent-state.ts"));
 const { default: feedback } = await import(extensionPath("herdr-feedback-state/index.ts"));
@@ -142,11 +178,13 @@ await new Promise((resolve) => setTimeout(resolve, 30));
 				HERDR_SOCKET_PATH: socketPath,
 				HERDR_PANE_ID: "pane-composed",
 			},
-			stdio: ["ignore", "ignore", "pipe"],
+			stdio: ["ignore", "pipe", "pipe"],
 		});
+		let stdout = "";
 		let stderr = "";
+		child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
 		child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-		await waitForExit(child, stderr);
+		await waitForExit(child, () => `${stderr}\nstdout:\n${stdout}`);
 
 		const session = forwarded.find((request) => request.method === "pane.report_agent_session");
 		const metadata = forwarded.find((request) => request.method === "pane.report_metadata");

@@ -105,10 +105,10 @@ function baseOptions(overrides = {}) {
 	};
 }
 
-test("filters recursive and parent-workflow tools without changing the inherited order", () => {
+test("filters recursive, parent-workflow, duplicate, and unaudited tools", () => {
 	assert.deepEqual(filterChildTools([
-		"read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage", "read",
-	]), ["read", "bash", "read"]);
+		"read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage", "read", "unknown_tool",
+	]), ["read", "bash"]);
 });
 
 test("planning inheritance requires both the active workflow marker and effective planning prompt", () => {
@@ -169,6 +169,11 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	const parentEnv = {
 		PATH: "/bin",
 		PI_SANDBOX_PROFILE: "inherited-profile",
+		PI_GONDOLIN_SANDBOX: "1",
+		PI_GONDOLIN_SOCKET: "/tmp/controller.sock",
+		PI_GONDOLIN_LEASE: "a".repeat(64),
+		PI_GONDOLIN_POLICY_GENERATION: "b".repeat(64),
+		NODE_TEST_CONTEXT: "inherited-test-runner",
 		PI_SESSION_ID: "parent-id",
 		PI_SESSION_FILE: "/parent/session.jsonl",
 		PI_PROVIDER: "parent-provider",
@@ -202,12 +207,11 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		assert.deepEqual(spawnCall.options.stdio, ["pipe", "pipe", "pipe"]);
 		for (const pair of [
 			["--mode", "json"], ["--model", "test-provider/requested-model"], ["--thinking", "high"],
-			["--tools", "read,bash"],
 		]) {
 			const index = spawnCall.args.indexOf(pair[0]);
 			assert.equal(spawnCall.args[index + 1], pair[1], `${pair[0]} inheritance`);
 		}
-		for (const flag of ["--print", "--no-session", "--no-context-files", "--no-skills", "--no-prompt-templates"]) {
+		for (const flag of ["--print", "--no-session", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-builtin-tools"]) {
 			assert.ok(spawnCall.args.includes(flag), flag);
 		}
 		assert.equal(spawnCall.args.includes("--no-extensions"), false, "custom extension discovery stays enabled");
@@ -221,7 +225,13 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		assert.match(promptSnapshot.text, /parent-session workflow tools/i);
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_CHILD, "1");
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_PLANNING, "1");
+		assert.equal(spawnCall.options.env.PI_GONDOLIN_BUILTIN_TOOLS, "read,bash");
 		assert.equal(spawnCall.options.env.PI_SANDBOX_PROFILE, "inherited-profile");
+		assert.equal(spawnCall.options.env.PI_GONDOLIN_SANDBOX, "1");
+		assert.equal(spawnCall.options.env.PI_GONDOLIN_SOCKET, "/tmp/controller.sock");
+		assert.equal(spawnCall.options.env.PI_GONDOLIN_LEASE, "a".repeat(64));
+		assert.equal(spawnCall.options.env.PI_GONDOLIN_POLICY_GENERATION, "b".repeat(64));
+		assert.equal(spawnCall.options.env.NODE_TEST_CONTEXT, undefined);
 		for (const name of ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) {
 			assert.equal(spawnCall.options.env[name], undefined, `${name} must not leak from parent`);
 			assert.ok(name in parentEnv, `${name} removal must not mutate the parent environment object`);
@@ -234,7 +244,25 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	}
 });
 
-test("uses --no-tools when filtering leaves no inherited tools", async () => {
+test("passes audited host adapters only through the private post-handshake allowlist", async () => {
+	const proc = new FakeProcess();
+	let spawnCall;
+	await runSubagent(baseOptions({ activeTools: ["read", "ketch_search", "unknown_tool"] }), {
+		spawnImpl(_command, args, options) {
+			spawnCall = { args, options };
+			queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));
+			return proc;
+		},
+	});
+	assert.equal(spawnCall.args.includes("--tools"), false);
+	assert.ok(spawnCall.args.includes("--no-builtin-tools"));
+	assert.equal(spawnCall.args.includes("--no-tools"), false);
+	assert.equal(spawnCall.options.env.PI_GONDOLIN_BUILTIN_TOOLS, "read");
+	assert.equal(spawnCall.options.env.PI_GONDOLIN_HOST_TOOLS, "ketch_search");
+	assert.equal(spawnCall.args.join(" ").includes("unknown_tool"), false);
+});
+
+test("keeps native built-ins disabled when no child capability is inherited", async () => {
 	const proc = new FakeProcess();
 	let args;
 	await runSubagent(baseOptions({ activeTools: ["subagent", "submit_plan", "plan_progress"] }), {
@@ -244,7 +272,8 @@ test("uses --no-tools when filtering leaves no inherited tools", async () => {
 			return proc;
 		},
 	});
-	assert.ok(args.includes("--no-tools"));
+	assert.equal(args.includes("--no-tools"), false);
+	assert.ok(args.includes("--no-builtin-tools"));
 	assert.equal(args.includes("--tools"), false);
 });
 

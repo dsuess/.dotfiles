@@ -1,8 +1,0 @@
-#!/bin/sh
-set -eu
-
-if [ "$#" -ne 1 ]; then
-    exit 2
-fi
-
-command -v "$1"

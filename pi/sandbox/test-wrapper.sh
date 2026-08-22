@@ -3,299 +3,360 @@ set -euo pipefail
 
 readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly WRAPPER="$(cd "$HERE/../.." && pwd)/bin/pi"
+readonly WRAPPER_BIN="$(dirname "$WRAPPER")"
 readonly TEST_ROOT="$(mktemp -d)"
+readonly HOST_NODE="$(command -v node)"
+readonly HOST_GIT="$(command -v git)"
+readonly HOST_RG="$(command -v rg)"
+readonly HOST_MKTEMP="$(command -v mktemp)"
+readonly HOST_AWK="$(command -v awk)"
+readonly HOST_GREP="$(command -v grep)"
+readonly HOST_ENV="$(command -v env)"
 
-cleanup() {
-    rm -rf "$TEST_ROOT"
-}
+cleanup() { rm -rf "$TEST_ROOT"; }
 trap cleanup EXIT
 
 readonly TEST_HOME="$TEST_ROOT/home"
+readonly SANDBOX_HOME="$TEST_HOME/.pi/sandbox"
+readonly AGENT_HOME="$TEST_HOME/.pi/agent"
 readonly REAL_BIN="$TEST_ROOT/real-bin"
-readonly PREREQ_BIN="$TEST_ROOT/prereq-bin"
+readonly TRUSTED_BIN="$TEST_ROOT/trusted-bin"
+readonly NO_QEMU_BIN="$TEST_ROOT/no-qemu-bin"
 readonly SHIM_BIN="$TEST_ROOT/workspace"
 readonly FIRST_SAFE_BIN="$TEST_ROOT/first-safe-bin"
 readonly SECOND_SAFE_BIN="$TEST_ROOT/second-safe-bin"
-readonly RELATIVE_BIN="$SHIM_BIN/relative-bin"
-readonly WRAPPER_BIN="$(dirname "$WRAPPER")"
-readonly TOOL_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-
-node -e '
-const settings = require(process.argv[1]);
-if (!settings.filesystem.allowWrite.includes("~/.dotfiles/pi/agent")) {
-  throw new Error("Stow source for Pi agent state must be writable");
-}
-' "$HERE/settings.json"
+readonly TOOL_PATH="/usr/bin:/bin"
+readonly CLIENT_LOG="$TEST_ROOT/client.log"
+readonly RUNTIME_ROOT="$TEST_ROOT/runtime"
+readonly IMAGE_DIR="$TEST_ROOT/image"
 
 mkdir -p \
-    "$TEST_HOME/.pi/sandbox/node_modules/.bin" \
-    "$TEST_HOME/.pi/agent/sessions" \
-    "$REAL_BIN" \
-    "$PREREQ_BIN" \
-    "$SHIM_BIN" \
-    "$FIRST_SAFE_BIN" \
-    "$SECOND_SAFE_BIN" \
-    "$RELATIVE_BIN" \
-    "$TEST_ROOT/tmp"
-printf '{}\n' >"$TEST_HOME/.pi/agent/settings.json"
-cat >"$TEST_HOME/.pi/sandbox/settings.json" <<'EOF'
+    "$SANDBOX_HOME" \
+    "$AGENT_HOME/extensions/gondolin-sandbox" \
+    "$AGENT_HOME/sessions" \
+    "$REAL_BIN" "$TRUSTED_BIN" "$NO_QEMU_BIN" "$SHIM_BIN" \
+    "$FIRST_SAFE_BIN" "$SECOND_SAFE_BIN" "$RUNTIME_ROOT" "$IMAGE_DIR"
+cat >"$AGENT_HOME/settings.json" <<'JSON'
 {
-  "network": {"allowedDomains": [], "deniedDomains": [], "strictAllowlist": true},
-  "filesystem": {
-    "denyRead": ["~"],
-    "allowRead": ["."],
-    "allowWrite": [".", "/tmp"],
-    "denyWrite": [],
-    "allowGitConfig": false
+  "enabledModels": ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-terra",
+  "defaultThinkingProvider": "openai-codex",
+  "defaultThinkingModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "xhigh"
+}
+JSON
+printf 'export default function () {}\n' >"$AGENT_HOME/extensions/gondolin-sandbox/index.ts"
+cp "$HERE/repository-scope.mjs" "$SANDBOX_HOME/repository-scope.mjs"
+cp "$HERE/herdr-status-broker.mjs" "$SANDBOX_HOME/herdr-status-broker.mjs"
+printf '{}\n' >"$SANDBOX_HOME/controller.mjs"
+cat >"$SANDBOX_HOME/settings.json" <<'JSON'
+{
+  "version": 1,
+  "externalMounts": [],
+  "network": {
+    "mode": "public-http",
+    "allowedHosts": [],
+    "allowWebSockets": false,
+    "tcpMappings": []
   }
 }
-EOF
-cp "$HERE/herdr-status-broker.mjs" "$TEST_HOME/.pi/sandbox/herdr-status-broker.mjs"
-cat >"$TEST_HOME/.pi/sandbox/unrestricted-network.mjs" <<'EOF'
-#!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-const args = process.argv.slice(2);
-if (args[0] !== "--settings" || args[2] !== "--") process.exit(2);
-const result = spawnSync(args[3], args.slice(4), { stdio: "inherit", env: process.env });
-process.exit(result.status ?? 1);
-EOF
+JSON
 
-cat >"$TEST_HOME/.pi/sandbox/node_modules/.bin/srt" <<'EOF'
+write_exec_wrapper() {
+    local destination="$1" executable="$2"
+    printf '#!/bin/bash\nexec %q "$@"\n' "$executable" >"$destination"
+    chmod +x "$destination"
+}
+
+for directory in "$TRUSTED_BIN" "$NO_QEMU_BIN"; do
+    write_exec_wrapper "$directory/node" "$HOST_NODE"
+    write_exec_wrapper "$directory/rg" "$HOST_RG"
+    write_exec_wrapper "$directory/mktemp" "$HOST_MKTEMP"
+    write_exec_wrapper "$directory/git" "$HOST_GIT"
+    write_exec_wrapper "$directory/awk" "$HOST_AWK"
+    write_exec_wrapper "$directory/grep" "$HOST_GREP"
+    write_exec_wrapper "$directory/env" "$HOST_ENV"
+done
+printf '#!/bin/sh\nexit 0\n' >"$TRUSTED_BIN/qemu-system-aarch64"
+printf '#!/bin/sh\nexit 0\n' >"$TRUSTED_BIN/qemu-system-x86_64"
+chmod +x "$TRUSTED_BIN/qemu-system-aarch64" "$TRUSTED_BIN/qemu-system-x86_64"
+
+cat >"$SANDBOX_HOME/build-gondolin-image.mjs" <<EOF_IMAGE
+#!/usr/bin/env node
+import fs from "node:fs";
+if (fs.existsSync("$TEST_ROOT/fail-image")) process.exit(1);
+process.stdout.write("$IMAGE_DIR\\n");
+EOF_IMAGE
+
+cat >"$SANDBOX_HOME/client-cli.mjs" <<EOF_CLIENT
+#!/usr/bin/env node
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const command = args.shift();
+fs.appendFileSync("$CLIENT_LOG", command + " " + args.join(" ") + "\\n");
+if (command === "release") {
+  process.stdout.write('{"released":true}\\n');
+  process.exit(0);
+}
+const get = (name) => args[args.indexOf(name) + 1];
+const launch = fs.realpathSync(get("--launch-dir"));
+fs.mkdirSync("$RUNTIME_ROOT", { recursive: true, mode: 0o700 });
+process.stdout.write(JSON.stringify({
+  version: 1,
+  socketPath: "$RUNTIME_ROOT/controller.sock",
+  leaseToken: "a".repeat(64),
+  workspaceKey: createHash("sha256").update(JSON.stringify([launch, null])).digest("hex"),
+  workspaceRoot: launch,
+  bareCommonDirectory: null,
+  policyGeneration: "c".repeat(64),
+  imageGeneration: "d".repeat(64),
+  vmId: "fake-vm-id",
+  dockerHealthy: true,
+  controllerPid: process.pid,
+  runtimeRoot: "$RUNTIME_ROOT"
+}) + "\\n");
+EOF_CLIENT
+
+cat >"$REAL_BIN/pi" <<EOF_PI
 #!/usr/bin/env bash
 set -euo pipefail
-
-[[ "$1" == "--settings" ]]
-[[ -r "$2" ]]
-[[ "$3" == "--" ]]
-shift 3
-exec "$@"
-EOF
-
-cat >"$REAL_BIN/pi" <<'EOF'
-#!/usr/bin/env bash
-if [[ "$*" == *"--list-models"* ]]; then
-    printf 'Provider Model\n'
-    printf 'openai-codex gpt-5.6-sol\n'
-    printf 'openai-codex gpt-5.6-terra\n'
+if [[ "\$*" == *"--list-models"* ]]; then
+    printf 'Provider Model\\n'
+    printf 'openai-codex gpt-5.6-sol\\n'
+    printf 'openai-codex gpt-5.6-terra\\n'
     exit 0
 fi
-printf 'real=%s\n' "$0"
-printf 'args='
-printf '<%s>' "$@"
-printf '\n'
-printf 'default_injected=%s\n' "${PI_PLAN_MODE_DEFAULT_MODEL-unset}"
-printf 'secret=%s\n' "${SECRET_SHOULD_NOT_LEAK-unset}"
-printf 'tmpdir=%s\n' "$TMPDIR"
-printf 'path=%s\n' "$PATH"
-printf 'herdr_env=%s\n' "${HERDR_ENV-unset}"
-printf 'herdr_socket=%s\n' "${HERDR_SOCKET_PATH-unset}"
-printf 'herdr_pane=%s\n' "${HERDR_PANE_ID-unset}"
-printf 'herdr_status_port=%s\n' "${HERDR_PI_STATUS_PORT-unset}"
-printf 'herdr_status_token=%s\n' "${HERDR_PI_STATUS_TOKEN-unset}"
-if [[ "$*" == *"--path-order-probe"* ]]; then
-    printf 'git_resolution=%s\n' "$(command -v git || printf absent)"
-    printf 'git_marker=%s\n' "$(git)"
-    printf 'pi_resolution=%s\n' "$(command -v pi || printf absent)"
+if [[ -e "$TEST_ROOT/no-handshake" ]]; then
+    exit 0
 fi
-if [[ "$*" == *"--relative-path-probe"* ]]; then
-    printf 'relative_probe=%s\n' "$(command -v relative-path-probe || printf absent)"
+if [[ -n "\${PI_GONDOLIN_HANDSHAKE_FILE-}" ]]; then
+    node -e '
+      const fs = require("node:fs");
+      const mismatch = fs.existsSync(process.argv[1]);
+      fs.writeFileSync(process.env.PI_GONDOLIN_HANDSHAKE_FILE, JSON.stringify({
+        ok: true,
+        workspaceKey: process.env.PI_GONDOLIN_WORKSPACE_KEY,
+        workspaceRoot: process.env.PI_GONDOLIN_WORKSPACE_ROOT,
+        policyGeneration: process.env.PI_GONDOLIN_POLICY_GENERATION,
+        imageGeneration: process.env.PI_GONDOLIN_IMAGE_GENERATION,
+        vmId: mismatch ? "wrong-vm" : process.env.PI_GONDOLIN_VM_ID,
+        dockerHealthy: true,
+        tools: ["read", "write", "edit", "bash", "grep", "find", "ls"]
+      }));
+    ' "$TEST_ROOT/bad-handshake"
 fi
-EOF
+printf 'real=%s\\n' "\$0"
+printf 'cwd=%s\\n' "\$PWD"
+printf 'args='; printf '<%s>' "\$@"; printf '\\n'
+printf 'secret=%s\\n' "\${SECRET_SHOULD_NOT_LEAK-unset}"
+printf 'node_options=%s\\n' "\${NODE_OPTIONS-unset}"
+printf 'tmpdir=%s\\n' "\${TMPDIR-unset}"
+printf 'path=%s\\n' "\$PATH"
+printf 'builtins=%s\\n' "\${PI_GONDOLIN_BUILTIN_TOOLS-unset}"
+printf 'host_tools=%s\\n' "\${PI_GONDOLIN_HOST_TOOLS-unset}"
+printf 'sandbox=%s\\n' "\${PI_GONDOLIN_SANDBOX-unset}"
+printf 'socket=%s\\n' "\${PI_GONDOLIN_SOCKET-unset}"
+printf 'lease=%s\\n' "\${PI_GONDOLIN_LEASE-unset}"
+printf 'herdr_env=%s\\n' "\${HERDR_ENV-unset}"
+printf 'herdr_socket=%s\\n' "\${HERDR_SOCKET_PATH-unset}"
+printf 'herdr_status_port=%s\\n' "\${HERDR_PI_STATUS_PORT-unset}"
+printf 'herdr_status_token=%s\\n' "\${HERDR_PI_STATUS_TOKEN-unset}"
+if [[ "\$*" == *"--path-order-probe"* ]]; then
+    printf 'git_resolution=%s\\n' "\$(command -v git || printf absent)"
+    printf 'git_marker=%s\\n' "\$(git)"
+    printf 'pi_resolution=%s\\n' "\$(command -v pi || printf absent)"
+fi
+if [[ "\$*" == *"--relative-path-probe"* ]]; then
+    printf 'relative_probe=%s\\n' "\$(command -v relative-path-probe || printf absent)"
+fi
+if [[ "\$*" == *"--sleep"* ]]; then
+    trap 'exit 143' TERM
+    while :; do sleep 1; done
+fi
+EOF_PI
+chmod +x "$REAL_BIN/pi"
 
 cat >"$FIRST_SAFE_BIN/git" <<'EOF'
 #!/bin/sh
 printf 'first-safe\n'
 EOF
-
 cat >"$SECOND_SAFE_BIN/git" <<'EOF'
 #!/bin/sh
 printf 'second-safe\n'
 EOF
+chmod +x "$FIRST_SAFE_BIN/git" "$SECOND_SAFE_BIN/git"
 
-cat >"$RELATIVE_BIN/relative-path-probe" <<'EOF'
-#!/bin/sh
-printf 'repository-relative\n'
-EOF
-
+mkdir -p "$SHIM_BIN/relative-bin"
 cat >"$SHIM_BIN/node" <<'EOF'
 #!/bin/sh
 echo "workspace node ran before sandbox initialization" >&2
 exit 97
 EOF
-
-cat >"$SHIM_BIN/rg" <<'EOF'
+cat >"$SHIM_BIN/qemu-system-aarch64" <<'EOF'
 #!/bin/sh
-echo "workspace rg ran before sandbox initialization" >&2
 exit 97
 EOF
-
-cat >"$SHIM_BIN/bash-env" <<'EOF'
-echo "BASH_ENV ran before sandbox initialization" >&2
+cat >"$SHIM_BIN/qemu-system-x86_64" <<'EOF'
+#!/bin/sh
 exit 97
 EOF
+cat >"$SHIM_BIN/relative-bin/relative-path-probe" <<'EOF'
+#!/bin/sh
+printf 'repository-relative\n'
+EOF
+chmod +x "$SHIM_BIN/node" "$SHIM_BIN/qemu-system-aarch64" "$SHIM_BIN/qemu-system-x86_64" "$SHIM_BIN/relative-bin/relative-path-probe"
 
-chmod +x \
-    "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt" \
-    "$REAL_BIN/pi" \
-    "$FIRST_SAFE_BIN/git" \
-    "$SECOND_SAFE_BIN/git" \
-    "$RELATIVE_BIN/relative-path-probe" \
-    "$SHIM_BIN/node" \
-    "$SHIM_BIN/rg"
+run_wrapper() {
+    local path_value="$1"
+    shift
+    (
+        cd "$SHIM_BIN"
+        HOME="$TEST_HOME" \
+        PATH="$path_value" \
+        HERDR_ENV= HERDR_SOCKET_PATH= HERDR_PANE_ID= \
+        PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 \
+        SECRET_SHOULD_NOT_LEAK=secret \
+        NODE_OPTIONS="--require=$TEST_ROOT/evil.cjs" \
+        "$WRAPPER" "$@"
+    )
+}
+
+readonly RESOLVED_SHIM_BIN="$(cd "$SHIM_BIN" && pwd -P)"
 readonly RESOLVED_REAL_BIN="$(cd "$REAL_BIN" && pwd -P)"
-readonly RESOLVED_WRAPPER_BIN="$(cd "$WRAPPER_BIN" && pwd -P)"
 readonly RESOLVED_FIRST_SAFE_BIN="$(cd "$FIRST_SAFE_BIN" && pwd -P)"
-readonly RESOLVED_SECOND_SAFE_BIN="$(cd "$SECOND_SAFE_BIN" && pwd -P)"
-
-output="$(
-    cd "$SHIM_BIN"
-    HOME="$TEST_HOME" \
-    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
-    BASH_ENV="$SHIM_BIN/bash-env" \
-    SECRET_SHOULD_NOT_LEAK="leak" \
-    HERDR_ENV= \
-    HERDR_SOCKET_PATH= \
-    HERDR_PANE_ID= \
-    "$WRAPPER" --flag "two words"
-)"
-
+readonly BASE_PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH"
+output="$(run_wrapper "$BASE_PATH" --flag "two words")"
 grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
-grep -F 'args=<--flag><two words>' <<<"$output" >/dev/null
+grep -F "cwd=$RESOLVED_SHIM_BIN" <<<"$output" >/dev/null
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-terra><--thinking><xhigh><--flag><two words><--no-builtin-tools>' <<<"$output" >/dev/null
 grep -F 'secret=unset' <<<"$output" >/dev/null
+grep -F 'node_options=unset' <<<"$output" >/dev/null
 grep -F 'tmpdir=/tmp' <<<"$output" >/dev/null
-grep -F "path=$RESOLVED_REAL_BIN:" <<<"$output" >/dev/null
-grep -F 'herdr_env=unset' <<<"$output" >/dev/null
+grep -F 'sandbox=1' <<<"$output" >/dev/null
+grep -E '^lease=[a-f0-9]{64}$' <<<"$output" >/dev/null
+grep -F 'builtins=read,write,edit,bash,grep,find,ls' <<<"$output" >/dev/null
+grep -F 'host_tools=ketch_search,ketch_scrape,ketch_code,ketch_docs,ketch_crawl,ask_user_question,subagent,submit_plan,plan_progress,complete_plan,complete_stage' <<<"$output" >/dev/null
+grep -q '^acquire ' "$CLIENT_LOG"
+grep -q '^release ' "$CLIENT_LOG"
+
+# Explicit tool selection is removed from Pi argv and split into private,
+# post-handshake replacement and host-adapter capabilities.
+: >"$CLIENT_LOG"
+output="$(run_wrapper "$BASE_PATH" --tools read,bash,ketch_search --exclude-tools bash --flag tools)"
+grep -F 'builtins=read' <<<"$output" >/dev/null
+grep -F 'host_tools=ketch_search' <<<"$output" >/dev/null
+! grep -F '<--tools>' <<<"$output" >/dev/null
+! grep -F '<--exclude-tools>' <<<"$output" >/dev/null
+grep -F '<--no-builtin-tools>' <<<"$output" >/dev/null
+
+output="$(run_wrapper "$BASE_PATH" --no-tools --flag none)"
+grep -F 'builtins=' <<<"$output" >/dev/null
+grep -F 'host_tools=' <<<"$output" >/dev/null
+
+if run_wrapper "$BASE_PATH" --no-extensions >"$TEST_ROOT/no-extensions.out" 2>&1; then
+    echo "wrapper unexpectedly accepted --no-extensions" >&2
+    exit 1
+fi
+grep -F -- '--no-extensions is incompatible' "$TEST_ROOT/no-extensions.out" >/dev/null
+
+# Trusted PATH order is retained and repository-relative entries are removed.
+output="$(run_wrapper "$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$FIRST_SAFE_BIN:$SECOND_SAFE_BIN:$FIRST_SAFE_BIN:$TRUSTED_BIN:$TOOL_PATH" --path-order-probe)"
+grep -F "git_resolution=$RESOLVED_FIRST_SAFE_BIN/git" <<<"$output" >/dev/null
+grep -F 'git_marker=first-safe' <<<"$output" >/dev/null
+grep -F "pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
+output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="relative-bin:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --relative-path-probe)"
+grep -F 'relative_probe=absent' <<<"$output" >/dev/null
+
+# Model routing remains compatible for planning and explicit overrides.
+output="$(run_wrapper "$BASE_PATH" --plan)"
+grep -F '<--model><openai-codex/gpt-5.6-sol><--thinking><xhigh><--plan><--no-builtin-tools>' <<<"$output" >/dev/null
+output="$(run_wrapper "$BASE_PATH" --plan --model openai-codex/gpt-5.6-terra --thinking max)"
+grep -F '<--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max><--no-builtin-tools>' <<<"$output" >/dev/null
+
+# Herdr receives only the status broker capability.
+output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" TMPDIR="$TEST_ROOT" HERDR_ENV=1 HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" HERDR_PANE_ID=pane-7 PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER")"
+grep -F 'herdr_env=1' <<<"$output" >/dev/null
 grep -F 'herdr_socket=unset' <<<"$output" >/dev/null
-grep -F 'herdr_pane=unset' <<<"$output" >/dev/null
-grep -F 'herdr_status_port=unset' <<<"$output" >/dev/null
-grep -F 'herdr_status_token=unset' <<<"$output" >/dev/null
+grep -E '^herdr_status_port=[0-9]+$' <<<"$output" >/dev/null
+grep -E '^herdr_status_token=[0-9a-f]{64}$' <<<"$output" >/dev/null
 
-path_order_output="$(
-    cd "$SHIM_BIN"
-    HOME="$TEST_HOME" \
-    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$FIRST_SAFE_BIN:$SECOND_SAFE_BIN:$FIRST_SAFE_BIN:$TOOL_PATH" \
-    HERDR_ENV= \
-    HERDR_SOCKET_PATH= \
-    HERDR_PANE_ID= \
-    "$WRAPPER" --path-order-probe
-)"
-grep -F "path=$RESOLVED_REAL_BIN:$RESOLVED_WRAPPER_BIN:$RESOLVED_FIRST_SAFE_BIN:$RESOLVED_SECOND_SAFE_BIN:" <<<"$path_order_output" >/dev/null
-grep -F "git_resolution=$RESOLVED_FIRST_SAFE_BIN/git" <<<"$path_order_output" >/dev/null
-grep -F 'git_marker=first-safe' <<<"$path_order_output" >/dev/null
-grep -F "pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$path_order_output" >/dev/null
-[[ "$(grep '^path=' <<<"$path_order_output" | grep -oF "$RESOLVED_FIRST_SAFE_BIN" | wc -l | tr -d ' ')" == 1 ]]
+# Routing failure never falls back to host tools.
+touch "$TEST_ROOT/no-handshake"
+if run_wrapper "$BASE_PATH" --flag timeout >"$TEST_ROOT/timeout.out" 2>&1; then
+    echo "wrapper unexpectedly ignored a missing routing handshake" >&2
+    exit 1
+fi
+rm "$TEST_ROOT/no-handshake"
+grep -E 'exited before|timed out waiting' "$TEST_ROOT/timeout.out" >/dev/null
 
-relative_path_output="$(
-    cd "$SHIM_BIN"
-    HOME="$TEST_HOME" \
-    PATH="relative-bin:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
-    HERDR_ENV= \
-    HERDR_SOCKET_PATH= \
-    HERDR_PANE_ID= \
-    "$WRAPPER" --relative-path-probe
-)"
-grep -F 'relative_probe=absent' <<<"$relative_path_output" >/dev/null
+touch "$TEST_ROOT/bad-handshake"
+if run_wrapper "$BASE_PATH" --flag mismatch >"$TEST_ROOT/mismatch.out" 2>&1; then
+    echo "wrapper unexpectedly accepted a mismatched routing handshake" >&2
+    exit 1
+fi
+rm "$TEST_ROOT/bad-handshake"
+grep -F 'routing extension rejected' "$TEST_ROOT/mismatch.out" >/dev/null
 
-herdr_output="$(
+# Signals reach Pi and still release the controller lease.
+: >"$CLIENT_LOG"
+(
     cd "$SHIM_BIN"
-    HOME="$TEST_HOME" \
-    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
-    TMPDIR="$TEST_ROOT/tmp" \
-    HERDR_ENV=1 \
-    HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" \
-    HERDR_PANE_ID="pane-7" \
-    "$WRAPPER"
-)"
-grep -F 'herdr_env=1' <<<"$herdr_output" >/dev/null
-grep -F 'herdr_socket=unset' <<<"$herdr_output" >/dev/null
-grep -F 'herdr_pane=pane-7' <<<"$herdr_output" >/dev/null
-grep -E '^herdr_status_port=[0-9]+$' <<<"$herdr_output" >/dev/null
-grep -E '^herdr_status_token=[0-9a-f]{64}$' <<<"$herdr_output" >/dev/null
-for _ in {1..100}; do
-    compgen -G "$TEST_ROOT/tmp/pi-herdr-status.*" >/dev/null || break
+    HOME="$TEST_HOME" PATH="$BASE_PATH" HERDR_ENV= HERDR_SOCKET_PATH= HERDR_PANE_ID= \
+        PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 exec "$WRAPPER" --sleep >"$TEST_ROOT/signal.out" 2>"$TEST_ROOT/signal.err"
+) &
+wrapper_pid=$!
+for _ in {1..200}; do
+    grep -q '^acquire ' "$CLIENT_LOG" 2>/dev/null && grep -q '^real=' "$TEST_ROOT/signal.out" 2>/dev/null && break
     sleep 0.01
 done
-if compgen -G "$TEST_ROOT/tmp/pi-herdr-status.*" >/dev/null; then
-    echo "Herdr status broker did not exit with its wrapper parent" >&2
+kill -TERM "$wrapper_pid"
+set +e
+wait "$wrapper_pid"
+signal_status=$?
+set -e
+[[ "$signal_status" -ne 0 ]]
+for _ in {1..100}; do grep -q '^release ' "$CLIENT_LOG" 2>/dev/null && break; sleep 0.01; done
+grep -q '^release ' "$CLIENT_LOG"
+
+# Missing prerequisites are fail-closed.
+if run_wrapper "$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$NO_QEMU_BIN:$TOOL_PATH" --flag no-qemu >"$TEST_ROOT/no-qemu.out" 2>&1; then
+    echo "wrapper unexpectedly ran without QEMU" >&2
     exit 1
 fi
+grep -F 'qemu-system-' "$TEST_ROOT/no-qemu.out" >/dev/null
 
-rm "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt"
-yolo_output="$(
-    cd "$SHIM_BIN"
-    HOME="$TEST_HOME" \
-    PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
-    TMPDIR="$TEST_ROOT/host-tmp" \
-    SECRET_SHOULD_NOT_LEAK="host-secret" \
-    "$WRAPPER" --yolo --flag "two words"
-)"
-grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$yolo_output" >/dev/null
-grep -F 'args=<--flag><two words>' <<<"$yolo_output" >/dev/null
-grep -F 'secret=host-secret' <<<"$yolo_output" >/dev/null
-grep -F "tmpdir=$TEST_ROOT/host-tmp" <<<"$yolo_output" >/dev/null
-grep -F "path=$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" <<<"$yolo_output" >/dev/null
-
-if HOME="$TEST_HOME" \
-    PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" \
-    "$WRAPPER" --version >"$TEST_ROOT/fail.out" 2>&1
-then
-    echo "wrapper unexpectedly ran without SRT" >&2
+touch "$TEST_ROOT/fail-image"
+if run_wrapper "$BASE_PATH" --flag no-image >"$TEST_ROOT/no-image.out" 2>&1; then
+    echo "wrapper unexpectedly ran with a missing image" >&2
     exit 1
 fi
+rm "$TEST_ROOT/fail-image"
+grep -F 'image is missing or corrupt' "$TEST_ROOT/no-image.out" >/dev/null
 
-grep -F 'sandbox runtime is not installed' "$TEST_ROOT/fail.out" >/dev/null
-! grep -F 'real=' "$TEST_ROOT/fail.out" >/dev/null
+mv "$SANDBOX_HOME/controller.mjs" "$SANDBOX_HOME/controller.mjs.off"
+if run_wrapper "$BASE_PATH" --flag no-controller >"$TEST_ROOT/no-controller.out" 2>&1; then
+    echo "wrapper unexpectedly ran without the controller" >&2
+    exit 1
+fi
+mv "$SANDBOX_HOME/controller.mjs.off" "$SANDBOX_HOME/controller.mjs"
+grep -F 'controller is missing' "$TEST_ROOT/no-controller.out" >/dev/null
 
-mkdir -p "$TEST_HOME/.pi/sandbox/node_modules/.bin"
-cp "$HERE/test-bin/which" "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt"
-chmod +x "$TEST_HOME/.pi/sandbox/node_modules/.bin/srt"
-printf '#!/bin/sh\nexec %q "$@"\n' "$(command -v node)" >"$PREREQ_BIN/node"
-printf '#!/bin/sh\nexit 0\n' >"$PREREQ_BIN/rg"
-chmod +x "$PREREQ_BIN/node" "$PREREQ_BIN/rg"
-
-if HOME="$TEST_HOME" \
-    PATH="$WRAPPER_BIN:$PREREQ_BIN:/usr/bin:/bin" \
-    "$WRAPPER" --version >"$TEST_ROOT/no-pi.out" 2>&1
-then
+# Missing real Pi is diagnosed after trusted bootstrap succeeds.
+if HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --version >"$TEST_ROOT/no-pi.out" 2>&1; then
     echo "wrapper unexpectedly ran without a real Pi binary" >&2
     exit 1
 fi
-
 grep -F 'cannot find the installed Pi binary' "$TEST_ROOT/no-pi.out" >/dev/null
 
-cat >"$TEST_HOME/.pi/agent/settings.json" <<'EOF'
-{
-  "enabledModels": [
-    "openai-codex/gpt-5.6-sol",
-    "openai-codex/gpt-5.6-terra"
-  ],
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-terra",
-  "defaultThinkingProvider": "openai-codex",
-  "defaultThinkingModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "high"
-}
-EOF
-model_output="$(
-    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --flag ordinary
-)"
-grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-terra><--thinking><high><--flag><ordinary>' <<<"$model_output" >/dev/null
-grep -F 'default_injected=1' <<<"$model_output" >/dev/null
-plan_output="$(
-    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan
-)"
-grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-sol><--thinking><high><--plan>' <<<"$plan_output" >/dev/null
-grep -F 'default_injected=1' <<<"$plan_output" >/dev/null
-explicit_output="$(
-    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan --model openai-codex/gpt-5.6-terra --thinking max
-)"
-grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max>' <<<"$explicit_output" >/dev/null
-grep -F 'default_injected=unset' <<<"$explicit_output" >/dev/null
-node -e 'const fs = require("node:fs"); const path = process.argv[1]; const settings = JSON.parse(fs.readFileSync(path)); delete settings.defaultThinkingProvider; fs.writeFileSync(path, JSON.stringify(settings));' "$TEST_HOME/.pi/agent/settings.json"
-unavailable_plan_output="$(
-    HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" "$WRAPPER" --plan
-)"
-grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--plan>' <<<"$unavailable_plan_output" >/dev/null
-grep -F 'default_injected=unset' <<<"$unavailable_plan_output" >/dev/null
+# --yolo is the unchanged early bypass: no QEMU, controller, image, handshake,
+# environment filtering, or private tool normalization.
+yolo_output="$(HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" TMPDIR="$TEST_ROOT/host-tmp" SECRET_SHOULD_NOT_LEAK=host-secret "$WRAPPER" --yolo --tools read --flag "two words")"
+grep -F 'args=<--tools><read><--flag><two words>' <<<"$yolo_output" >/dev/null
+grep -F 'secret=host-secret' <<<"$yolo_output" >/dev/null
+grep -F 'tmpdir='"$TEST_ROOT"'/host-tmp' <<<"$yolo_output" >/dev/null
+grep -F 'sandbox=unset' <<<"$yolo_output" >/dev/null
 
 echo "wrapper tests passed"

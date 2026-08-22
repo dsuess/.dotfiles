@@ -8,7 +8,7 @@ This file contains repository-specific instructions for changes to Pi configurat
 
 - `agent/` is stowed to `~/.pi/agent`. It contains settings, models, keybindings, extensions, and locally maintained packages.
 - `sandbox/` is stowed to `~/.pi/sandbox`. The sandboxing launcher is `../bin/pi`, which is stowed to `~/bin/pi`.
-- Deploy through `./install.sh config`. Its Pi setup installs extension/package dependencies and the pinned sandbox runtime.
+- Deploy through `./install.sh config`. Its Pi setup installs dependencies and builds or verifies the pinned Gondolin image.
 - Preserve intentional resource ordering in `agent/settings.json`. Do not overwrite unrelated runtime-written settings.
 
 ## Local invariants
@@ -24,15 +24,24 @@ This file contains repository-specific instructions for changes to Pi configurat
 
 ## Sandbox and launcher invariants
 
-- `../bin/pi` and `sandbox/` form a fail-closed whole-process boundary. `--yolo` remains the explicit unsandboxed bypass.
-- Keep Ketch on its upstream direct-spawn path. Do not add a Ketch broker or network/domain allowlist; sandboxed Pi deliberately has unrestricted host network and Unix-socket traffic.
-- The Herdr broker is status-only. Never expose the real Herdr Unix socket to sandboxed Pi.
-- When diagnosing launcher environment selection, distinguish the invoking shell from the environment inside the wrapper. Reconstruct login-shell setup before concluding which executable or configuration was selected.
-- The sandbox must allow the `~/.dotfiles/pi/agent` Stow source so atomic runtime settings saves can replace their resolved targets.
+- Keep Pi and reviewed extensions on the host. Run every built-in file and Bash operation through the shared Gondolin controller.
+- Keep normal startup fail-closed. A missing controller, image, settings file, routing extension, or handshake must stop the launch.
+- Keep `--yolo` as the only explicit host-built-in bypass. This option must skip Gondolin and print a warning.
+- Start Pi with native built-ins disabled. Activate replacement names only after the extension verifies the inherited workspace, VM, image, and settings generations.
+- Match each host adapter by name, source information, package version, and schema. Hide and block all other model tools.
+- Keep plan inspection, plan Bash, staged execution, subagents, and discussion children on the parent controller and settings generation.
+- Run the plan known-mutation check before a planning Bash RPC. Unknown planning commands remain subject to the VM boundary.
+- Use one controller and one Docker daemon for each canonical workspace. Use leases and expiry for root and child process lifetime.
+- Never mount the host Docker socket or Docker settings. Persist guest Docker data only in the workspace controller state.
+- Keep Ketch on its pinned direct-spawn path as an audited host adapter. Do not add a Ketch broker.
+- Keep the Herdr broker status-only. Never pass the real Herdr socket to Pi.
+- Save `/sandbox` changes to the resolved Stow source with a locked atomic replacement. Do not expose invariant exclusions as settings.
+- Send sandbox status through the typed lifecycle event. The custom footer must consume that event in a composed test.
+- When you diagnose launcher selection, distinguish the caller environment from the filtered host Pi environment.
 
 ## Verification
 
 - Run the narrowest package script relevant to an extension change during development; several local extensions provide `npm run check`.
 - As a final review, run tests for all tests and sandboxing once at the end
-- Sandbox checks are defined in `sandbox/package.json` as `npm run test:*`. Native containment checks must run from an unsandboxed terminal.
+- Sandbox checks are defined in `sandbox/package.json` as `npm run test:*`. Run `test:native` from a `--yolo` session or an ordinary terminal.
 - Verify a live Herdr integration with `herdr agent get <pane>` and `herdr agent explain <pane>`.

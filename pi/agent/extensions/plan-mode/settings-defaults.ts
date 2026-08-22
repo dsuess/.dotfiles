@@ -115,9 +115,8 @@ export class SettingsModelDefaults implements ModelDefaultsBoundary {
 					try { rmSync(temporary, { force: true }); } catch { /* best-effort cleanup */ }
 					const code = (error as NodeJS.ErrnoException)?.code;
 					if (code === "EACCES" || code === "EPERM") {
-						// The whole-process sandbox allows ~/.pi/agent but correctly
-						// rejects new siblings under this Stow target. Writing through
-						// the allowed symlink retains it and Pi's own write semantics.
+						// Some managed targets reject sibling temporary files. Writing
+						// through the existing symlink retains Pi's save semantics.
 						writeFileSync(this.settingsPath, serialized, { mode: stat.mode });
 						return;
 					}

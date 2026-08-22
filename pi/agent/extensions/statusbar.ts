@@ -15,6 +15,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { selectContextDisplay } from "./statusbar-context.ts";
 import {
+	SANDBOX_LIFECYCLE_EVENT,
+	type SandboxLifecycleEvent,
+} from "./gondolin-sandbox/events.ts";
+import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
 } from "./plan-mode/events.ts";
@@ -140,7 +144,13 @@ const I = {
 export default function (pi: ExtensionAPI) {
 	let currentModelId: string | undefined;
 	let workflowMode: PlanModeWorkflowStateEvent["mode"] = "off";
+	let sandboxLifecycle: SandboxLifecycleEvent | undefined;
 	let requestFooterRender: (() => void) | undefined;
+
+	pi.events.on(SANDBOX_LIFECYCLE_EVENT, (data) => {
+		sandboxLifecycle = data as SandboxLifecycleEvent;
+		requestFooterRender?.();
+	});
 
 	pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data) => {
 		const { mode } = data as PlanModeWorkflowStateEvent;
@@ -191,6 +201,15 @@ export default function (pi: ExtensionAPI) {
 					const thinkingLevel = pi.getThinkingLevel();
 					const thinkStr = cf(P.overlay1, ` [${thinkingLevel}]`);
 					line += cf(P.text, ` ${I.model} ${modelId}`) + thinkStr + cf(P.text, " ");
+
+					if (sandboxLifecycle) {
+						const health = sandboxLifecycle.health;
+						const color = health === "healthy" ? P.green : health === "failed" ? P.red : P.peach;
+						const label = health === "healthy"
+							? `vm:${sandboxLifecycle.vmId?.slice(0, 6) ?? "ready"}`
+							: health;
+						line += cf(color, ` ${health === "healthy" ? "●" : "◌"} ${label} `);
+					}
 
 					// Segment 3: Current context usage — blue accent
 					const contextDisplay = selectContextDisplay(ctx.getContextUsage());
