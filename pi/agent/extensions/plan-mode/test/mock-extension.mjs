@@ -112,11 +112,12 @@ try {
 	for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
 	assert.equal(tools.has("submit_plan"), true);
 	assert.equal(activeTools.includes("submit_plan"), false, "workflow tools start hidden");
+	assert.equal(activeModel.id, "gpt-5.6-terra", "normal session startup applies the implementation default");
 
 	await commands.get("plan").handler("", ctx);
 	assert.deepEqual(appended.at(-1).data.originalActiveTools, ["read", "bash", "edit", "write", "custom_tool"]);
 	assert.equal(appended.at(-1).data.mode, "planning");
-	assert.equal(activeModel.id, "gpt-5.6-sol");
+	assert.equal(activeModel.id, "gpt-5.6-sol", "planning entry applies the planning default");
 	assert.equal(thinkingLevel, "high");
 	assert.equal(activeTools.includes("edit"), false);
 	const userBashPreflight = { command: "touch blocked-in-planning", result: undefined };
@@ -241,6 +242,21 @@ try {
 	activeModel = models[1];
 	await handlers.get("model_select")[0]({ model: activeModel, source: "cycle" }, ctx);
 	assert.match(notifications.at(-1).message, /defaults could not be saved/i, "settings failures warn instead of claiming persistence");
+
+	// The launcher no longer tags an injected default. A fresh extension sees
+	// the native CLI argument and keeps that model in both normal and planning
+	// startup instead of applying settings defaults.
+	const explicitCliArgument = "--model=anthropic/claude-sonnet-5";
+	process.argv.push(explicitCliArgument);
+	activeModel = models[2];
+	extension.default(pi, { modelDefaults });
+	const explicitCtx = { ...ctx, sessionManager: { getBranch: () => [], getSessionFile: () => "/sessions/explicit.jsonl" } };
+	await handlers.get("session_start").at(-1)({ reason: "startup" }, explicitCtx);
+	assert.equal(activeModel.id, "claude-sonnet-5", "explicit CLI model wins during normal startup");
+	await commands.get("plan").handler("", explicitCtx);
+	assert.equal(activeModel.id, "claude-sonnet-5", "explicit CLI model wins during planning startup");
+	process.argv.pop();
+
 	assert.ok(gondolinCompositionStages.includes("planning gate"), "planning transitions request source-aware Gondolin verification");
 	assert.ok(gondolinCompositionStages.includes("execution-tool transition"), "execution transitions request source-aware Gondolin verification");
 	assert.ok(gondolinCompositionStages.includes("original-tool restore"), "original-tool restoration requests source-aware Gondolin verification");

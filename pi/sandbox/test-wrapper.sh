@@ -27,6 +27,8 @@ readonly FIRST_SAFE_BIN="$TEST_ROOT/first-safe-bin"
 readonly SECOND_SAFE_BIN="$TEST_ROOT/second-safe-bin"
 readonly TOOL_PATH="/usr/bin:/bin"
 readonly CLIENT_LOG="$TEST_ROOT/client.log"
+readonly REAL_PI_LOG="$TEST_ROOT/real-pi.log"
+readonly IMAGE_VERIFY_LOG="$TEST_ROOT/image-verify.log"
 readonly RUNTIME_ROOT="$TEST_ROOT/runtime"
 readonly IMAGE_DIR="$TEST_ROOT/image"
 
@@ -82,12 +84,6 @@ printf '#!/bin/sh\nexit 0\n' >"$TRUSTED_BIN/qemu-system-aarch64"
 printf '#!/bin/sh\nexit 0\n' >"$TRUSTED_BIN/qemu-system-x86_64"
 chmod +x "$TRUSTED_BIN/qemu-system-aarch64" "$TRUSTED_BIN/qemu-system-x86_64"
 
-cat >"$SANDBOX_HOME/build-gondolin-image.mjs" <<EOF_IMAGE
-#!/usr/bin/env node
-import fs from "node:fs";
-if (fs.existsSync("$TEST_ROOT/fail-image")) process.exit(1);
-process.stdout.write("$IMAGE_DIR\\n");
-EOF_IMAGE
 
 cat >"$SANDBOX_HOME/client-cli.mjs" <<EOF_CLIENT
 #!/usr/bin/env node
@@ -98,8 +94,17 @@ const args = process.argv.slice(2);
 const command = args.shift();
 fs.appendFileSync("$CLIENT_LOG", command + " " + args.join(" ") + "\\n");
 if (command === "release") {
+  if (!fs.existsSync("$TEST_ROOT/hold-controller")) fs.rmSync("$TEST_ROOT/controller-active", { force: true });
   process.stdout.write('{"released":true}\\n');
   process.exit(0);
+}
+if (fs.existsSync("$TEST_ROOT/fail-image")) {
+  process.stderr.write("image is missing or corrupt\\n");
+  process.exit(1);
+}
+if (!fs.existsSync("$TEST_ROOT/controller-active")) {
+  fs.appendFileSync("$IMAGE_VERIFY_LOG", "verify\\n");
+  fs.writeFileSync("$TEST_ROOT/controller-active", "active");
 }
 const get = (name) => args[args.indexOf(name) + 1];
 const launch = fs.realpathSync(get("--launch-dir"));
@@ -123,7 +128,9 @@ EOF_CLIENT
 cat >"$REAL_BIN/pi" <<EOF_PI
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'launch\n' >>"$REAL_PI_LOG"
 if [[ "\$*" == *"--list-models"* ]]; then
+    printf 'list_args='; printf '<%s>' "\$@"; printf '\\n'
     printf 'Provider Model\\n'
     printf 'openai-codex gpt-5.6-sol\\n'
     printf 'openai-codex gpt-5.6-terra\\n'
@@ -231,7 +238,9 @@ readonly BASE_PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH"
 output="$(run_wrapper "$BASE_PATH" --flag "two words")"
 grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
 grep -F "cwd=$RESOLVED_SHIM_BIN" <<<"$output" >/dev/null
-grep -F 'args=<--models><openai-codex/gpt-5.6-sol,openai-codex/gpt-5.6-terra><--model><openai-codex/gpt-5.6-terra><--thinking><xhigh><--flag><two words><--no-builtin-tools>' <<<"$output" >/dev/null
+grep -F 'args=<--flag><two words><--no-builtin-tools>' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(wc -l <"$IMAGE_VERIFY_LOG")" -eq 1 ]]
 grep -F 'secret=unset' <<<"$output" >/dev/null
 grep -F 'node_options=unset' <<<"$output" >/dev/null
 grep -F 'tmpdir=/tmp' <<<"$output" >/dev/null
@@ -252,9 +261,11 @@ grep -F 'host_tools=ketch_search' <<<"$output" >/dev/null
 ! grep -F '<--exclude-tools>' <<<"$output" >/dev/null
 grep -F '<--no-builtin-tools>' <<<"$output" >/dev/null
 
+: >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --no-tools --flag none)"
 grep -F 'builtins=' <<<"$output" >/dev/null
 grep -F 'host_tools=' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
 
 if run_wrapper "$BASE_PATH" --no-extensions >"$TEST_ROOT/no-extensions.out" 2>&1; then
     echo "wrapper unexpectedly accepted --no-extensions" >&2
@@ -270,11 +281,25 @@ grep -F "pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
 output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="relative-bin:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --relative-path-probe)"
 grep -F 'relative_probe=absent' <<<"$output" >/dev/null
 
-# Model routing remains compatible for planning and explicit overrides.
+# Pi receives native model flags unchanged. Plan mode applies defaults only
+# after session_start, while an explicit CLI model remains untouched.
+: >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --plan)"
-grep -F '<--model><openai-codex/gpt-5.6-sol><--thinking><xhigh><--plan><--no-builtin-tools>' <<<"$output" >/dev/null
+grep -F 'args=<--plan><--no-builtin-tools>' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+: >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --plan --model openai-codex/gpt-5.6-terra --thinking max)"
-grep -F '<--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max><--no-builtin-tools>' <<<"$output" >/dev/null
+grep -F 'args=<--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max><--no-builtin-tools>' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+: >"$REAL_PI_LOG"
+output="$(run_wrapper "$BASE_PATH" --models openai-codex/gpt-5.6-sol --model openai-codex/gpt-5.6-sol)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol><--model><openai-codex/gpt-5.6-sol><--no-builtin-tools>' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+: >"$REAL_PI_LOG"
+output="$(run_wrapper "$BASE_PATH" --list-models)"
+grep -F 'list_args=<--models><*><--list-models><--no-builtin-tools>' <<<"$output" >/dev/null
+grep -F 'Provider Model' <<<"$output" >/dev/null
+[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
 
 # Herdr receives only the status broker capability.
 output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" TMPDIR="$TEST_ROOT" HERDR_ENV=1 HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" HERDR_PANE_ID=pane-7 PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER")"
@@ -329,12 +354,25 @@ fi
 grep -F 'qemu-system-' "$TEST_ROOT/no-qemu.out" >/dev/null
 
 touch "$TEST_ROOT/fail-image"
+: >"$REAL_PI_LOG"
 if run_wrapper "$BASE_PATH" --flag no-image >"$TEST_ROOT/no-image.out" 2>&1; then
     echo "wrapper unexpectedly ran with a missing image" >&2
     exit 1
 fi
 rm "$TEST_ROOT/fail-image"
-grep -F 'image is missing or corrupt' "$TEST_ROOT/no-image.out" >/dev/null
+grep -F 'could not acquire the workspace Gondolin controller' "$TEST_ROOT/no-image.out" >/dev/null
+[[ ! -s "$REAL_PI_LOG" ]]
+
+# An existing healthy controller is the only warm-start shortcut. The fake
+# controller owns image verification, so the wrapper must not invoke it again.
+touch "$TEST_ROOT/hold-controller"
+: >"$IMAGE_VERIFY_LOG"
+run_wrapper "$BASE_PATH" --flag active-first >/dev/null
+[[ "$(wc -l <"$IMAGE_VERIFY_LOG")" -eq 1 ]]
+: >"$IMAGE_VERIFY_LOG"
+run_wrapper "$BASE_PATH" --flag active-second >/dev/null
+[[ ! -s "$IMAGE_VERIFY_LOG" ]]
+rm "$TEST_ROOT/hold-controller" "$TEST_ROOT/controller-active"
 
 mv "$SANDBOX_HOME/controller.mjs" "$SANDBOX_HOME/controller.mjs.off"
 if run_wrapper "$BASE_PATH" --flag no-controller >"$TEST_ROOT/no-controller.out" 2>&1; then

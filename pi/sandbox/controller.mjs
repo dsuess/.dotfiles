@@ -64,6 +64,16 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function traceStartup(phase) {
+  const filePath = process.env.PI_GONDOLIN_STARTUP_TRACE_FILE;
+  if (!filePath || !path.isAbsolute(filePath) || /[\t\r\n\0]/.test(filePath)) return;
+  try {
+    fs.appendFileSync(filePath, `${phase}\n`, { mode: 0o600 });
+  } catch {
+    // Optional benchmark tracing must never affect controller readiness.
+  }
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -832,9 +842,11 @@ export async function runControllerDaemon(options) {
   try {
     fs.rmSync(paths.socketPath, { force: true });
     fs.rmSync(paths.manifestPath, { force: true });
+    traceStartup("image_verify_start");
     const image = options.imageDir
       ? verifyImageDirectory(path.resolve(options.imageDir))
       : await ensureGondolinImage({ verifyOnly: true, verbose: false });
+    traceStartup("image_verify_complete");
     const policyOptions = {
       scope,
       settingsPath: options.settingsPath ?? SETTINGS_PATH,
@@ -863,6 +875,7 @@ export async function runControllerDaemon(options) {
       onIdle: requestClose,
     });
     await controller.start();
+    traceStartup("controller_healthy");
 
     const writeManifest = () => {
       const status = controller.status();

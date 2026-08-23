@@ -14,19 +14,29 @@ A custom Pi extension still runs on the host. Gondolin does not isolate extensio
 
 A normal launch uses this sequence:
 
-1. The launcher finds trusted Node.js, QEMU, Git, and the real Pi binary.
-2. The launcher verifies the pinned image and the versioned settings.
-3. The launcher acquires one workspace controller lease.
-4. The launcher disables all native Pi built-ins.
-5. The launcher passes private tool requests to the routing extension.
-6. The extension connects to the controller and checks each tool source.
-7. The launcher waits for the extension handshake.
+1. The launcher discovers trusted Node.js, QEMU, Git, and the real Pi binary from one canonical safe PATH.
+2. The launcher acquires one workspace controller lease.
+3. A cold controller verifies the complete pinned image and Pi metadata, starts the VM, checks guest Docker, then publishes its healthy private manifest. An already healthy controller proves its pinned image generation through its manifest, socket, lease, and status checks; it does not hash the image again.
+4. The launcher disables all native Pi built-ins and starts the real Pi process once.
+5. Pi resolves `enabledModels`, `defaultProvider`, `defaultModel`, and explicit `--models`, `--model`, and `--thinking` arguments through its native startup path. In `--plan`, the plan-mode extension selects its planning default during `session_start`; an explicit CLI model remains higher priority. `--list-models` is the exception: the launcher requests Pi's full authenticated catalog instead of applying the settings scope.
+6. The launcher passes private tool requests to the routing extension.
+7. The extension connects to the controller, checks each tool source, and the launcher waits for its handshake.
 
 The launch stops if any step fails. The launcher never retries with host built-ins.
 
-The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM.
+The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires; it is not retained merely to accelerate a later launch.
 
-A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires.
+### Startup benchmark
+
+Run the native benchmark from an ordinary terminal, not from a sandboxed Pi session:
+
+```bash
+npm --prefix pi/sandbox run benchmark:startup -- --samples 5
+```
+
+It creates one disposable workspace identity, closes stdin after RPC initialization, and sends no model request or persistent session. It runs one untimed warm-up for each mode, then reports medians and ranges for cold controller launches and launches with an owned active-controller lease. Each cold sample waits for its own controller manifest and socket to disappear. The active-controller lease is released before cleanup, so unrelated controllers are never acquired, released, or stopped.
+
+Optional startup tracing records the controller acquisition, image verification, Pi launch, child spawn, routing handshake, and controller-ready phase counts. The benchmark uses it to distinguish a cold image verification from an active-controller run; it is diagnostic only and does not set performance thresholds.
 
 ## Host adapters
 
@@ -132,9 +142,23 @@ Built images use this path:
 ~/.cache/pi-gondolin/images/<input-digest>/
 ```
 
-The launcher verifies the Gondolin manifest, all asset checksums, and Pi image metadata.
+A cold controller verifies the Gondolin manifest, all asset checksums, and Pi image metadata before it publishes a healthy manifest. A launcher that joins that healthy controller validates its generation and lease instead of repeating the hash pass.
 
 The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`.
+
+### Known Docker xattr limitation
+
+Gondolin `0.12.0` mounts the persistent Docker directory through `fuse.sandboxfs`. That filesystem returns `EOPNOTSUPP` for extended-attribute operations. Docker builds that need xattr metadata can fail even though ordinary pulls and builds work. For example, this pinned uv copy fails at `/uvx` with `operation not supported`:
+
+```Dockerfile
+FROM alpine:3.23
+COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /bin/
+RUN uvx --version
+```
+
+For a one-off trusted build, use `pi --yolo` so Docker uses the host filesystem. Installing uv another way is a Dockerfile-specific workaround, not a sandbox fix. Do not change this Docker daemon to `overlay2`: the persistent FUSE backing store still lacks xattrs and `vfs` is intentional.
+
+A general sandbox fix needs xattr support in both Gondolin sandboxfs and its host VFS provider, while keeping the host Docker socket unmounted. Until then, the native canary verifies this pinned copy fails for the documented reason; update it to require success only with that durable fix.
 
 The host Docker socket and host Docker settings are not mounted. Privileged guest containers remain inside the VM boundary.
 
@@ -252,6 +276,8 @@ Run native QEMU, Docker, network, tool, child, and Ketch tests:
 ```bash
 npm --prefix pi/sandbox run test:native
 ```
+
+Measure startup separately with `npm --prefix pi/sandbox run benchmark:startup -- --samples 5`. Performance varies with QEMU and host load, so the benchmark is an acceptance observation rather than a unit-test threshold.
 
 Run extension regressions:
 

@@ -5,6 +5,7 @@
   "description": "Pinned Gondolin tool-plane runtime for Pi",
   "scripts": {
     "build:image": "node build-gondolin-image.mjs",
+    "benchmark:startup": "node benchmark-startup.mjs",
     "test": "npm run test:broker && npm run test:controller && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
     "test:native": "npm run test:canary && npm run test:controller-native && npm run test:tools-native && npm run test:inventory && npm run test:ketch-live",
     "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs test-herdr-sandbox-composed.mjs",

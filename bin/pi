@@ -4,7 +4,6 @@ set -euo pipefail
 readonly SANDBOX_DIR="$HOME/.pi/sandbox"
 readonly GONDOLIN_CLIENT="$SANDBOX_DIR/client-cli.mjs"
 readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
-readonly GONDOLIN_IMAGE_BUILDER="$SANDBOX_DIR/build-gondolin-image.mjs"
 readonly GONDOLIN_SETTINGS="$SANDBOX_DIR/settings.json"
 readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
 readonly HERDR_STATUS_BROKER="$SANDBOX_DIR/herdr-status-broker.mjs"
@@ -15,6 +14,14 @@ HERDR_BROKER_DIR=""
 HANDSHAKE_DIR=""
 PI_CHILD_PID=""
 CONTROLLER_LEASE=""
+
+trace_startup() {
+    local phase="$1"
+    local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
+
+    [[ "$trace_file" == /* && "$trace_file" != *$'\n'* && "$trace_file" != *$'\r'* && "$trace_file" != *$'\t'* ]] || return 0
+    printf '%s\n' "$phase" >>"$trace_file" 2>/dev/null || true
+}
 CONTROLLER_SOCKET=""
 CONTROLLER_WORKSPACE_KEY=""
 CONTROLLER_WORKSPACE_ROOT=""
@@ -176,27 +183,28 @@ canonical_executable() {
     fi
 }
 
-# Resolve bootstrap tools only from absolute PATH directories outside every
-# untrusted repository candidate. The Gondolin tool boundary is not ready yet,
-# so a repository-local shim would execute on the trusted host.
-safe_path_entries() {
-    local entry resolved_dir
-    local entries=()
-
-    IFS=: read -r -a entries <<<"${PATH-}"
-    for entry in "${entries[@]}"; do
-        [[ "$entry" == /* ]] || continue
-        resolved_dir="$(canonical_directory "$entry")" || continue
-        bootstrap_path_is_allowed "$resolved_dir" || continue
-        printf '%s\n' "$resolved_dir"
+# Resolve canonical bootstrap directories once, after repository exclusions
+# are known. Every trusted lookup preserves this first-match ordering.
+SAFE_PATH_ENTRIES=()
+raw_path_entries=()
+IFS=: read -r -a raw_path_entries <<<"${PATH-}"
+for entry in "${raw_path_entries[@]}"; do
+    [[ "$entry" == /* ]] || continue
+    resolved_dir="$(canonical_directory "$entry")" || continue
+    bootstrap_path_is_allowed "$resolved_dir" || continue
+    duplicate=false
+    for existing in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
+        [[ "$resolved_dir" == "$existing" ]] && duplicate=true && break
     done
-}
+    [[ "$duplicate" == true ]] || SAFE_PATH_ENTRIES+=("$resolved_dir")
+done
+readonly SAFE_PATH_ENTRIES
 
 find_host_executable() {
     local name="$1"
     local entry candidate resolved_candidate
 
-    while IFS= read -r entry; do
+    for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
         candidate="$entry/$name"
         [[ -x "$candidate" && ! -d "$candidate" ]] || continue
         resolved_candidate="$(canonical_executable "$candidate")" || continue
@@ -204,7 +212,7 @@ find_host_executable() {
         bootstrap_path_is_allowed "$resolved_candidate" || continue
         printf '%s\n' "$resolved_candidate"
         return 0
-    done < <(safe_path_entries)
+    done
 
     return 1
 }
@@ -212,7 +220,7 @@ find_host_executable() {
 find_real_pi() {
     local candidate entry resolved_candidate
 
-    while IFS= read -r entry; do
+    for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
         candidate="$entry/pi"
         [[ -x "$candidate" ]] || continue
         resolved_candidate="$(canonical_executable "$candidate")" || continue
@@ -220,7 +228,7 @@ find_real_pi() {
         [[ "$resolved_candidate" -ef "${BASH_SOURCE[0]}" ]] && continue
         printf '%s\n' "$resolved_candidate"
         return 0
-    done < <(safe_path_entries)
+    done
 
     return 1
 }
@@ -299,15 +307,7 @@ trusted_mktemp() {
         "$HOST_MKTEMP" "$@"
 }
 
-controller_path_entries=()
-while IFS= read -r entry; do
-    duplicate=false
-    for existing in ${controller_path_entries[@]+"${controller_path_entries[@]}"}; do
-        [[ "$entry" == "$existing" ]] && duplicate=true && break
-    done
-    [[ "$duplicate" == true ]] || controller_path_entries+=("$entry")
-done < <(safe_path_entries)
-CONTROLLER_PATH="$(IFS=:; printf '%s' "${controller_path_entries[*]}")"
+CONTROLLER_PATH="$(IFS=:; printf '%s' "${SAFE_PATH_ENTRIES[*]}")"
 readonly CONTROLLER_PATH
 trusted_controller_node() {
     /usr/bin/env -i \
@@ -315,18 +315,14 @@ trusted_controller_node() {
         PATH="$CONTROLLER_PATH" \
         TMPDIR="${TMPDIR:-/tmp}" \
         LC_ALL=C \
+        PI_GONDOLIN_STARTUP_TRACE_FILE="${PI_GONDOLIN_STARTUP_TRACE_FILE-}" \
         "$HOST_NODE" "$@"
 }
 
 [[ -r "$GONDOLIN_CLIENT" ]] || die "Gondolin client is missing: $GONDOLIN_CLIENT"
 [[ -r "$GONDOLIN_CONTROLLER" ]] || die "Gondolin controller is missing: $GONDOLIN_CONTROLLER"
-[[ -r "$GONDOLIN_IMAGE_BUILDER" ]] || die "Gondolin image verifier is missing: $GONDOLIN_IMAGE_BUILDER"
 [[ -r "$GONDOLIN_SETTINGS" ]] || die "Gondolin settings are missing: $GONDOLIN_SETTINGS"
 [[ -r "$GONDOLIN_EXTENSION" ]] || die "Gondolin routing extension is missing: $GONDOLIN_EXTENSION"
-GONDOLIN_IMAGE_DIR="$(trusted_controller_node "$GONDOLIN_IMAGE_BUILDER" --verify --print-path)" ||
-    die "the pinned Gondolin image is missing or corrupt; run ./install.sh config"
-readonly GONDOLIN_IMAGE_DIR
-
 real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
 readonly REAL_PI="$real_pi"
 readonly REAL_PI_DIR="${REAL_PI%/*}"
@@ -444,34 +440,47 @@ pi_args+=(--no-builtin-tools)
 
 umask 077
 trap cleanup_launcher EXIT
+trace_startup controller_acquire_start
 lease_json="$(trusted_controller_node "$GONDOLIN_CLIENT" acquire \
     --launch-dir "$LAUNCH_DIR" \
     --settings "$GONDOLIN_SETTINGS" \
-    --image-dir "$GONDOLIN_IMAGE_DIR" \
     --client-id "launcher-$$")" || die "could not acquire the workspace Gondolin controller"
-trusted_node -e '
+trace_startup controller_acquire_complete
+lease_record="$(trusted_node -e '
 const value = JSON.parse(process.argv[1]);
 const [expectedRoot, expectedKey] = process.argv.slice(2);
-const hex = value => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-if (value.version !== 1 || !hex(value.leaseToken) || !hex(value.workspaceKey) ||
-    !hex(value.policyGeneration) || !hex(value.imageGeneration) ||
-    value.workspaceKey !== expectedKey || value.workspaceRoot !== expectedRoot ||
-    typeof value.socketPath !== "string" || typeof value.workspaceRoot !== "string" ||
-    typeof value.vmId !== "string" || value.dockerHealthy !== true ||
-    typeof value.runtimeRoot !== "string") {
-    console.error(`expected ${expectedKey} ${expectedRoot}; received ${value.workspaceKey} ${value.workspaceRoot}`);
-    process.exit(1);
+const expectedKeys = [
+  "version", "socketPath", "leaseToken", "workspaceKey", "workspaceRoot",
+  "bareCommonDirectory", "policyGeneration", "imageGeneration", "vmId",
+  "dockerHealthy", "controllerPid", "runtimeRoot",
+];
+const safeText = (entry, limit = 4096) => typeof entry === "string" && entry.length > 0 &&
+  entry.length <= limit && !/[\t\r\n\0]/.test(entry);
+const hex = entry => typeof entry === "string" && /^[0-9a-f]{64}$/.test(entry);
+if (!value || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).length !== expectedKeys.length ||
+    expectedKeys.some(key => !Object.hasOwn(value, key)) || value.version !== 1 ||
+    !hex(value.leaseToken) || !hex(value.workspaceKey) || !hex(value.policyGeneration) ||
+    !hex(value.imageGeneration) || value.workspaceKey !== expectedKey ||
+    value.workspaceRoot !== expectedRoot || !safeText(value.socketPath) ||
+    !safeText(value.workspaceRoot) || !safeText(value.runtimeRoot) || !safeText(value.vmId, 256) ||
+    !value.socketPath.startsWith("/") || !value.workspaceRoot.startsWith("/") ||
+    !value.runtimeRoot.startsWith("/") || value.dockerHealthy !== true ||
+    !Number.isSafeInteger(value.controllerPid) || value.controllerPid < 1 ||
+    (value.bareCommonDirectory !== null &&
+      (!safeText(value.bareCommonDirectory) || !value.bareCommonDirectory.startsWith("/")))) {
+  console.error("lease manifest is invalid or mismatched");
+  process.exit(1);
 }
-' "$lease_json" "$EXPECTED_WORKSPACE_ROOT" "$EXPECTED_WORKSPACE_KEY" ||
+process.stdout.write([
+  value.leaseToken, value.socketPath, value.workspaceKey, value.workspaceRoot,
+  value.policyGeneration, value.imageGeneration, value.vmId, value.runtimeRoot,
+].join("\t"));
+' "$lease_json" "$EXPECTED_WORKSPACE_ROOT" "$EXPECTED_WORKSPACE_KEY")" ||
     die "controller returned an invalid or mismatched lease manifest"
-CONTROLLER_LEASE="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).leaseToken)' "$lease_json")"
-CONTROLLER_SOCKET="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).socketPath)' "$lease_json")"
-CONTROLLER_WORKSPACE_KEY="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceKey)' "$lease_json")"
-CONTROLLER_WORKSPACE_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceRoot)' "$lease_json")"
-CONTROLLER_POLICY_GENERATION="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).policyGeneration)' "$lease_json")"
-CONTROLLER_IMAGE_GENERATION="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageGeneration)' "$lease_json")"
-CONTROLLER_VM_ID="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).vmId)' "$lease_json")"
-CONTROLLER_RUNTIME_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).runtimeRoot)' "$lease_json")"
+IFS=$'\t' read -r CONTROLLER_LEASE CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT \
+    CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT <<<"$lease_record" ||
+    die "controller returned an invalid lease record"
 readonly CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT
 readonly CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT
 HANDSHAKE_DIR="$(trusted_mktemp -d "$CONTROLLER_RUNTIME_ROOT/handshake.XXXXXX")" ||
@@ -482,17 +491,16 @@ readonly HANDSHAKE_FILE="$HANDSHAKE_DIR/ready.json"
 # processes inherit the controller capability and do not re-enter this launcher.
 # Preserve first-match resolution after excluding repository paths.
 inner_path_entries=("$REAL_PI_DIR")
-while IFS= read -r entry; do
-    duplicate=false
-    for existing in "${inner_path_entries[@]}"; do
-        if [[ "$entry" == "$existing" ]]; then
-            duplicate=true
-            break
-        fi
-    done
-    [[ "$duplicate" == true ]] || inner_path_entries+=("$entry")
-done < <(safe_path_entries)
+for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
+    [[ "$entry" == "$REAL_PI_DIR" ]] || inner_path_entries+=("$entry")
+done
 readonly inner_path="$(IFS=:; printf '%s' "${inner_path_entries[*]}")"
+
+startup_trace_file=""
+if [[ "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" == /* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\n'* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\r'* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\t'* ]]; then
+    startup_trace_file="$PI_GONDOLIN_STARTUP_TRACE_FILE"
+fi
+readonly startup_trace_file
 
 # Keep ambient cloud, package-manager, SSH, and application credentials out of
 # the host Pi environment. Pi still uses its managed auth.json on the host.
@@ -518,6 +526,7 @@ safe_env=(
     "PI_GONDOLIN_BUILTIN_TOOLS=$REQUESTED_BUILTINS"
     "PI_GONDOLIN_HOST_TOOLS=$REQUESTED_HOST_TOOLS"
     "PI_GONDOLIN_HANDSHAKE_FILE=$HANDSHAKE_FILE"
+    "PI_GONDOLIN_STARTUP_TRACE_FILE=$startup_trace_file"
 )
 
 for name in \
@@ -588,6 +597,7 @@ if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|upda
     requires_handshake=false
 fi
 
+trace_startup pi_child_spawn
 set +e
 /usr/bin/env -i "${safe_env[@]}" \
     /bin/bash -c '
@@ -596,77 +606,26 @@ set +e
             real_pi="$1"
             shift
 
-            # Explicit CLI model scopes take precedence. Keep --list-models
-            # unfiltered while bypassing settings-based no-match warnings.
-            has_explicit_model=false
-            has_explicit_thinking=false
-            start_in_plan_mode=false
+            trace_real_pi() {
+                local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
+                [[ -n "$trace_file" ]] || return 0
+                printf "%s\\n" real_pi_launch >>"$trace_file" 2>/dev/null || true
+            }
+            exec_real_pi() {
+                trace_real_pi
+                exec "$real_pi" "$@"
+            }
+
+            # Pi resolves enabledModels and its normal default model during its
+            # own startup. Planning defaults are selected by the awaited plan-mode
+            # session_start handler. Only the catalog command must bypass the
+            # settings model scope.
             for arg in "$@"; do
                 case "$arg" in
-                    --models|--models=*) exec "$real_pi" "$@" ;;
-                    --model|--model=*) has_explicit_model=true ;;
-                    --thinking|--thinking=*) has_explicit_thinking=true ;;
-                    --plan|--plan=true) start_in_plan_mode=true ;;
-                    --list-models) exec "$real_pi" --models "*" "$@" ;;
+                    --list-models|--list-models=*) exec_real_pi --models "*" "$@" ;;
                 esac
             done
-
-            # enabledModels contains exact provider/model IDs. Discover the
-            # authenticated catalog first, then pass Pi only the configured
-            # IDs that are available on this machine.
-            configured_models="$(node -e "
-                const fs = require(\"node:fs\");
-                const settings = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\"));
-                for (const model of settings.enabledModels ?? []) {
-                    if (typeof model === \"string\") console.log(model);
-                }
-            " "$HOME/.pi/agent/settings.json")" || exec "$real_pi" "$@"
-            default_selection="$(node -e "
-                const fs = require(\"node:fs\");
-                const settings = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\"));
-                const planning = process.argv[2] === \"true\";
-                const provider = planning ? settings.defaultThinkingProvider : settings.defaultProvider;
-                const model = planning ? settings.defaultThinkingModel : settings.defaultModel;
-                if (typeof provider === \"string\" && typeof model === \"string\") {
-                    console.log(
-                        provider + \"/\" + model,
-                        typeof settings.defaultThinkingLevel === \"string\"
-                            ? settings.defaultThinkingLevel
-                            : \"\",
-                    );
-                }
-            " "$HOME/.pi/agent/settings.json" "$start_in_plan_mode")" || exec "$real_pi" "$@"
-            read -r default_model default_thinking <<<"$default_selection"
-            available_models="$(set -o pipefail; "$real_pi" --models "*" --list-models |
-                awk "NR > 1 && NF >= 2 { print \$1 \"/\" \$2 }")" || exec "$real_pi" "$@"
-
-            scoped_models=()
-            while IFS= read -r configured_model; do
-                [[ -n "$configured_model" ]] || continue
-                model_id="${configured_model%:*}"
-                if grep -Fqx -- "$model_id" <<<"$available_models"; then
-                    scoped_models+=("$configured_model")
-                fi
-            done <<<"$configured_models"
-
-            # If no configured model is available, preserve normal Pi
-            # authentication guidance instead of hiding a real configuration error.
-            ((${#scoped_models[@]})) || exec "$real_pi" "$@"
-
-            launch_args=(--models "$(IFS=,; printf "%s" "${scoped_models[*]}")")
-            default_model_available=false
-            for scoped_model in "${scoped_models[@]}"; do
-                [[ "$scoped_model" == "$default_model" ]] && default_model_available=true
-            done
-            if [[ "$has_explicit_model" == false && "$default_model_available" == true ]]; then
-                launch_args+=(--model "$default_model")
-                [[ "$has_explicit_thinking" == true || -z "$default_thinking" ]] ||
-                    launch_args+=(--thinking "$default_thinking")
-                # The extension must distinguish this injected default from a
-                # user-supplied --model, which remains higher priority.
-                exec env PI_PLAN_MODE_DEFAULT_MODEL=1 "$real_pi" "${launch_args[@]}" "$@"
-            fi
-            exec "$real_pi" "${launch_args[@]}" "$@"
+            exec_real_pi "$@"
     ' \
     pi-gondolin-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"} <&0 &
 PI_CHILD_PID=$!
@@ -675,6 +634,7 @@ trap 'forward_signal INT' INT
 trap 'forward_signal HUP' HUP
 
 if [[ "$requires_handshake" == true ]]; then
+    trace_startup routing_handshake_start
     timeout_ms="${PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS:-15000}"
     [[ "$timeout_ms" =~ ^[0-9]+$ && "$timeout_ms" -ge 100 ]] || timeout_ms=15000
     attempts=$((timeout_ms / 25))
@@ -699,6 +659,7 @@ if [[ "$requires_handshake" == true ]]; then
                 "$CONTROLLER_POLICY_GENERATION" "$CONTROLLER_IMAGE_GENERATION" "$CONTROLLER_VM_ID"
             then
                 handshake_ready=true
+                trace_startup routing_handshake_complete
                 break
             fi
             kill -TERM "$PI_CHILD_PID" 2>/dev/null || true

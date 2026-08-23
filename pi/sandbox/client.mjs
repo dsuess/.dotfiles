@@ -515,7 +515,7 @@ function spawnController(scope, paths, options) {
     TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
     PI_GONDOLIN_RUNTIME_DIR: paths.runtimeRoot,
   };
-  for (const name of ["PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS"]) {
+  for (const name of ["PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS", "PI_GONDOLIN_STARTUP_TRACE_FILE"]) {
     if (process.env[name]) env[name] = process.env[name];
   }
   const logFd = fs.openSync(paths.logPath, "a", 0o600);

@@ -100,8 +100,7 @@ interface PlanModeDependencies {
 }
 
 function hasExplicitCliModel(): boolean {
-	return process.env.PI_PLAN_MODE_DEFAULT_MODEL !== "1"
-		&& process.argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
+	return process.argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
 }
 
 export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies = {}): void {
