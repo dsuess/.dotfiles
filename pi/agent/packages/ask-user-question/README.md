@@ -29,7 +29,7 @@ These labels are reserved. The model cannot author them.
 
 In a terminal, selecting **Discuss this** suspends the questionnaire TUI and opens a normal interactive Pi child session. The child is persisted under Pi's normal session tree with `parentSession` provenance, and one child is retained for each question. Selecting **Discuss this** again resumes that child.
 
-The child inherits the effective parent system instructions, model, thinking level, trust decision, cwd, sandbox, and already-active compatible tools. It excludes questionnaire recursion, subagent delegation, and parent workflow-completion tools. Parent session and Herdr/broker identity variables are removed before launch.
+The child inherits the effective parent system instructions, model, thinking level, trust decision, cwd, sandbox, and already-active compatible tools. It excludes questionnaire recursion, subagent delegation, and parent workflow-completion tools. Parent session identity variables are removed before launch.
 
 Use `/resolve [optional outcome]` inside the child to return to the still-active questionnaire. Without text, Pi classifies the latest observable assistant response. Ctrl+D or another ordinary child exit leaves the questionnaire unchanged. The resolver makes one bounded, no-workspace-tool classification call with the child model. Invalid output or provider failure becomes context-only.
 

@@ -14,7 +14,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - Replaced prior clarification execution with native terminal child threads and direct RPC/ACP normal-chat handoff.
-- The child inherits the effective model, thinking level, system instructions, trust, cwd, sandbox, and compatible active tools while excluding recursion, delegation, parent workflow actions, and parent Herdr/session identity.
+- The child inherits the effective model, thinking level, system instructions, trust, cwd, sandbox, and compatible active tools while excluding recursion, delegation, parent workflow actions, and parent session identity.
 - Updated development API pins and compatibility documentation for Pi 0.84.2.
 
 ### Removed

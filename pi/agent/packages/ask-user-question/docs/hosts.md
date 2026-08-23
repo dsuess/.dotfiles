@@ -14,7 +14,7 @@ The questionnaire remains in memory while **Discuss this** opens a normal intera
 
 A child is created from the session entry before the assistant message that contains the current tool call. Its session header records `parentSession`; its context therefore has valid conversation history without an orphaned `ask_user_question` call. One child is stored per question and later selections resume it.
 
-The child gets the current model, thinking level, effective system prompt, trust decision, cwd, and compatible active tools. Its built-ins use the parent Gondolin controller. Native Pi built-ins remain disabled. The child excludes `ask_user_question`, subagent delegation, and parent workflow tools. Parent `PI_SESSION_*` and Herdr identity variables are cleared before launch.
+The child gets the current model, thinking level, effective system prompt, trust decision, cwd, and compatible active tools. Its built-ins use the parent Gondolin controller. Native Pi built-ins remain disabled. The child excludes `ask_user_question`, subagent delegation, and parent workflow tools. Parent `PI_SESSION_*` variables are cleared before launch.
 
 `/resolve [optional outcome]` is child-only. It saves a bounded observable transcript/outcome and calls the current child model once with a single classification tool. The classifier can return context-only, an exact single option, exact multi-options, or a custom answer. Invalid labels, invalid question shape, blank custom text, malformed tool output, or provider failure become context-only. Ctrl+D and other ordinary exits save no resolution.
 

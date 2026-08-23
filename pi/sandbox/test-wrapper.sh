@@ -50,7 +50,6 @@ cat >"$AGENT_HOME/settings.json" <<'JSON'
 JSON
 printf 'export default function () {}\n' >"$AGENT_HOME/extensions/gondolin-sandbox/index.ts"
 cp "$HERE/repository-scope.mjs" "$SANDBOX_HOME/repository-scope.mjs"
-cp "$HERE/herdr-status-broker.mjs" "$SANDBOX_HOME/herdr-status-broker.mjs"
 printf '{}\n' >"$SANDBOX_HOME/controller.mjs"
 cat >"$SANDBOX_HOME/settings.json" <<'JSON'
 {
@@ -168,7 +167,9 @@ printf 'sandbox=%s\\n' "\${PI_GONDOLIN_SANDBOX-unset}"
 printf 'socket=%s\\n' "\${PI_GONDOLIN_SOCKET-unset}"
 printf 'lease=%s\\n' "\${PI_GONDOLIN_LEASE-unset}"
 printf 'herdr_env=%s\\n' "\${HERDR_ENV-unset}"
+printf 'herdr_pane_id=%s\\n' "\${HERDR_PANE_ID-unset}"
 printf 'herdr_socket=%s\\n' "\${HERDR_SOCKET_PATH-unset}"
+printf 'herdr_bin_path=%s\\n' "\${HERDR_BIN_PATH-unset}"
 printf 'herdr_status_port=%s\\n' "\${HERDR_PI_STATUS_PORT-unset}"
 printf 'herdr_status_token=%s\\n' "\${HERDR_PI_STATUS_TOKEN-unset}"
 if [[ "\$*" == *"--path-order-probe"* ]]; then
@@ -301,12 +302,14 @@ grep -F 'list_args=<--models><*><--list-models><--no-builtin-tools>' <<<"$output
 grep -F 'Provider Model' <<<"$output" >/dev/null
 [[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
 
-# Herdr receives only the status broker capability.
-output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" TMPDIR="$TEST_ROOT" HERDR_ENV=1 HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" HERDR_PANE_ID=pane-7 PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER")"
+# Herdr's native socket capability reaches the real Pi unchanged.
+output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" TMPDIR="$TEST_ROOT" HERDR_ENV=1 HERDR_SOCKET_PATH="$TEST_ROOT/herdr.sock" HERDR_PANE_ID=pane-7 HERDR_BIN_PATH="$TEST_ROOT/herdr" PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER")"
 grep -F 'herdr_env=1' <<<"$output" >/dev/null
-grep -F 'herdr_socket=unset' <<<"$output" >/dev/null
-grep -E '^herdr_status_port=[0-9]+$' <<<"$output" >/dev/null
-grep -E '^herdr_status_token=[0-9a-f]{64}$' <<<"$output" >/dev/null
+grep -F 'herdr_pane_id=pane-7' <<<"$output" >/dev/null
+grep -F "herdr_socket=$TEST_ROOT/herdr.sock" <<<"$output" >/dev/null
+grep -F "herdr_bin_path=$TEST_ROOT/herdr" <<<"$output" >/dev/null
+grep -F 'herdr_status_port=unset' <<<"$output" >/dev/null
+grep -F 'herdr_status_token=unset' <<<"$output" >/dev/null
 
 # Routing failure never falls back to host tools.
 touch "$TEST_ROOT/no-handshake"

@@ -81,4 +81,4 @@ Only RPC/ACP **Discuss this** creates a handoff. It returns `cancelled: false`, 
 
 Validation and UI errors retain the existing `QuestionnaireError` values: `no_ui`, `no_custom_ui`, `no_questions`, `empty_options`, `too_many_questions`, `duplicate_question`, `duplicate_option_label`, `reserved_label`, `session_load_failed`, and `stale_module_cache`.
 
-The package emits `rpiv:ask-user:prompt` after validation and `rpiv:ask-user:blocked` for the full parent questionnaire lifetime, including the interval while a terminal child owns the terminal. The child clears inherited Herdr/broker identity variables and cannot clear the parent pane's authoritative blocked state.
+The package emits `rpiv:ask-user:prompt` after validation and `rpiv:ask-user:blocked` for the full parent questionnaire lifetime, including the interval while a terminal child owns the terminal. These public events describe questionnaire state; consumers define any status behavior.

@@ -167,7 +167,7 @@ test("bash and rewritten RTK commands receive only guest-safe environment", asyn
       TERM: "xterm-256color",
       LANG: "en_US.UTF-8",
       PI_SESSION_ID: "secret-session",
-      HERDR_PI_STATUS_TOKEN: "secret-herdr",
+      GENERIC_SECRET_TOKEN: "secret-generic",
       OPENAI_API_KEY: "secret-provider",
       NPM_TOKEN: "secret-package",
     },
@@ -176,7 +176,7 @@ test("bash and rewritten RTK commands receive only guest-safe environment", asyn
   assert.deepEqual(call.argv, ["/bin/bash", "-lc", "rtk git status"]);
   assert.equal(call.options.env.TERM, "xterm-256color");
   assert.equal(call.options.env.PI_SESSION_ID, undefined);
-  assert.equal(call.options.env.HERDR_PI_STATUS_TOKEN, undefined);
+  assert.equal(call.options.env.GENERIC_SECRET_TOKEN, undefined);
   assert.equal(call.options.env.OPENAI_API_KEY, undefined);
   assert.equal(call.options.env.NPM_TOKEN, undefined);
   assert.equal(call.options.env.NPM_CONFIG_CACHE, "/root/.npm");

@@ -6,11 +6,8 @@ readonly GONDOLIN_CLIENT="$SANDBOX_DIR/client-cli.mjs"
 readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
 readonly GONDOLIN_SETTINGS="$SANDBOX_DIR/settings.json"
 readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
-readonly HERDR_STATUS_BROKER="$SANDBOX_DIR/herdr-status-broker.mjs"
 readonly REPOSITORY_SCOPE="$SANDBOX_DIR/repository-scope.mjs"
 
-HERDR_BROKER_PID=""
-HERDR_BROKER_DIR=""
 HANDSHAKE_DIR=""
 PI_CHILD_PID=""
 CONTROLLER_LEASE=""
@@ -28,19 +25,6 @@ CONTROLLER_WORKSPACE_ROOT=""
 CONTROLLER_POLICY_GENERATION=""
 CONTROLLER_IMAGE_GENERATION=""
 CONTROLLER_VM_ID=""
-
-cleanup_herdr_broker() {
-    [[ -n "$HERDR_BROKER_PID" ]] || return 0
-
-    kill -TERM "$HERDR_BROKER_PID" 2>/dev/null || true
-    for _ in {1..100}; do
-        kill -0 "$HERDR_BROKER_PID" 2>/dev/null || break
-        /bin/sleep 0.01
-    done
-    kill -KILL "$HERDR_BROKER_PID" 2>/dev/null || true
-    wait "$HERDR_BROKER_PID" 2>/dev/null || true
-    [[ -z "$HERDR_BROKER_DIR" ]] || /bin/rm -rf -- "$HERDR_BROKER_DIR"
-}
 
 release_controller_lease() {
     [[ -n "$CONTROLLER_LEASE" && -n "${HOST_NODE-}" ]] || return 0
@@ -61,7 +45,6 @@ release_controller_lease() {
 }
 
 cleanup_launcher() {
-    cleanup_herdr_broker
     release_controller_lease
     [[ -z "$HANDSHAKE_DIR" ]] || /bin/rm -rf -- "$HANDSHAKE_DIR"
 }
@@ -531,61 +514,12 @@ safe_env=(
 
 for name in \
     USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \
-    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR
+    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR \
+    HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH
 do
     value="${!name-}"
     [[ -n "$value" ]] && safe_env+=("$name=$value")
 done
-
-start_herdr_broker() {
-    [[ "${HERDR_ENV-}" == "1" ]] || return 0
-    [[ -n "${HERDR_SOCKET_PATH-}" && -n "${HERDR_PANE_ID-}" ]] || return 0
-    [[ -r "$HERDR_STATUS_BROKER" ]] || die "Herdr status broker is missing: $HERDR_STATUS_BROKER"
-    [[ -d "$HOME/.pi/agent/sessions" ]] || die "Pi session directory is missing"
-
-    HERDR_BROKER_DIR="$(trusted_mktemp -d /tmp/pi-herdr-status.XXXXXX)" ||
-        die "cannot create the Herdr status broker directory"
-    local ready_file="$HERDR_BROKER_DIR/ready"
-    local error_file="$HERDR_BROKER_DIR/error.log"
-
-    /usr/bin/env -i \
-        HERDR_PI_BROKER_READY_FILE="$ready_file" \
-        HERDR_PI_BROKER_DIR="$HERDR_BROKER_DIR" \
-        HERDR_PI_BROKER_PARENT_PID="$$" \
-        HERDR_PI_SESSION_ROOT="$HOME/.pi/agent/sessions" \
-        HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" \
-        HERDR_PANE_ID="$HERDR_PANE_ID" \
-        "$HOST_NODE" "$HERDR_STATUS_BROKER" </dev/null > /dev/null 2>"$error_file" &
-    HERDR_BROKER_PID=$!
-
-    for _ in {1..200}; do
-        [[ -s "$ready_file" ]] && break
-        if ! kill -0 "$HERDR_BROKER_PID" 2>/dev/null; then
-            die "Herdr status broker failed to start: $(<"$error_file")"
-        fi
-        /bin/sleep 0.01
-    done
-    [[ -s "$ready_file" ]] || die "timed out starting the Herdr status broker"
-
-    local status_port status_token extra
-    IFS=' ' read -r status_port status_token extra <"$ready_file"
-    [[ "$status_port" =~ ^[0-9]+$ && "$status_port" -ge 1 && "$status_port" -le 65535 ]] ||
-        die "Herdr status broker returned an invalid port"
-    [[ "$status_token" =~ ^[0-9a-f]{64}$ && -z "$extra" ]] ||
-        die "Herdr status broker returned an invalid token"
-
-    # Pi receives only the narrow broker capability. The real Herdr socket path
-    # is not passed into Pi, and the broker ignores caller-supplied pane, source,
-    # agent, and sequence values.
-    safe_env+=(
-        "HERDR_ENV=1"
-        "HERDR_PANE_ID=$HERDR_PANE_ID"
-        "HERDR_PI_STATUS_PORT=$status_port"
-        "HERDR_PI_STATUS_TOKEN=$status_token"
-    )
-}
-
-start_herdr_broker
 
 requires_handshake=true
 for arg in "${pi_args[@]}"; do

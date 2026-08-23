@@ -19,7 +19,7 @@ The choice is intentionally local and reversible:
 - Terminal selection creates or resumes one child session per question. The child forks before the parent `ask_user_question` tool call, so it has valid parent history and no unmatched tool call. Its header records `parentSession` provenance.
 - `/resolve [outcome]` exists only in that child. It stores a bounded observable outcome and a no-workspace-tool classification. Normal child exit does not resolve.
 - The parent remains blocked until the questionnaire settles. Returned complete suggestions are preselected in normal controls and require Enter or Next; context-only results preserve the user's candidate answer state.
-- The child inherits the effective parent model, thinking level, system instructions, trust, cwd, sandbox, and already-active compatible tools. Questionnaire recursion, delegation, parent workflow completion, parent session identity, and Herdr/broker identity are excluded.
+- The child inherits the effective parent model, thinking level, system instructions, trust, cwd, sandbox, and already-active compatible tools. Questionnaire recursion, delegation, parent workflow completion, and parent session identity are excluded.
 - RPC and ACP cannot own a nested terminal child. Their **Discuss this** choice uses the existing non-cancelled normal-chat handoff instead.
 
 This decision is documented here and in the package reference rather than an ADR because it is a narrow, local UX/runtime implementation choice.

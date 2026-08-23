@@ -4,7 +4,7 @@
 
 The boundary has three parts:
 
-- The host control plane runs Pi, model access, sessions, reviewed extensions, the Herdr broker, and the Gondolin controller.
+- The host control plane runs Pi, model access, sessions, reviewed extensions, and the Gondolin controller.
 - The guest tool plane runs `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `!`, and `!!`.
 - Audited host adapters run Ketch, structured questions, child orchestration, and plan ledger operations.
 

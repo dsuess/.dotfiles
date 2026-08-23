@@ -6,9 +6,8 @@
   "scripts": {
     "build:image": "node build-gondolin-image.mjs",
     "benchmark:startup": "node benchmark-startup.mjs",
-    "test": "npm run test:broker && npm run test:controller && npm run test:pivm && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
+    "test": "npm run test:controller && npm run test:pivm && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
     "test:native": "npm run test:canary && npm run test:controller-native && npm run test:tools-native && npm run test:inventory && npm run test:ketch-live",
-    "test:broker": "node --test test-herdr-status-broker.mjs test-herdr-agent-state.mjs test-herdr-sandbox-composed.mjs",
     "test:controller": "node --test test-policy.mjs test-protocol.mjs test-controller.mjs",
     "test:pivm": "node --test test-pivm.mjs",
     "test:controller-native": "node --test test-controller-integration.mjs",
