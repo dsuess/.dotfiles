@@ -12,16 +12,19 @@ function recordError(message) {
 }
 
 function parseDeviceRecord(line, expectedType) {
-    var match = String(line).replace(/[\r\n]+$/, "").match(/^(.*),(input|output|system),([0-9]+),([^\r\n]*)$/);
+    var record = String(line).replace(/[\r\n]+$/, "");
+    // Current and older SwitchAudioSource builds both use comma-delimited
+    // records, but some omit the UID or add whitespace around delimiters.
+    var match = record.match(/^(.*),\s*(input|output|system)\s*,\s*([0-9]+)(?:\s*,\s*(.*))?$/);
     if (!match || !match[1] || (expectedType && match[2] !== expectedType)) {
-        throw recordError("Malformed SwitchAudioSource record: " + line);
+        throw recordError("Unexpected record: " + record.slice(0, 160));
     }
 
     return {
-        name: match[1],
+        name: match[1].replace(/\s+$/, ""),
         type: match[2],
         id: match[3],
-        uid: match[4]
+        uid: match[4] || ""
     };
 }
 
@@ -47,13 +50,13 @@ function invalidItem(title, subtitle) {
     };
 }
 
-function resultError(kind, detail) {
+function resultError(kind, detail, commandError) {
     var messages = {
         missing: ["SwitchAudioSource is not installed", "Run: brew install switchaudio-osx"],
-        command: ["SwitchAudioSource could not read audio devices", "Check the workflow debugger and try again."],
-        malformed: ["SwitchAudioSource returned unreadable device data", "Update switchaudio-osx, then try again."],
+        command: ["SwitchAudioSource could not read audio devices", commandError || "Check the workflow debugger and try again."],
+        malformed: ["SwitchAudioSource returned unreadable device data", commandError || "Update switchaudio-osx, then try again."],
         empty: ["No connected " + detail + " devices found", "Connect a device, then try again."],
-        current: ["Could not determine the current " + detail + " device", "Check SwitchAudioSource and try again."]
+        current: ["Could not determine the current " + detail + " device", commandError || "Check SwitchAudioSource and try again."]
     };
     var message = messages[kind] || messages.command;
     return { items: [invalidItem(message[0], message[1])] };
@@ -77,6 +80,7 @@ function deviceItems(direction, devices, currentID) {
             subtitle: (current ? "Current " : "") + direction + " device" + duplicateSuffix,
             arg: device.id,
             variables: { audio_device_id: device.id },
+            icon: { path: direction + ".png" },
             match: device.name + " " + device.uid,
             autocomplete: device.name
         });
@@ -89,20 +93,20 @@ function listResult(direction, listRun, currentRun) {
         return resultError("missing", direction);
     }
     if (listRun.error || listRun.status !== 0) {
-        return resultError("command", direction);
+        return resultError("command", direction, listRun.stderr);
     }
 
     var devices;
     try {
         devices = parseDeviceRecords(listRun.stdout, direction);
     } catch (error) {
-        return resultError("malformed", direction);
+        return resultError("malformed", direction, error.message);
     }
     if (!devices.length) {
         return resultError("empty", direction);
     }
     if (!currentRun || currentRun.error || currentRun.status !== 0) {
-        return resultError("current", direction);
+        return resultError("current", direction, currentRun && currentRun.stderr);
     }
 
     try {
@@ -158,22 +162,18 @@ function executablePath() {
     return null;
 }
 
+function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+}
+
 function runCommand(executable, args) {
-    var task = $.NSTask.alloc.init;
-    var stdout = $.NSPipe.pipe;
-    var stderr = $.NSPipe.pipe;
-    task.setLaunchPath($(executable));
-    task.setArguments($(args));
-    task.setStandardOutput(stdout);
-    task.setStandardError(stderr);
+    // `doShellScript` is the stable JXA process boundary. NSTask values are
+    // bridged inconsistently across macOS releases when Alfred runs JXA.
+    var app = Application.currentApplication();
+    app.includeStandardAdditions = true;
+    var command = [executable].concat(args).map(shellQuote).join(" ");
     try {
-        task.launch();
-        task.waitUntilExit();
-        return {
-            status: Number(task.terminationStatus),
-            stdout: $.NSString.alloc.initWithDataEncoding(stdout.fileHandleForReading.readDataToEndOfFile, $.NSUTF8StringEncoding).js,
-            stderr: $.NSString.alloc.initWithDataEncoding(stderr.fileHandleForReading.readDataToEndOfFile, $.NSUTF8StringEncoding).js
-        };
+        return { status: 0, stdout: app.doShellScript(command), stderr: "" };
     } catch (error) {
         return { status: 1, stdout: "", stderr: String(error), error: true };
     }
@@ -275,6 +275,7 @@ if (typeof module !== "undefined") {
         listResult: listResult,
         deviceItems: deviceItems,
         resultError: resultError,
+        shellQuote: shellQuote,
         switchNotification: switchNotification,
         notificationResult: notificationResult
     };
