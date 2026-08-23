@@ -194,7 +194,7 @@ cmd_software() {
         brew update
 
         echo "🔧 Installing CLI tools..."
-        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick qemu lz4 e2fsprogs 1broseidon/tap/ketch tuicr herdr
+        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick qemu lz4 e2fsprogs 1broseidon/tap/ketch tuicr herdr switchaudio-osx
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
