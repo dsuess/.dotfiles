@@ -352,7 +352,6 @@ export function buildSandboxPolicy(options) {
   const cacheDirectory = ensurePrivateDirectory(path.join(workspaceState, "cache"));
   const npmDirectory = ensurePrivateDirectory(path.join(workspaceState, "npm"));
   const cargoDirectory = ensurePrivateDirectory(path.join(workspaceState, "cargo"));
-  const dockerDirectory = ensurePrivateDirectory(path.join(workspaceState, "docker"));
   ensurePrivateDirectory(runtimeRoot);
 
   const invariantRoots = defaultInvariantRoots(homeDirectory, cacheRoot, runtimeRoot);
@@ -395,7 +394,6 @@ export function buildSandboxPolicy(options) {
     deepFreeze({ kind: "cache", hostPath: cacheDirectory, guestPath: "/root/.cache", access: "rw" }),
     deepFreeze({ kind: "npm-cache", hostPath: npmDirectory, guestPath: "/root/.npm", access: "rw" }),
     deepFreeze({ kind: "cargo-cache", hostPath: cargoDirectory, guestPath: "/root/.cargo", access: "rw" }),
-    deepFreeze({ kind: "docker", hostPath: dockerDirectory, guestPath: "/var/lib/docker", access: "rw" }),
   );
 
   const effective = {

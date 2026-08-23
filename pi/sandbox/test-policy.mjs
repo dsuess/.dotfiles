@@ -212,10 +212,10 @@ test("effective policy creates private workspace state and stable mount generati
       ["cache", "rw"],
       ["npm-cache", "rw"],
       ["cargo-cache", "rw"],
-      ["docker", "rw"],
     ],
   );
   assert.equal(fs.statSync(policy.workspaceState).mode & 0o777, 0o700);
+  assert.equal(fs.existsSync(path.join(policy.workspaceState, "docker")), false);
 
   const changed = buildSandboxPolicy({
     scope: makeScope(fs.realpathSync(workspace)),

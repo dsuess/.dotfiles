@@ -111,7 +111,7 @@ async function defaultVmFactory({ policy, imageDir }) {
       imagePath: imageDir,
       netEnabled: network.netEnabled,
     },
-    rootfs: { mode: "memory" },
+    rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "4G" },
     memory: process.env.PI_GONDOLIN_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CPUS ?? 4),
     vfs: { mounts: createPolicyProviders(policy) },
@@ -518,46 +518,7 @@ export class WorkspaceController {
     if (policyGeneration !== this.policy.policyGeneration) {
       throw controllerError("policy_generation_mismatch", "cannot reset Docker for an unknown generation");
     }
-    const dockerMount = this.policy.mounts.find((mount) => mount.kind === "docker");
-    const expected = path.join(this.policy.workspaceState, "docker");
-    if (!dockerMount || path.resolve(dockerMount.hostPath) !== path.resolve(expected)) {
-      throw controllerError("docker_reset_denied", "Docker state is outside the current workspace controller state");
-    }
-    this.pendingRestart = true;
-    this.health = "restarting";
-    const drained = this.execTail.catch(() => {});
-    const barrier = drained.then(() =>
-      this.transition(async () => {
-        await this.stopVm();
-        const stateRoot = fs.realpathSync(this.policy.workspaceState);
-        if (path.dirname(path.resolve(expected)) !== stateRoot) {
-          throw controllerError("docker_reset_denied", "Docker reset target is not a direct workspace-state child");
-        }
-        const existing = fs.existsSync(expected) ? fs.lstatSync(expected) : null;
-        if (existing?.isSymbolicLink()) {
-          throw controllerError("docker_reset_denied", "Docker reset target cannot be a symlink");
-        }
-        fs.rmSync(expected, { recursive: true, force: true });
-        fs.mkdirSync(expected, { recursive: true, mode: 0o700 });
-        fs.chmodSync(expected, 0o700);
-        await this.startVm();
-        this.pendingRestart = false;
-        this.onStateChange(this.status());
-      }),
-    );
-    this.restartBarrier = barrier;
-    try {
-      await barrier;
-      return this.status();
-    } catch (error) {
-      this.pendingRestart = false;
-      this.health = "failed";
-      this.failure = error instanceof Error ? error.message : String(error);
-      this.onStateChange(this.status());
-      throw error;
-    } finally {
-      if (this.restartBarrier === barrier) this.restartBarrier = null;
-    }
+    return this.restart(policyGeneration);
   }
 
   async restart(policyGeneration) {

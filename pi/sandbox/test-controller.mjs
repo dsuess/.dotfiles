@@ -380,30 +380,23 @@ test("two socket clients share one controller VM and authenticated leases", asyn
   await second.client.release();
 });
 
-test("Docker reset stops the VM and deletes only the current workspace Docker directory", async (t) => {
+test("Docker reset replaces the VM without touching host Docker state", async (t) => {
   const { controller, state } = makeController(t, {
     policyFactory(current) {
       const workspaceState = path.join(current.root, "workspace-state");
-      const docker = path.join(workspaceState, "docker");
-      fs.mkdirSync(docker, { recursive: true });
-      fs.writeFileSync(path.join(docker, "marker"), "persistent");
-      return {
-        ...policy(),
-        workspaceState,
-        mounts: [
-          { kind: "workspace", guestPath: "/workspace", access: "rw" },
-          { kind: "docker", guestPath: "/var/lib/docker", hostPath: docker, access: "rw" },
-        ],
-      };
+      const legacyDocker = path.join(workspaceState, "docker");
+      fs.mkdirSync(legacyDocker, { recursive: true });
+      fs.writeFileSync(path.join(legacyDocker, "marker"), "legacy");
+      return { ...policy(), workspaceState };
     },
   });
   await controller.start();
   const firstVm = controller.status().vmId;
   const status = await controller.resetDocker(GENERATION_A);
   assert.notEqual(status.vmId, firstVm);
-  const docker = path.join(controller.policy.workspaceState, "docker");
-  assert.equal(fs.existsSync(path.join(docker, "marker")), false);
-  assert.equal(fs.statSync(docker).mode & 0o777, 0o700);
+  const legacyDocker = path.join(controller.policy.workspaceState, "docker");
+  assert.equal(fs.readFileSync(path.join(legacyDocker, "marker"), "utf8"), "legacy");
+  assert.deepEqual(state.closes, [firstVm]);
   assert.equal(state.vmCount, 2);
 });
 

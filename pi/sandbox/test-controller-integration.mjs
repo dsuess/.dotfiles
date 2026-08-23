@@ -69,6 +69,8 @@ test(
     assert.equal(first.status.policyGeneration, second.status.policyGeneration);
     assert.equal((await first.client.status()).attachedRoots, 2);
     assert.equal(first.status.dockerHealthy, true);
+    assert.equal(first.status.mounts.some((mount) => mount.guestPath === "/var/lib/docker"), false);
+    assert.equal(fs.existsSync(path.join(cacheRoot, "workspaces", first.scope.workspaceKey, "docker")), false);
 
     const guestFile = path.join(workspace, "controller-write.txt");
     await first.client.writeFile(guestFile, "shared-vfs");
@@ -117,12 +119,13 @@ test(
     assert.equal(converged.policyGeneration, expectedPolicy.policyGeneration);
     assert.equal(converged.vmId, afterReload.vmId);
 
-    const dockerDirectory = path.join(cacheRoot, "workspaces", first.scope.workspaceKey, "docker");
-    const resetMarker = path.join(dockerDirectory, "reset-marker");
-    fs.writeFileSync(resetMarker, "delete-me");
+    const legacyDockerDirectory = path.join(cacheRoot, "workspaces", first.scope.workspaceKey, "docker");
+    fs.mkdirSync(legacyDockerDirectory, { recursive: true });
+    const legacyMarker = path.join(legacyDockerDirectory, "legacy-marker");
+    fs.writeFileSync(legacyMarker, "preserve-me");
     const afterReset = await first.client.resetDocker();
     assert.notEqual(afterReset.vmId, afterReload.vmId);
-    assert.equal(fs.existsSync(resetMarker), false);
+    assert.equal(fs.readFileSync(legacyMarker, "utf8"), "preserve-me");
     assert.equal((await second.client.status()).vmId, afterReset.vmId);
 
     await first.client.release();

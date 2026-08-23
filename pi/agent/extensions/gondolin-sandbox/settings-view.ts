@@ -114,7 +114,7 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
   items.push(
     { id: "mount-add", label: "Add external mount", currentValue: "none", values: ["none", "add…"] },
     { id: "restart", label: "Restart VM", currentValue: "ready", values: ["ready", "restart"] },
-    { id: "docker-reset", label: "Reset workspace Docker", currentValue: "keep", values: ["keep", "reset…"] },
+    { id: "docker-reset", label: "Replace VM and clear Docker", currentValue: "keep", values: ["keep", "replace…"] },
   );
   return items;
 }
@@ -174,10 +174,10 @@ export async function showSandboxSettings(
         emitLifecycle(lifecycleFromStatus(await client.restart()));
         continue;
       }
-      if (action.id === "docker-reset" && action.value === "reset…") {
+      if (action.id === "docker-reset" && action.value === "replace…") {
         const confirmed = await ctx.ui.confirm(
-          "Reset workspace Docker state?",
-          "This stops the shared VM and permanently deletes only this workspace's images, containers, and volumes.",
+          "Replace shared VM?",
+          "This stops the shared VM. Its guest-native Docker images, containers, volumes, and build cache are ephemeral and will be deleted.",
         );
         if (!confirmed) continue;
         emitLifecycle({ ...lifecycleFromStatus(status), health: "restarting", pendingRestart: true });

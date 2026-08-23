@@ -1,0 +1,4 @@
+#!/bin/bash -p
+set -euo pipefail
+
+exec /usr/bin/env node "$HOME/.pi/sandbox/pivm.mjs" "$@"

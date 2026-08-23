@@ -21,7 +21,9 @@ import {
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const PUBLIC_URL = process.env.PI_GONDOLIN_CANARY_PUBLIC_URL ?? "https://example.com/";
 const ALPINE_IMAGE = "alpine:3.23";
+const UV_IMAGE = "ghcr.io/astral-sh/uv:0.9.18";
 const BUILT_IMAGE = "pi-gondolin-canary:local";
+const UV_COPY_IMAGE = "pi-gondolin-uv-copy:local";
 const PERSISTENT_CONTAINER = "pi-gondolin-canary-container";
 const PERSISTENT_VOLUME = "pi-gondolin-canary-volume";
 
@@ -79,7 +81,7 @@ function createVm(imageDir, fixture) {
       imagePath: imageDir,
       netEnabled: true,
     },
-    rootfs: { mode: "memory" },
+    rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_CANARY_ROOTFS_SIZE ?? "4G" },
     memory: process.env.PI_GONDOLIN_CANARY_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CANARY_CPUS ?? 4),
     httpHooks,
@@ -88,7 +90,6 @@ function createVm(imageDir, fixture) {
       mounts: {
         [fixture.workspace]: new RealFSProvider(fixture.workspace),
         [fixture.readonly]: new ReadonlyProvider(new RealFSProvider(fixture.readonly)),
-        "/var/lib/docker": new RealFSProvider(fixture.dockerStore),
       },
     },
   });
@@ -152,6 +153,7 @@ async function proveToolchainAndDocker(vm, fixture) {
     "docker info --format '{{.Driver}}|{{.OperatingSystem}}|{{.DockerRootDir}}|{{.Name}}'",
   );
   assert.match(dockerInfo.stdout, /^vfs\|Alpine Linux .*\|\/var\/lib\/docker\|/m);
+  await runOk(vm, "! grep -E '[[:space:]]/var/lib/docker[[:space:]]+fuse\\.sandboxfs' /proc/mounts");
 
   await runOk(vm, `docker pull ${ALPINE_IMAGE}`);
   const runResult = await runOk(vm, `docker run --rm ${ALPINE_IMAGE} printf docker-run-ok`);
@@ -175,6 +177,19 @@ async function proveToolchainAndDocker(vm, fixture) {
   );
   const builtResult = await runOk(vm, `docker run --rm ${BUILT_IMAGE}`);
   assert.equal(builtResult.stdout, "buildkit-ok");
+
+  const uvCopyContext = path.join(fixture.workspace, "uv-copy-build");
+  fs.mkdirSync(uvCopyContext);
+  fs.writeFileSync(
+    path.join(uvCopyContext, "Dockerfile"),
+    `FROM ${ALPINE_IMAGE}\nCOPY --from=${UV_IMAGE} /uv /uvx /bin/\nRUN uvx --version\n`,
+  );
+  await runOk(
+    vm,
+    `docker buildx build --load --progress=plain -t ${UV_COPY_IMAGE} ${shQuote(uvCopyContext)}`,
+  );
+  const uvx = await runOk(vm, `docker run --rm ${UV_COPY_IMAGE} uvx --version`);
+  assert.match(uvx.stdout, /uvx /);
 
   const composePath = path.join(fixture.workspace, "compose.yaml");
   fs.writeFileSync(
@@ -245,24 +260,16 @@ async function proveDockerCannotSeeHost(vm, fixture) {
   assert.equal(fs.readFileSync(fixture.outsideSecret, "utf8"), "outside-host-secret");
 }
 
-async function provePersistence(vm, fixture) {
+async function proveEphemerality(vm) {
   const dockerInfo = await runOk(vm, "docker info --format '{{.Driver}}|{{.DockerRootDir}}'");
   assert.match(dockerInfo.stdout, /^vfs\|\/var\/lib\/docker/m);
-  await runOk(vm, `docker image inspect ${BUILT_IMAGE} >/dev/null`);
-  await runOk(vm, `docker container inspect ${PERSISTENT_CONTAINER} >/dev/null`);
-  await runOk(vm, `docker volume inspect ${PERSISTENT_VOLUME} >/dev/null`);
-
-  const imageResult = await runOk(vm, `docker run --rm ${BUILT_IMAGE}`);
-  assert.equal(imageResult.stdout, "buildkit-ok");
-  const volumeResult = await runOk(
-    vm,
-    `docker run --rm -v ${PERSISTENT_VOLUME}:/state ${ALPINE_IMAGE} cat /state/result`,
-  );
-  assert.equal(volumeResult.stdout, "compose-ok");
-  assert.ok(fs.readdirSync(fixture.dockerStore).length > 0, "host-backed Docker store is empty");
+  await runOk(vm, "! grep -E '[[:space:]]/var/lib/docker[[:space:]]+fuse\\.sandboxfs' /proc/mounts");
+  await runFails(vm, `docker image inspect ${BUILT_IMAGE} >/dev/null`, "image survived VM replacement");
+  await runFails(vm, `docker container inspect ${PERSISTENT_CONTAINER} >/dev/null`, "container survived VM replacement");
+  await runFails(vm, `docker volume inspect ${PERSISTENT_VOLUME} >/dev/null`, "volume survived VM replacement");
 }
 
-test("pinned Gondolin image contains files, network, and persistent nested Docker", async (t) => {
+test("pinned Gondolin image contains files, network, xattr-compatible, ephemeral nested Docker", async (t) => {
   const image = await ensureGondolinImage({ verbose: false });
   verifyImageDirectory(image.imageDir);
   t.diagnostic(`image=${image.imageDir}`);
@@ -273,7 +280,6 @@ test("pinned Gondolin image contains files, network, and persistent nested Docke
   const fixture = {
     workspace: fs.realpathSync(fs.mkdirSync(path.join(root, "workspace"), { recursive: true })),
     readonly: fs.realpathSync(fs.mkdirSync(path.join(root, "readonly"), { recursive: true })),
-    dockerStore: fs.realpathSync(fs.mkdirSync(path.join(root, "docker"), { recursive: true })),
     outside: fs.realpathSync(fs.mkdirSync(path.join(root, "outside"), { recursive: true })),
   };
   fixture.outsideSecret = path.join(fixture.outside, "host-secret");
@@ -297,7 +303,7 @@ test("pinned Gondolin image contains files, network, and persistent nested Docke
 
     vm = await createVm(image.imageDir, fixture);
     t.diagnostic(`secondVm=${vm.id}`);
-    await provePersistence(vm, fixture);
+    await proveEphemerality(vm);
   } catch (error) {
     t.diagnostic(await dockerDiagnostics(vm));
     throw error;

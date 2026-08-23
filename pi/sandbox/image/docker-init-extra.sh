@@ -35,9 +35,9 @@ EOF
   log "[init] installed Docker CA wrapper"
 fi
 
-# Keep all daemon state inside the VM or the explicit /var/lib/docker VFS
-# provider. Never connect to a host Docker socket. VFS is required because the
-# persistent directory is shared by later VM instances for this workspace.
+# Keep all daemon state in the guest-native filesystem. Never connect to a host
+# Docker socket. The vfs driver is intentional; Docker storage is ephemeral
+# because the VM root filesystem is replaced with the VM.
 if command -v dockerd >/dev/null 2>&1; then
   dockerd \
     --host=unix:///var/run/docker.sock \

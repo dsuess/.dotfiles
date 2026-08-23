@@ -93,9 +93,9 @@ Private workspace data uses these guest paths:
 | `/root/.cache` | Linux tool cache |
 | `/root/.npm` | npm cache |
 | `/root/.cargo` | Cargo cache |
-| `/var/lib/docker` | Guest Docker state |
+| `/var/lib/docker` | Ephemeral guest-native Docker state |
 
-The private host root is `~/.cache/pi-gondolin/workspaces/<workspace-key>/`.
+The private host root is `~/.cache/pi-gondolin/workspaces/<workspace-key>/`. Docker is deliberately not stored there or mounted from the host.
 
 The workspace provider blocks writes to Git hooks, Git settings, shell startup files, editor settings, and agent settings. It checks lexical and resolved paths.
 
@@ -146,9 +146,9 @@ A cold controller verifies the Gondolin manifest, all asset checksums, and Pi im
 
 The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`.
 
-### Known Docker xattr limitation
+### Docker storage lifecycle
 
-Gondolin `0.12.0` mounts the persistent Docker directory through `fuse.sandboxfs`. That filesystem returns `EOPNOTSUPP` for extended-attribute operations. Docker builds that need xattr metadata can fail even though ordinary pulls and builds work. For example, this pinned uv copy fails at `/uvx` with `operation not supported`:
+Docker uses its guest-native `/var/lib/docker` data root with the `vfs` storage driver. It is not a `fuse.sandboxfs` mount, so it supports extended attributes. The representative pinned build below succeeds, including its external-stage copy and `uvx --version`:
 
 ```Dockerfile
 FROM alpine:3.23
@@ -156,13 +156,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /bin/
 RUN uvx --version
 ```
 
-For a one-off trusted build, use `pi --yolo` so Docker uses the host filesystem. Installing uv another way is a Dockerfile-specific workaround, not a sandbox fix. Do not change this Docker daemon to `overlay2`: the persistent FUSE backing store still lacks xattrs and `vfs` is intentional.
-
-A general sandbox fix needs xattr support in both Gondolin sandboxfs and its host VFS provider, while keeping the host Docker socket unmounted. Until then, the native canary verifies this pinned copy fails for the documented reason; update it to require success only with that durable fix.
+The tradeoff is deliberate: images, containers, volumes, and BuildKit cache exist only for the current VM. They disappear when its controller stops, the VM restarts, or Docker is reset. `vfs` remains intentional. Do not mount the host Docker socket or host Docker settings.
 
 The host Docker socket and host Docker settings are not mounted. Privileged guest containers remain inside the VM boundary.
-
-One workspace controller prevents two Docker daemons from using the same data directory. Images, containers, and volumes remain after VM restart.
 
 ## `/sandbox`
 
@@ -177,13 +173,29 @@ You can do these actions:
 - Change the network mode and allowed hosts.
 - Change WebSocket and TCP settings.
 - Restart the VM.
-- Reset Docker state for the current workspace.
+- Replace the shared VM and clear its ephemeral Docker state.
 
 Each accepted settings change replaces the Stow source atomically. Then the controller drains active work and restarts once.
 
-Docker reset requires confirmation. It removes only the current workspace Docker directory.
+Docker reset requires confirmation. It replaces the shared VM, deleting that VM's guest-native images, containers, volumes, and build cache.
 
 The footer shows a compact VM health marker. Detailed state remains in `/sandbox`.
+
+## `pivm` VM and storage management
+
+`pivm` is installed through Stow with `./install.sh config`. It never starts a controller or VM.
+
+```bash
+pivm vm list
+pivm storage list
+pivm storage purge
+```
+
+`pivm vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
+
+`pivm storage list` shows reclaimable Docker storage from active Pi VMs. It reports Images, Containers, Volumes, Build cache, and a decimal-gigabyte total. Active volumes are called out separately because purge preserves them.
+
+`pivm storage purge` displays the same preview, then asks for explicit confirmation. A declined or empty preview changes nothing. On confirmation it runs Docker's reclaimable-only system prune: stopped containers, unused images and volumes, and build cache are removed; active containers and volumes remain.
 
 ## Installation
 
@@ -241,13 +253,7 @@ Rebuild the current image:
 node pi/sandbox/build-gondolin-image.mjs --force
 ```
 
-Use `/sandbox` to reset only the current workspace Docker state.
-
-You can also stop Pi and remove this directory:
-
-```text
-~/.cache/pi-gondolin/workspaces/<workspace-key>/docker
-```
+Use `/sandbox` to replace the shared VM and clear its ephemeral Docker state. Use `pivm storage purge` when the VM remains live and you want to reclaim only Docker objects that are safe to remove.
 
 Do not connect the guest to the host Docker socket.
 
@@ -287,7 +293,7 @@ PI_PACKAGE_ROOT=/path/to/pi-coding-agent node --test pi/agent/extensions/subagen
 npm --prefix pi/agent/packages/ask-user-question test
 ```
 
-The native canary verifies public HTTPS and blocked internal destinations. It also verifies Docker pull, BuildKit, Compose, and persistent state.
+The native canary verifies public HTTPS and blocked internal destinations. It also verifies Docker pull, BuildKit xattrs, Compose, host isolation, and ephemeral Docker state across VM replacement.
 
 The inventory test starts real normal and planning children. It checks replacement sources, host adapters, unknown tools, and handshake failure.
 
