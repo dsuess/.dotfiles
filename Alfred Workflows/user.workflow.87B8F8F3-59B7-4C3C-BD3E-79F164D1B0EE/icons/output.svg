@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Audio Output</title>
+  <desc>A white speaker and sound waves on a graphite rounded tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="48" y1="35" x2="208" y2="216" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#484E59"/>
+      <stop offset="1" stop-color="#252A33"/>
+    </linearGradient>
+    <filter id="shadow" x="12" y="14" width="232" height="232" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="7" stdDeviation="5" flood-color="#080A0E" flood-opacity="0.38"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="24" y="21" width="208" height="208" rx="48" fill="url(#tile)"/>
+    <rect x="24.75" y="21.75" width="206.5" height="206.5" rx="47.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="1.5"/>
+  </g>
+  <g fill="none" stroke="#F5F6F8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M70 111H99L137 80V176L99 145H70Z"/>
+    <path d="M158 105C171 117 171 139 158 151"/>
+    <path d="M176 87C201 109 201 147 176 169"/>
+  </g>
+</svg>

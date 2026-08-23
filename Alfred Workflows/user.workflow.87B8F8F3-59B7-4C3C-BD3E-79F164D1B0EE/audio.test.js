@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const audio = require('./audio.js');
 
 function run(stdout, status = 0) {
@@ -19,6 +21,10 @@ assert.deepStrictEqual(records, [
   { name: 'MacBook Microphone', type: 'input', id: '12', uid: 'BuiltInMicrophoneDevice' },
   { name: 'Desk, “quoted”', type: 'input', id: '24', uid: 'USB,123' }
 ]);
+assert.deepStrictEqual(
+  audio.parseDeviceRecords('soundcore  Q30,output,85,88-0E-85-CC-FE-3E:output\rMacBook Pro Speakers,output,73,BuiltInSpeakerDevice', 'output').map((device) => device.id),
+  ['85', '73']
+);
 assert.throws(() => audio.parseDeviceRecords('not a record\n', 'input'), /Unexpected/);
 assert.throws(() => audio.parseDeviceRecords('Mic,output,12,uid\n', 'input'), /Unexpected/);
 assert.deepStrictEqual(audio.parseDeviceRecord('USB Mic, input, 42', 'input'), {
@@ -74,5 +80,14 @@ assert.match(audio.switchNotification('output', target, { output: null, system: 
 
 const notification = JSON.parse(audio.notificationResult('Selected device vanished.'));
 assert.strictEqual(notification.alfredworkflow.variables.audio_notification, 'Selected device vanished.');
+
+const plist = fs.readFileSync(path.join(__dirname, 'info.plist'), 'utf8');
+assert.match(plist, /audio\.js" switch input "\$1"/);
+assert.match(plist, /audio\.js" switch output "\$1"/);
+assert.doesNotMatch(plist, /\{var:audio_device_id\}/);
+assert.strictEqual(
+  (plist.match(/<key>scriptargtype<\/key>\s*<integer>1<\/integer>/g) || []).length,
+  2
+);
 
 console.log('audio-device-switcher fixtures: ok');

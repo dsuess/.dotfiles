@@ -61,7 +61,7 @@ For input selection, set the exact device ID and query the current input afterwa
 Acceptance outcome: Alfred always shows either connected devices or a useful diagnostic row, the current device is visibly marked, exact duplicate-name devices remain selectable, and notifications never claim an unverified switch.
 
 ### Part C — Validate safely and retire the old workflow
-- **Ledger:** {"status":"in_progress","note":"Running Linux-safe regression checks for plist graphs, installer syntax, Stow deployment, and final diff; macOS smoke tests will be recorded as environment-blocked.","evidence":null}
+- **Ledger:** {"status":"blocked","note":"Linux-safe validation and the implementation commit are complete, but mandatory macOS Core Audio/Alfred smoke tests cannot run in this Linux sandbox. The old workflow remains installed and must not be retired yet.","evidence":"Passed: fixture test, Node syntax check, all Alfred plist graph-reference checks, optional ai/ao filter config check, Hotkey plist byte comparison, install.sh syntax, and whitespace checks. Stow dry run is also blocked because this sandbox has neither `stow` nor required `perl`. Commit: cd1d3378."}
 
 Keep parsing and result construction separable from JXA's macOS command adapter so fixture tests can exercise normal devices, duplicate names, Unicode and punctuation, current-device marking, empty output, and malformed output in the Linux development sandbox. Validate the plist structure and graph references programmatically, and check `install.sh` syntax and the final diff.
 
@@ -105,5 +105,5 @@ The current planning sandbox is Linux and cannot exercise Core Audio, JXA, Alfre
 
 - ☑ Add the managed workflow and dependency
 - ☑ Make discovery and switching observable and exact
-- ▶ Validate safely and retire the old workflow
+- ⛔ Validate safely and retire the old workflow
 <!-- pi-plan-mode:progress:end -->

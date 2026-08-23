@@ -29,7 +29,8 @@ function parseDeviceRecord(line, expectedType) {
 }
 
 function parseDeviceRecords(output, expectedType) {
-    var lines = String(output).split(/\n/);
+    // JXA's doShellScript normalizes command output to CR line endings.
+    var lines = String(output).split(/\r\n|\r|\n/);
     var devices = [];
     var i;
     for (i = 0; i < lines.length; i += 1) {
