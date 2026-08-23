@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   CHILD_TOOL_EXCLUSIONS,
@@ -14,6 +14,8 @@ import {
   runDiscussionFork,
 } from "./runtime.js";
 import { emptyDiscussionUsage } from "./types.js";
+
+afterEach(() => vi.unstubAllEnvs());
 
 class FakeChild extends EventEmitter {
   kill = vi.fn(() => true);
@@ -73,6 +75,12 @@ describe("discussion fork runtime", () => {
   });
 
   it("stops and restarts the parent TUI, cleans the secure prompt, and leaves ordinary exits unresolved", async () => {
+    vi.stubEnv("HERDR_ENV", "1");
+    vi.stubEnv("HERDR_SOCKET_PATH", "/tmp/parent-herdr.sock");
+    vi.stubEnv("HERDR_PANE_ID", "parent-pane");
+    vi.stubEnv("HERDR_FUTURE_CAPABILITY", "future");
+    vi.stubEnv("PI_HERDR_STATUS_PORT", "12345");
+    vi.stubEnv("NON_HERDR_CHILD_CAPABILITY", "preserved");
     const { parent } = parentWithQuestionnaireTool();
     const thread = createDiscussionThread({
       questionIndex: 0,
@@ -112,6 +120,12 @@ describe("discussion fork runtime", () => {
           expect((options?.env as Record<string, string>)["PI_GONDOLIN_BUILTIN_TOOLS"]).toBe("read,edit");
           expect((options?.env as Record<string, string>)["PI_GONDOLIN_HOST_TOOLS"]).toBe("");
           expect((options?.env as Record<string, string>)["PI_SUBAGENT_PLANNING"]).toBe("1");
+          expect((options?.env as Record<string, string>)["HERDR_ENV"]).toBeUndefined();
+          expect((options?.env as Record<string, string>)["HERDR_SOCKET_PATH"]).toBeUndefined();
+          expect((options?.env as Record<string, string>)["HERDR_PANE_ID"]).toBeUndefined();
+          expect((options?.env as Record<string, string>)["HERDR_FUTURE_CAPABILITY"]).toBeUndefined();
+          expect((options?.env as Record<string, string>)["PI_HERDR_STATUS_PORT"]).toBeUndefined();
+          expect((options?.env as Record<string, string>)["NON_HERDR_CHILD_CAPABILITY"]).toBe("preserved");
           void readSecureTurnFile(systemPath).then((file) => {
             expect(file.mode).toBe(0o600);
             expect(file.content).toContain("Parent instructions");
@@ -122,6 +136,7 @@ describe("discussion fork runtime", () => {
         getInvocation: (args) => ({ command: "fake-pi", args }),
       },
     );
+    expect(result.error).toBeUndefined();
     expect(result.thread?.sessionFile).toBe(thread.sessionFile);
     expect(result.resolution).toBeUndefined();
     expect(tui.stop).toHaveBeenCalledWith({ preserveScreen: true });
