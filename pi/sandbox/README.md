@@ -17,12 +17,45 @@ A normal launch uses this sequence:
 1. The launcher discovers trusted Node.js, QEMU, Git, and the real Pi binary from one canonical safe PATH.
 2. The launcher acquires one workspace controller lease.
 3. A cold controller verifies the complete pinned image and Pi metadata, starts the VM, checks guest Docker, then publishes its healthy private manifest. An already healthy controller proves its pinned image generation through its manifest, socket, lease, and status checks; it does not hash the image again.
-4. The launcher disables all native Pi built-ins and starts the real Pi process once.
-5. Pi resolves `enabledModels`, `defaultProvider`, `defaultModel`, and explicit `--models`, `--model`, and `--thinking` arguments through its native startup path. In `--plan`, the plan-mode extension selects its planning default during `session_start`; an explicit CLI model remains higher priority. `--list-models` is the exception: the launcher requests Pi's full authenticated catalog instead of applying the settings scope.
-6. The launcher passes private tool requests to the routing extension.
-7. The extension connects to the controller, checks each tool source, and the launcher waits for its handshake.
+4. The launcher reads the preferred-model cache for an eligible normal launch.
+5. If the cache is missing or stale, one metadata Pi process refreshes the authenticated catalog.
+6. The launcher disables all native Pi built-ins and starts the normal Pi process.
+7. Pi resolves the cached `--models` scope, model defaults, and explicit model arguments.
+8. The launcher passes private tool requests to the routing extension.
+9. The extension checks each tool source and connects to the controller. The launcher waits for the extension handshake.
 
-The launch stops if any step fails. The launcher never retries with host built-ins.
+A warm-cache launch starts one Pi process. A cache refresh starts one metadata process and one normal process.
+
+Pi selects the planning default during the plan-mode `session_start` event. An explicit CLI model has higher priority.
+
+The launch stops if a sandbox step fails. The launcher never retries with host built-ins.
+
+### Preferred-model cache
+
+The canonical preferred list is `enabledModels` in `~/.pi/agent/settings.json`.
+The launcher stores catalog metadata in `~/.cache/pi-gondolin/model-scope.json`.
+The cache directory has mode `0700`. The cache file has mode `0600`.
+
+The metadata process uses Pi's authenticated `--list-models` catalog. It does not create a session or send a model request.
+It disables tools, extensions, skills, prompts, themes, context files, and project settings.
+Thus, only built-in providers and routes from `models.json` can qualify.
+The configured preferred list contains direct-provider IDs. It does not contain OpenRouter or OpenCode gateway duplicates.
+
+The cache expires after 24 hours. The launcher also invalidates the cache when one of these inputs changes:
+
+- The installed Pi executable revision.
+- The content of `~/.pi/agent/models.json`.
+- The sorted provider and credential-type set in `~/.pi/agent/auth.json`.
+
+The cache does not contain credential values. An OAuth token refresh does not invalidate the cache.
+A successful `/login` or `/logout` changes the provider set. The next eligible launch refreshes the cache.
+
+If a refresh fails, the launcher can use a stale catalog with the same input fingerprint.
+If no trusted cache exists, Pi uses its native model resolution and authentication guidance.
+A changed provider fingerprint prevents stale-cache use.
+
+An explicit `--models` value bypasses automatic scope discovery. Help, version, package, authentication, and `--list-models` commands also bypass it.
+The `--list-models` command always requests the complete authenticated catalog with `--models "*"`.
 
 The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires; it is not retained merely to accelerate a later launch.
 

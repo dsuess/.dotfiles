@@ -31,6 +31,7 @@ readonly REAL_PI_LOG="$TEST_ROOT/real-pi.log"
 readonly IMAGE_VERIFY_LOG="$TEST_ROOT/image-verify.log"
 readonly RUNTIME_ROOT="$TEST_ROOT/runtime"
 readonly IMAGE_DIR="$TEST_ROOT/image"
+readonly MODEL_SCOPE_CACHE="$TEST_HOME/.cache/pi-gondolin/model-scope.json"
 
 mkdir -p \
     "$SANDBOX_HOME" \
@@ -40,16 +41,37 @@ mkdir -p \
     "$FIRST_SAFE_BIN" "$SECOND_SAFE_BIN" "$RUNTIME_ROOT" "$IMAGE_DIR"
 cat >"$AGENT_HOME/settings.json" <<'JSON'
 {
-  "enabledModels": ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
+  "enabledModels": [
+    "openai-codex/gpt-5.6-luna",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-sol",
+    "openai/gpt-5.6-luna",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-sol",
+    "zai/glm-5.2",
+    "zai/glm-5.3",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4-5"
+  ],
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-terra",
+  "defaultModel": "gpt-5.6-sol",
   "defaultThinkingProvider": "openai-codex",
   "defaultThinkingModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "xhigh"
 }
 JSON
+cat >"$AGENT_HOME/auth.json" <<'JSON'
+{
+  "zai": { "type": "api_key", "key": "fixture-zai-secret" },
+  "openai-codex": { "type": "oauth", "access": "fixture-oauth-secret" }
+}
+JSON
+printf '{"providers":{}}\n' >"$AGENT_HOME/models.json"
 printf 'export default function () {}\n' >"$AGENT_HOME/extensions/gondolin-sandbox/index.ts"
 cp "$HERE/repository-scope.mjs" "$SANDBOX_HOME/repository-scope.mjs"
+cp "$HERE/model-scope-cache.mjs" "$SANDBOX_HOME/model-scope-cache.mjs"
 printf '{}\n' >"$SANDBOX_HOME/controller.mjs"
 cat >"$SANDBOX_HOME/settings.json" <<'JSON'
 {
@@ -127,12 +149,29 @@ EOF_CLIENT
 cat >"$REAL_BIN/pi" <<EOF_PI
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'launch\n' >>"$REAL_PI_LOG"
+if [[ "\$*" == *"--list-models"* && "\$*" == *"--no-extensions"* ]]; then
+    printf 'metadata\n' >>"$REAL_PI_LOG"
+    printf 'provider model context max-out thinking images\\n'
+    printf 'other unrelated 1K 1K no no\\n'
+    printf 'zai glm-5.3 1M 128K yes no\\n'
+    printf 'openai-codex gpt-5.6-sol 272K 128K yes yes\\n'
+    printf 'zai glm-5.2 1M 128K yes no\\n'
+    printf 'openai-codex gpt-5.6-luna 272K 128K yes yes\\n'
+    printf 'openai-codex gpt-5.6-terra 272K 128K yes yes\\n'
+    if grep -q '"anthropic"' "$AGENT_HOME/auth.json"; then
+        printf 'anthropic claude-fable-5 200K 64K yes yes\\n'
+        printf 'anthropic claude-opus-5 200K 64K yes yes\\n'
+        printf 'anthropic claude-sonnet-5 200K 64K yes yes\\n'
+        printf 'anthropic claude-haiku-4-5 200K 64K yes yes\\n'
+    fi
+    exit 0
+fi
+printf 'session\n' >>"$REAL_PI_LOG"
 if [[ "\$*" == *"--list-models"* ]]; then
     printf 'list_args='; printf '<%s>' "\$@"; printf '\\n'
-    printf 'Provider Model\\n'
-    printf 'openai-codex gpt-5.6-sol\\n'
-    printf 'openai-codex gpt-5.6-terra\\n'
+    printf 'provider model context max-out thinking images\\n'
+    printf 'openai-codex gpt-5.6-sol 272K 128K yes yes\\n'
+    printf 'other unrelated 1K 1K no no\\n'
     exit 0
 fi
 if [[ -e "$TEST_ROOT/no-handshake" ]]; then
@@ -230,12 +269,25 @@ readonly RESOLVED_SHIM_BIN="$(cd "$SHIM_BIN" && pwd -P)"
 readonly RESOLVED_REAL_BIN="$(cd "$REAL_BIN" && pwd -P)"
 readonly RESOLVED_FIRST_SAFE_BIN="$(cd "$FIRST_SAFE_BIN" && pwd -P)"
 readonly BASE_PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH"
+readonly EXPECTED_SCOPE="openai-codex/gpt-5.6-luna,openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-sol,zai/glm-5.2,zai/glm-5.3"
+readonly EXPECTED_CLAUDE_SCOPE="$EXPECTED_SCOPE,anthropic/claude-fable-5,anthropic/claude-opus-5,anthropic/claude-sonnet-5,anthropic/claude-haiku-4-5"
 output="$(run_wrapper "$BASE_PATH" --flag "two words")"
 grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
 grep -F "cwd=$RESOLVED_SHIM_BIN" <<<"$output" >/dev/null
-grep -F 'args=<--flag><two words><--no-builtin-tools>' <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+grep -F "args=<--models><$EXPECTED_SCOPE><--flag><two words><--no-builtin-tools>" <<<"$output" >/dev/null
+[[ "$(grep -c '^metadata$' "$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 [[ "$(wc -l <"$IMAGE_VERIFY_LOG")" -eq 1 ]]
+node -e 'const fs=require("node:fs"); process.exit((fs.statSync(process.argv[1]).mode & 0o777) === 0o600 ? 0 : 1)' "$MODEL_SCOPE_CACHE"
+! grep -F 'fixture-zai-secret' "$MODEL_SCOPE_CACHE" >/dev/null
+! grep -F 'fixture-oauth-secret' "$MODEL_SCOPE_CACHE" >/dev/null
+
+# A warm cache starts only the normal Pi process.
+: >"$REAL_PI_LOG"
+output="$(run_wrapper "$BASE_PATH" --flag warm)"
+grep -F "args=<--models><$EXPECTED_SCOPE><--flag><warm><--no-builtin-tools>" <<<"$output" >/dev/null
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+! grep -q '^metadata$' "$REAL_PI_LOG"
 grep -F 'secret=unset' <<<"$output" >/dev/null
 grep -F 'node_options=unset' <<<"$output" >/dev/null
 grep -F 'tmpdir=/tmp' <<<"$output" >/dev/null
@@ -276,25 +328,57 @@ grep -F "pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$output" >/dev/null
 output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="relative-bin:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --relative-path-probe)"
 grep -F 'relative_probe=absent' <<<"$output" >/dev/null
 
-# Pi receives native model flags unchanged. Plan mode applies defaults only
-# after session_start, while an explicit CLI model remains untouched.
+# Expired records refresh once, then retain configured order and exclude
+# unrelated or unavailable direct-provider entries.
+node -e 'const fs=require("node:fs"); const file=process.argv[1]; const value=JSON.parse(fs.readFileSync(file)); value.refreshedAt=0; fs.writeFileSync(file, JSON.stringify(value));' "$MODEL_SCOPE_CACHE"
+: >"$REAL_PI_LOG"
+output="$(run_wrapper "$BASE_PATH" --flag expired)"
+grep -F "args=<--models><$EXPECTED_SCOPE><--flag><expired><--no-builtin-tools>" <<<"$output" >/dev/null
+[[ "$(grep -c '^metadata$' "$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+
+# Pi receives the cached native scope in normal and plan mode. An explicit CLI
+# model stays active even when it is outside that scope.
 : >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --plan)"
-grep -F 'args=<--plan><--no-builtin-tools>' <<<"$output" >/dev/null
+grep -F "args=<--models><$EXPECTED_SCOPE><--plan><--no-builtin-tools>" <<<"$output" >/dev/null
 [[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
 : >"$REAL_PI_LOG"
-output="$(run_wrapper "$BASE_PATH" --plan --model openai-codex/gpt-5.6-terra --thinking max)"
-grep -F 'args=<--plan><--model><openai-codex/gpt-5.6-terra><--thinking><max><--no-builtin-tools>' <<<"$output" >/dev/null
+output="$(run_wrapper "$BASE_PATH" --plan --model anthropic/claude-opus-5 --thinking max)"
+grep -F "args=<--models><$EXPECTED_SCOPE><--plan><--model><anthropic/claude-opus-5><--thinking><max><--no-builtin-tools>" <<<"$output" >/dev/null
 [[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+
+# Explicit scopes and full-list commands bypass automatic discovery, even with
+# no cache. The user-requested full list remains unscoped.
+mv "$MODEL_SCOPE_CACHE" "$MODEL_SCOPE_CACHE.saved"
 : >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --models openai-codex/gpt-5.6-sol --model openai-codex/gpt-5.6-sol)"
 grep -F 'args=<--models><openai-codex/gpt-5.6-sol><--model><openai-codex/gpt-5.6-sol><--no-builtin-tools>' <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+! grep -q '^metadata$' "$REAL_PI_LOG"
 : >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --list-models)"
 grep -F 'list_args=<--models><*><--list-models><--no-builtin-tools>' <<<"$output" >/dev/null
-grep -F 'Provider Model' <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+grep -F 'provider model context max-out thinking images' <<<"$output" >/dev/null
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+! grep -q '^metadata$' "$REAL_PI_LOG"
+mv "$MODEL_SCOPE_CACHE.saved" "$MODEL_SCOPE_CACHE"
+
+# Adding a provider credential invalidates immediately and admits only that
+# provider's preferred direct models on the next normal launch.
+cat >"$AGENT_HOME/auth.json" <<'JSON'
+{
+  "zai": { "type": "api_key", "key": "fixture-zai-secret" },
+  "openai-codex": { "type": "oauth", "access": "fixture-oauth-secret" },
+  "anthropic": { "type": "api_key", "key": "fixture-anthropic-secret" }
+}
+JSON
+: >"$REAL_PI_LOG"
+output="$(run_wrapper "$BASE_PATH" --flag provider-added)"
+grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE><--flag><provider-added><--no-builtin-tools>" <<<"$output" >/dev/null
+[[ "$(grep -c '^metadata$' "$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+! grep -F 'fixture-anthropic-secret' "$MODEL_SCOPE_CACHE" >/dev/null
 
 # Routing failure never falls back to host tools.
 touch "$TEST_ROOT/no-handshake"
@@ -341,6 +425,7 @@ if run_wrapper "$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$NO_QEMU_BIN:$TOOL_PATH" --flag
 fi
 grep -F 'qemu-system-' "$TEST_ROOT/no-qemu.out" >/dev/null
 
+rm -f "$MODEL_SCOPE_CACHE"
 touch "$TEST_ROOT/fail-image"
 : >"$REAL_PI_LOG"
 if run_wrapper "$BASE_PATH" --flag no-image >"$TEST_ROOT/no-image.out" 2>&1; then

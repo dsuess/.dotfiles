@@ -20,6 +20,7 @@ const PHASES = [
   "controller_healthy",
   "controller_acquire_complete",
   "pi_child_spawn",
+  "metadata_pi_launch",
   "real_pi_launch",
   "routing_handshake_start",
   "routing_handshake_complete",

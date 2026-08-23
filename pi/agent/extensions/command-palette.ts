@@ -29,6 +29,11 @@ import {
 } from "@earendil-works/pi-ai";
 import { PLAN_MODE_DIRECT_TOGGLE_EVENT } from "./plan-mode/events.ts";
 import {
+	getCycledModel,
+	getSessionModels,
+	orderModelsForSelector,
+} from "./command-palette/models.ts";
+import {
 	Container,
 	Key,
 	SelectList,
@@ -298,12 +303,7 @@ async function showSearchableOverlay(
 
 async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const current = ctx.model;
-	const models = [...ctx.modelRegistry.getAvailable()].sort((a, b) => {
-		const aIsCurrent = !!current && a.provider === current.provider && a.id === current.id;
-		const bIsCurrent = !!current && b.provider === current.provider && b.id === current.id;
-		if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
-		return a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id);
-	});
+	const models = orderModelsForSelector(getSessionModels(ctx), current);
 
 	if (models.length === 0) {
 		ctx.ui.notify("No models available. Use /login to configure a provider.", "warning");
@@ -462,18 +462,8 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 			keybindingId: "app.model.cycleForward",
 			category: "Models & Thinking",
 			execute: (pi, ctx) => {
-				const available = ctx.modelRegistry.getAvailable();
-				if (available.length === 0) return;
-				const current = ctx.model;
-				if (!current) {
-					pi.setModel(available[0]);
-					return;
-				}
-				const idx = available.findIndex(
-					(m) => m.provider === current.provider && m.id === current.id,
-				);
-				const next = available[(idx + 1) % available.length];
-				pi.setModel(next);
+				const next = getCycledModel(getSessionModels(ctx), ctx.model, "forward");
+				if (next) pi.setModel(next);
 			},
 		},
 		{
@@ -482,18 +472,8 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 			keybindingId: "app.model.cycleBackward",
 			category: "Models & Thinking",
 			execute: (pi, ctx) => {
-				const available = ctx.modelRegistry.getAvailable();
-				if (available.length === 0) return;
-				const current = ctx.model;
-				if (!current) {
-					pi.setModel(available[available.length - 1]);
-					return;
-				}
-				const idx = available.findIndex(
-					(m) => m.provider === current.provider && m.id === current.id,
-				);
-				const prev = available[(idx - 1 + available.length) % available.length];
-				pi.setModel(prev);
+				const previous = getCycledModel(getSessionModels(ctx), ctx.model, "backward");
+				if (previous) pi.setModel(previous);
 			},
 		},
 		{

@@ -229,7 +229,8 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
 		const contract = harness.entries.filter((entry) => entry.customType === "plan-mode-execution").at(-1).data;
 		assert.equal(contract.executionStrategy, "parallel");
-		assert.equal(contract.workerModel, "openai-codex/gpt-5.6-terra");
+		const settings = JSON.parse(await readFile(path.join(os.homedir(), ".pi/agent/settings.json"), "utf8"));
+		assert.equal(contract.workerModel, `${settings.defaultProvider}/${settings.defaultModel}`);
 		assert.equal(contract.workerThinkingLevel, "high");
 		assert.equal(harness.sentMessages.length, 1);
 		assert.match(harness.sentMessages[0].message.content, /one sibling tool batch/i);

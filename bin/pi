@@ -7,6 +7,8 @@ readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
 readonly GONDOLIN_SETTINGS="$SANDBOX_DIR/settings.json"
 readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
 readonly REPOSITORY_SCOPE="$SANDBOX_DIR/repository-scope.mjs"
+readonly MODEL_SCOPE_CACHE="$SANDBOX_DIR/model-scope-cache.mjs"
+readonly MODEL_SCOPE_CACHE_FILE="$HOME/.cache/pi-gondolin/model-scope.json"
 
 HANDSHAKE_DIR=""
 PI_CHILD_PID=""
@@ -522,13 +524,36 @@ do
 done
 
 requires_handshake=true
+automatic_model_scope=true
 for arg in "${pi_args[@]}"; do
     case "$arg" in
-        -h|--help|-v|--version|--list-models|--list-models=*) requires_handshake=false ;;
+        -h|--help|-v|--version|--list-models|--list-models=*)
+            requires_handshake=false
+            automatic_model_scope=false
+            ;;
+        --models|--models=*) automatic_model_scope=false ;;
     esac
 done
-if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|update|list|config)$ ]]; then
+if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|update|list|config|auth)$ ]]; then
     requires_handshake=false
+    automatic_model_scope=false
+fi
+
+if [[ "$automatic_model_scope" == true ]]; then
+    if [[ -r "$MODEL_SCOPE_CACHE" ]]; then
+        scope_models="$(/usr/bin/env -i "${safe_env[@]}" LC_ALL=C \
+            "$HOST_NODE" "$MODEL_SCOPE_CACHE" \
+            --pi "$REAL_PI" \
+            --settings "$HOME/.pi/agent/settings.json" \
+            --auth "$HOME/.pi/agent/auth.json" \
+            --models "$HOME/.pi/agent/models.json" \
+            --cache "$MODEL_SCOPE_CACHE_FILE")" || scope_models=""
+        if [[ -n "$scope_models" ]]; then
+            pi_args=(--models "$scope_models" "${pi_args[@]}")
+        fi
+    else
+        echo "pi: warning: model scope cache helper is missing; continuing with Pi's native model resolution" >&2
+    fi
 fi
 
 trace_startup pi_child_spawn
@@ -550,10 +575,10 @@ set +e
                 exec "$real_pi" "$@"
             }
 
-            # Pi resolves enabledModels and its normal default model during its
-            # own startup. Planning defaults are selected by the awaited plan-mode
-            # session_start handler. Only the catalog command must bypass the
-            # settings model scope.
+            # The launcher injects an availability-filtered --models scope when
+            # cached discovery succeeds. Pi remains the final scope/default-model
+            # authority. Only a user-requested catalog command must always bypass
+            # the settings model scope.
             for arg in "$@"; do
                 case "$arg" in
                     --list-models|--list-models=*) exec_real_pi --models "*" "$@" ;;
