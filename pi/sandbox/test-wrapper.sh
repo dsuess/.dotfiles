@@ -462,12 +462,27 @@ if HOME="$TEST_HOME" PATH="$WRAPPER_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --ve
 fi
 grep -F 'cannot find the installed Pi binary' "$TEST_ROOT/no-pi.out" >/dev/null
 
-# --yolo is the unchanged early bypass: no QEMU, controller, image, handshake,
-# environment filtering, or private tool normalization.
-yolo_output="$(HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TOOL_PATH" TMPDIR="$TEST_ROOT/host-tmp" SECRET_SHOULD_NOT_LEAK=host-secret "$WRAPPER" --yolo --tools read --flag "two words")"
-grep -F 'args=<--tools><read><--flag><two words>' <<<"$yolo_output" >/dev/null
+# --yolo bypasses QEMU, controller, image, handshake, environment filtering,
+# and private tool normalization, but uses the same automatic model scope as a
+# normal session. A cache miss refreshes through the real Pi without starting
+# the controller.
+rm -f "$MODEL_SCOPE_CACHE"
+: >"$REAL_PI_LOG"
+yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" TMPDIR="$TEST_ROOT/host-tmp" SECRET_SHOULD_NOT_LEAK=host-secret "$WRAPPER" --yolo --tools read --flag "two words")"
+grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE><--tools><read><--flag><two words>" <<<"$yolo_output" >/dev/null
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^metadata$' "$REAL_PI_LOG")" -eq 1 ]]
 grep -F 'secret=host-secret' <<<"$yolo_output" >/dev/null
 grep -F 'tmpdir='"$TEST_ROOT"'/host-tmp' <<<"$yolo_output" >/dev/null
 grep -F 'sandbox=unset' <<<"$yolo_output" >/dev/null
+
+# A bare yolo launch has no user arguments but must still inject the cached
+# scope instead of failing under the launcher's nounset setting.
+yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --yolo)"
+grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE>" <<<"$yolo_output" >/dev/null
+
+# An explicit yolo scope remains authoritative, as it does in normal mode.
+yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --yolo --models openai-codex/gpt-5.6-sol --tools read)"
+grep -F 'args=<--models><openai-codex/gpt-5.6-sol><--tools><read>' <<<"$yolo_output" >/dev/null
 
 echo "wrapper tests passed"
