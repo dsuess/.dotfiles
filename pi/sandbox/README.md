@@ -96,7 +96,8 @@ Staged execution uses the same controller. Every subagent and discussion child s
 {
   "version": 1,
   "externalMounts": [
-    { "path": "~/src/shared", "access": "ro" }
+    { "path": "~/src/shared", "access": "ro" },
+    { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
   ],
   "network": {
     "mode": "public-http",
@@ -109,14 +110,14 @@ Staged execution uses the same controller. Every subagent and discussion child s
 
 The controller mounts the canonical workspace root as read-write. A verified bare common directory is also read-write for linked worktrees.
 
-External mount destinations equal their canonical host paths. An external mount can use `ro` or `rw` access.
+Ordinary external mounts expose their canonical host directories directly at the same guest paths and can use `ro` or `rw` access. The signing public key at `~/.ssh/git/id_ed25519_signing.pub` is the sole file-setting exception and must be read-only. Its guest mount point is the canonical parent directory, not the `.pub` file path. When the VM starts, the controller captures the public-key content in a one-file read-only virtual directory; it contains only `id_ed25519_signing.pub`, not the private-key sibling or other host entries. Restart the VM after key rotation to capture the new public key.
 
 The settings parser rejects these mounts:
 
 - A relative or missing path
 - `/` or the complete home directory
 - An overlapping mount
-- A Pi, controller, Docker, Ketch, credential, or host cache path
+- A Pi, controller, Docker, Ketch, credential, or host cache path (except the read-only signing public-key file above)
 - A custom guest destination
 
 Private workspace data uses these guest paths:

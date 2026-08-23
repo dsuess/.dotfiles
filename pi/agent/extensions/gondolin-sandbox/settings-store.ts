@@ -221,6 +221,10 @@ function canonicalIfPresent(candidate: string): string {
   }
 }
 
+function signingPublicKeyPath(home: string): string {
+  return canonicalIfPresent(path.join(home, ".ssh", "git", "id_ed25519_signing.pub"));
+}
+
 function invariantRoots(home: string): string[] {
   return [
     path.join(home, ".pi"),
@@ -276,10 +280,12 @@ export function canonicalizeSandboxSettings(
     } catch {
       throw new Error(`externalMounts[${index}] does not exist: ${mount.path}`);
     }
-    if (!fs.statSync(canonical).isDirectory()) {
-      throw new Error(`externalMounts[${index}] must be a directory`);
+    const isSigningPublicKey =
+      canonical === signingPublicKeyPath(home) && fs.statSync(canonical).isFile() && mount.access === "ro";
+    if (!fs.statSync(canonical).isDirectory() && !isSigningPublicKey) {
+      throw new Error(`externalMounts[${index}] must be a directory or the read-only signing public key`);
     }
-    if (boundaries.some((boundary) => overlaps(canonical, boundary) || overlaps(lexical, boundary))) {
+    if (!isSigningPublicKey && boundaries.some((boundary) => overlaps(canonical, boundary) || overlaps(lexical, boundary))) {
       throw new Error(`externalMounts[${index}] overlaps a code-enforced sandbox boundary`);
     }
     if (resolved.some((entry) => overlaps(entry.path, canonical))) {

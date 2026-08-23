@@ -131,6 +131,11 @@ test("external mounts canonicalize same-path directories and reject unsafe grant
   fs.mkdirSync(workspace);
   fs.mkdirSync(external);
   fs.mkdirSync(credential);
+  fs.mkdirSync(path.join(credential, "git"));
+  const signingPublicKey = path.join(credential, "git", "id_ed25519_signing.pub");
+  const signingPrivateKey = path.join(credential, "git", "id_ed25519_signing");
+  fs.writeFileSync(signingPublicKey, "ssh-ed25519 public-key");
+  fs.writeFileSync(signingPrivateKey, "private-key");
   fs.symlinkSync(external, path.join(home, "external-link"));
 
   const parsed = parseSandboxSettings(
@@ -144,6 +149,39 @@ test("external mounts canonicalize same-path directories and reject unsafe grant
   assert.equal(resolved[0].hostPath, fs.realpathSync(external));
   assert.equal(resolved[0].guestPath, fs.realpathSync(external));
   assert.equal(resolved[0].configuredPath, "~/external-link");
+
+  const signingKey = resolveExternalMounts(
+    parseSandboxSettings(validSettings({ externalMounts: [{ path: signingPublicKey, access: "ro" }] })),
+    { homeDirectory: home, workspaceRoot: workspace, invariantRoots: [credential] },
+  );
+  const signingGuestDirectory = path.dirname(signingPublicKey);
+  assert.equal(signingKey[0].kind, "signing-public-key");
+  assert.equal(signingKey[0].hostPath, signingPublicKey);
+  assert.equal(signingKey[0].guestPath, signingGuestDirectory);
+  const signingProvider = createPolicyProviders({ mounts: signingKey })[signingGuestDirectory];
+  assert.deepEqual(signingProvider.readdirSync("/"), ["id_ed25519_signing.pub"]);
+  const signingHandle = signingProvider.openSync("/id_ed25519_signing.pub", "r");
+  assert.equal(signingHandle.readFileSync({ encoding: "utf8" }), "ssh-ed25519 public-key");
+  signingHandle.closeSync();
+  assert.throws(() => signingProvider.openSync("/id_ed25519_signing", "r"), /ENOENT|no such file/i);
+  assert.throws(() => signingProvider.openSync("/unrelated", "r"), /ENOENT|no such file/i);
+  assert.throws(() => signingProvider.openSync("/id_ed25519_signing.pub", "w"), /read-only|EROFS|ERRNO_30/i);
+  assert.throws(() => signingProvider.openSync("/id_ed25519_signing.pub", "r+"), /read-only|EROFS|ERRNO_30/i);
+  assert.throws(() => signingProvider.renameSync("/id_ed25519_signing.pub", "/renamed"), /read-only|EROFS|ERRNO_30/i);
+  assert.throws(() => signingProvider.unlinkSync("/id_ed25519_signing.pub"), /read-only|EROFS|ERRNO_30/i);
+  for (const invalidSigningMount of [
+    { path: signingPublicKey, access: "rw" },
+    { path: signingPrivateKey, access: "ro" },
+  ]) {
+    assert.throws(
+      () =>
+        resolveExternalMounts(
+          parseSandboxSettings(validSettings({ externalMounts: [invalidSigningMount] })),
+          { homeDirectory: home, workspaceRoot: workspace, invariantRoots: [credential] },
+        ),
+      /directory or the read-only signing public key/,
+    );
+  }
 
   const failures = [
     [{ path: "/", access: "ro" }],

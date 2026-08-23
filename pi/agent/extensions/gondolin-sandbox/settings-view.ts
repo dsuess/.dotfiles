@@ -215,7 +215,7 @@ export async function showSandboxSettings(
         if (mappings === undefined) continue;
         next.network.tcpMappings = parseTcpMappings(mappings);
       } else if (action.id === "mount-add" && action.value === "add…") {
-        const mountPath = await ctx.ui.input("External directory", "~/src/shared");
+        const mountPath = await ctx.ui.input("External path", "~/src/shared");
         if (!mountPath?.trim()) continue;
         const access = await ctx.ui.select("Mount access", ["ro", "rw"]);
         if (access !== "ro" && access !== "rw") continue;

@@ -17,6 +17,11 @@ import {
   ensureGondolinImage,
   verifyImageDirectory,
 } from "./build-gondolin-image.mjs";
+import {
+  buildSandboxPolicy,
+  createPolicyProviders,
+  parseSandboxSettings,
+} from "./policy.mjs";
 
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const PUBLIC_URL = process.env.PI_GONDOLIN_CANARY_PUBLIC_URL ?? "https://example.com/";
@@ -68,6 +73,19 @@ async function dockerDiagnostics(vm) {
   } catch (error) {
     return `failed to collect diagnostics: ${error.message}`;
   }
+}
+
+function createSigningKeyVm(imageDir, mounts) {
+  return VM.create({
+    sandbox: {
+      imagePath: imageDir,
+      netEnabled: false,
+    },
+    rootfs: { mode: "memory", size: "1G" },
+    memory: "1G",
+    cpus: 2,
+    vfs: { mounts },
+  });
 }
 
 function createVm(imageDir, fixture) {
@@ -268,6 +286,70 @@ async function proveEphemerality(vm) {
   await runFails(vm, `docker container inspect ${PERSISTENT_CONTAINER} >/dev/null`, "container survived VM replacement");
   await runFails(vm, `docker volume inspect ${PERSISTENT_VOLUME} >/dev/null`, "volume survived VM replacement");
 }
+
+test("production signing-public-key provider boots as a one-file read-only directory", { timeout: 180_000 }, async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-gondolin-signing-key-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const workspace = path.join(root, "workspace");
+  const signingDirectory = path.join(home, ".ssh", "git");
+  const publicKey = path.join(signingDirectory, "id_ed25519_signing.pub");
+  const privateKey = path.join(signingDirectory, "id_ed25519_signing");
+  const unrelatedKey = path.join(signingDirectory, "unrelated");
+  fs.mkdirSync(signingDirectory, { recursive: true });
+  fs.mkdirSync(workspace);
+  fs.writeFileSync(publicKey, "ssh-ed25519 public-key");
+  fs.writeFileSync(privateKey, "private-key");
+  fs.writeFileSync(unrelatedKey, "unrelated");
+
+  const policy = buildSandboxPolicy({
+    scope: {
+      physicalLaunchDirectory: workspace,
+      canonicalWorkspaceRoot: workspace,
+      bareCommonDirectory: null,
+      workspaceKey: "a".repeat(64),
+    },
+    settings: parseSandboxSettings({
+      version: 1,
+      externalMounts: [{ path: publicKey, access: "ro" }],
+      network: { mode: "offline", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
+    }),
+    homeDirectory: home,
+    cacheRoot: path.join(root, "cache"),
+    runtimeRoot: path.join(root, "runtime"),
+  });
+  const signingMount = policy.mounts.find((mount) => mount.kind === "signing-public-key");
+  assert.ok(signingMount);
+  assert.equal(signingMount.guestPath, signingDirectory);
+
+  const image = await ensureGondolinImage({ verbose: false });
+  let vm;
+  try {
+    vm = await createSigningKeyVm(image.imageDir, createPolicyProviders(policy));
+    t.diagnostic(`vm=${vm.id}`);
+    await runOk(
+      vm,
+      [
+        "set -eu",
+        `test "$(cat ${shQuote(publicKey)})" = "ssh-ed25519 public-key"`,
+        `test "$(ls -A ${shQuote(signingDirectory)})" = "id_ed25519_signing.pub"`,
+      ].join("\n"),
+    );
+    await runFails(vm, `cat ${shQuote(privateKey)}`, "private signing-key sibling was visible");
+    await runFails(vm, `cat ${shQuote(unrelatedKey)}`, "unrelated signing-key sibling was visible");
+    await runFails(vm, `printf changed > ${shQuote(publicKey)}`, "signing public key accepted a write");
+    await runFails(
+      vm,
+      `python3 -c ${shQuote(`import os; os.truncate(${JSON.stringify(publicKey)}, 0)`)}`,
+      "signing public key accepted a truncate",
+    );
+    await runFails(vm, `mv ${shQuote(publicKey)} ${shQuote(path.join(signingDirectory, "renamed"))}`, "signing public key accepted a rename");
+    await runFails(vm, `rm ${shQuote(publicKey)}`, "signing public key accepted deletion");
+    assert.equal(fs.readFileSync(publicKey, "utf8"), "ssh-ed25519 public-key");
+  } finally {
+    await vm?.close().catch(() => {});
+  }
+});
 
 test("pinned Gondolin image contains files, network, xattr-compatible, ephemeral nested Docker", async (t) => {
   const image = await ensureGondolinImage({ verbose: false });

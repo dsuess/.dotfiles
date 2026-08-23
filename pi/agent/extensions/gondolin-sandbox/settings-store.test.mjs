@@ -81,7 +81,34 @@ test("canonicalizes external mounts and rejects control, credential, and workspa
   );
   assert.deepEqual(normalized.externalMounts, [{ path: item.external, access: "ro" }]);
 
-  fs.mkdirSync(path.join(item.home, ".ssh"));
+  const signingDirectory = path.join(item.home, ".ssh", "git");
+  const signingPublicKey = path.join(signingDirectory, "id_ed25519_signing.pub");
+  const signingPrivateKey = path.join(signingDirectory, "id_ed25519_signing");
+  fs.mkdirSync(signingDirectory, { recursive: true });
+  fs.writeFileSync(signingPublicKey, "ssh-ed25519 public-key");
+  fs.writeFileSync(signingPrivateKey, "private-key");
+  assert.deepEqual(
+    canonicalizeSandboxSettings(
+      { ...baseSettings(), externalMounts: [{ path: signingPublicKey, access: "ro" }] },
+      item.status,
+      item.home,
+    ).externalMounts,
+    [{ path: signingPublicKey, access: "ro" }],
+  );
+  for (const invalidSigningMount of [
+    { path: signingPublicKey, access: "rw" },
+    { path: signingPrivateKey, access: "ro" },
+  ]) {
+    assert.throws(
+      () =>
+        canonicalizeSandboxSettings(
+          { ...baseSettings(), externalMounts: [invalidSigningMount] },
+          item.status,
+          item.home,
+        ),
+      /directory or the read-only signing public key/,
+    );
+  }
   for (const candidate of ["/", item.home, item.workspace, path.join(item.home, ".ssh")]) {
     assert.throws(
       () =>

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   createHttpHooks,
   isWriteFlag,
+  MemoryProvider,
   ReadonlyProvider,
   RealFSProvider,
   VirtualProviderClass,
@@ -223,6 +224,10 @@ function canonicalIfPresent(candidate) {
   }
 }
 
+function signingPublicKeyPath(homeDirectory) {
+  return canonicalIfPresent(path.join(homeDirectory, ".ssh", "git", "id_ed25519_signing.pub"));
+}
+
 function defaultInvariantRoots(homeDirectory, cacheRoot, runtimeRoot) {
   return [
     path.join(homeDirectory, ".pi"),
@@ -282,10 +287,12 @@ export function resolveExternalMounts(settings, options) {
     } catch (error) {
       throw new Error(`externalMounts[${index}] does not exist: ${mount.path}`);
     }
-    if (!stat.isDirectory()) {
-      throw new Error(`externalMounts[${index}] must be a directory`);
+    const isSigningPublicKey =
+      canonical === signingPublicKeyPath(homeDirectory) && stat.isFile() && mount.access === "ro";
+    if (!stat.isDirectory() && !isSigningPublicKey) {
+      throw new Error(`externalMounts[${index}] must be a directory or the read-only signing public key`);
     }
-    if (invariantRoots.some((root) => overlaps(canonical, root) || overlaps(lexical, root))) {
+    if (!isSigningPublicKey && invariantRoots.some((root) => overlaps(canonical, root) || overlaps(lexical, root))) {
       throw new Error(`externalMounts[${index}] overlaps a code-enforced sandbox boundary`);
     }
     if (resolved.some((entry) => overlaps(entry.hostPath, canonical))) {
@@ -293,10 +300,10 @@ export function resolveExternalMounts(settings, options) {
     }
     resolved.push(
       deepFreeze({
-        kind: "external",
+        kind: isSigningPublicKey ? "signing-public-key" : "external",
         configuredPath: mount.path,
         hostPath: canonical,
-        guestPath: canonical,
+        guestPath: isSigningPublicKey ? path.dirname(canonical) : canonical,
         access: mount.access,
       }),
     );
@@ -679,7 +686,12 @@ export function createPolicyProviders(policy) {
   const mounts = {};
   for (const mount of policy.mounts) {
     let provider;
-    if (mount.protectedHostPaths) {
+    if (mount.kind === "signing-public-key") {
+      const signingKeyProvider = new MemoryProvider();
+      signingKeyProvider.writeFileSync(`/${path.basename(mount.hostPath)}`, fs.readFileSync(mount.hostPath));
+      signingKeyProvider.setReadOnly();
+      provider = new ReadonlyProvider(signingKeyProvider);
+    } else if (mount.protectedHostPaths) {
       provider = new ProtectedWriteProvider(mount.hostPath, mount.protectedHostPaths);
     } else {
       provider = new RealFSProvider(mount.hostPath);

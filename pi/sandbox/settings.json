@@ -1,6 +1,8 @@
 {
   "version": 1,
-  "externalMounts": [],
+  "externalMounts": [
+    { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
+  ],
   "network": {
     "mode": "public-http",
     "allowedHosts": [],
