@@ -68,7 +68,7 @@ function traceStartup(phase) {
   const filePath = process.env.PI_GONDOLIN_STARTUP_TRACE_FILE;
   if (!filePath || !path.isAbsolute(filePath) || /[\t\r\n\0]/.test(filePath)) return;
   try {
-    fs.appendFileSync(filePath, `${phase}\n`, { mode: 0o600 });
+    fs.appendFileSync(filePath, `${JSON.stringify({ phase, at: Date.now() })}\n`, { mode: 0o600 });
   } catch {
     // Optional benchmark tracing must never affect controller readiness.
   }
@@ -171,9 +171,14 @@ export class WorkspaceController {
     this.failure = null;
     let vm = null;
     try {
+      traceStartup("vm_create_start");
       vm = await this.vmFactory({ policy: this.policy, imageDir: this.imageDir });
+      traceStartup("vm_create_complete");
+      traceStartup("vm_start_start");
       await vm.start();
+      traceStartup("vm_start_complete");
       if (this.dockerHealthCheck) {
+        traceStartup("docker_health_start");
         const health = await vm.exec([
           "/usr/bin/docker",
           "info",
@@ -183,6 +188,7 @@ export class WorkspaceController {
         if (!health.ok || !/^vfs\|\/var\/lib\/docker/m.test(health.stdout)) {
           throw new Error(`guest Docker health check failed: ${health.stderr || health.stdout}`);
         }
+        traceStartup("docker_health_complete");
       }
       this.vm = vm;
       this.dockerHealthy = true;
@@ -808,6 +814,7 @@ export async function runControllerDaemon(options) {
       ? verifyImageDirectory(path.resolve(options.imageDir))
       : await ensureGondolinImage({ verifyOnly: true, verbose: false });
     traceStartup("image_verify_complete");
+    traceStartup("policy_create_start");
     const policyOptions = {
       scope,
       settingsPath: options.settingsPath ?? SETTINGS_PATH,
@@ -817,6 +824,7 @@ export async function runControllerDaemon(options) {
     };
     const policyLoader = () => loadSandboxPolicy(policyOptions);
     const initialPolicy = policyLoader();
+    traceStartup("policy_create_complete");
     let closeRequested = false;
     const requestClose = () => {
       if (closeRequested) return;

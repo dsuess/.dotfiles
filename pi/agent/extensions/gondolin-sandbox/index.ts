@@ -108,6 +108,16 @@ function configuredTools(pi: ExtensionAPI): ConfiguredToolInfo[] {
   return pi.getAllTools() as ConfiguredToolInfo[];
 }
 
+function traceStartup(phase: string): void {
+  const filePath = process.env.PI_GONDOLIN_STARTUP_TRACE_FILE;
+  if (!filePath || !path.isAbsolute(filePath) || /[\t\r\n\0]/.test(filePath)) return;
+  try {
+    fs.appendFileSync(filePath, `${JSON.stringify({ phase, at: Date.now() })}\n`, { mode: 0o600 });
+  } catch {
+    // Benchmark diagnostics must not affect routing readiness.
+  }
+}
+
 export function createGondolinSandboxExtension(dependencies: ExtensionDependencies = {}) {
   const env = dependencies.env ?? (process.env as SandboxEnvironment);
   const connect =
@@ -185,8 +195,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       ctx?.shutdown();
     };
 
-    const enforceInventory = (ctx?: ExtensionContext): void => {
-      const result = audit();
+    const enforceInventory = (ctx?: ExtensionContext, result = audit()): void => {
       const safeActive = pi
         .getActiveTools()
         .filter((name) => result.allowedNames.has(name) && permittedNames.has(name));
@@ -211,6 +220,8 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
     pi.on("session_start", async (_event, ctx) => {
       lastContext = ctx;
       try {
+        traceStartup("pi_initialize_complete");
+        traceStartup("routing_connection_audit_start");
         const socketPath = requiredString(env.PI_GONDOLIN_SOCKET, "PI_GONDOLIN_SOCKET");
         const leaseToken = requiredHex(env.PI_GONDOLIN_LEASE, "PI_GONDOLIN_LEASE");
         const workspaceKey = requiredHex(env.PI_GONDOLIN_WORKSPACE_KEY, "PI_GONDOLIN_WORKSPACE_KEY");
@@ -251,7 +262,8 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
         }
         permittedNames = new Set([...requested, ...requestedHostTools]);
         pi.setActiveTools([...permittedNames]);
-        enforceInventory(ctx);
+        enforceInventory(ctx, result);
+        traceStartup("routing_connection_audit_complete");
         if (statusTimer) clearInterval(statusTimer);
         statusTimer = setInterval(() => {
           const activeClient = client as any;

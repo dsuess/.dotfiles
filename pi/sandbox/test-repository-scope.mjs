@@ -9,6 +9,7 @@ import {
   buildSandboxPolicy,
   parseSandboxSettings,
 } from "./policy.mjs";
+import { validateRepositoryScope } from "./client.mjs";
 import {
   discoverRepositoryScope,
   findTrustedExecutable,
@@ -76,6 +77,20 @@ test("non-repository scope fails narrow to the physical launch directory", (t) =
   assert.equal(scope.bareCommonDirectory, null);
   assert.match(scope.workspaceKey, /^[0-9a-f]{64}$/);
   assert.equal(Object.isFrozen(scope), true);
+});
+
+test("passed repository scope records must match canonical paths and their workspace key", (t) => {
+  const root = makeRoot(t);
+  const scope = discoverRepositoryScope({ launchDirectory: root, pathValue: "" });
+  assert.deepEqual(validateRepositoryScope(scope, root), scope);
+  assert.throws(
+    () => validateRepositoryScope({ ...scope, workspaceKey: "a".repeat(64) }, root),
+    /key does not match/,
+  );
+  assert.throws(
+    () => validateRepositoryScope({ ...scope, physicalLaunchDirectory: "/" }, root),
+    /launch directory does not match|not contained/,
+  );
 });
 
 test("normal nested launches share the canonical worktree and ignore repository shims", (t) => {

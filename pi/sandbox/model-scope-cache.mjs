@@ -269,10 +269,14 @@ async function acquireRefreshLock(lockPath, cachePath, source, now, ttlMs) {
   throw new Error("timed out waiting for another model catalog refresh");
 }
 
-async function traceMetadataLaunch(env) {
+async function traceStartup(env, phase) {
   const tracePath = env.PI_GONDOLIN_STARTUP_TRACE_FILE;
   if (typeof tracePath !== "string" || !tracePath.startsWith("/") || /[\t\r\n]/.test(tracePath)) return;
-  await fs.appendFile(tracePath, "metadata_pi_launch\n").catch(() => {});
+  await fs.appendFile(tracePath, `${JSON.stringify({ phase, at: Date.now() })}\n`).catch(() => {});
+}
+
+async function traceMetadataLaunch(env) {
+  await traceStartup(env, "metadata_pi_launch");
 }
 
 export async function runCatalogProcess(piPath, { timeoutMs = REFRESH_TIMEOUT_MS, env = process.env } = {}) {
@@ -319,6 +323,39 @@ export async function runCatalogProcess(piPath, { timeoutMs = REFRESH_TIMEOUT_MS
   });
 }
 
+export async function probeModelScope({
+  piPath,
+  settingsPath,
+  authPath,
+  modelsPath,
+  cachePath,
+  now = Date.now(),
+  ttlMs = CACHE_TTL_MS,
+}) {
+  const traceEnv = process.env;
+  await traceStartup(traceEnv, "model_cache_probe_start");
+  try {
+    const [preferred, source] = await Promise.all([
+      readPreferredModels(settingsPath),
+      buildSourceFingerprint({ piPath, modelsPath, authPath }),
+    ]);
+    const cache = await readCache(cachePath, now);
+    if (cacheIsFresh(cache, source, now, ttlMs)) {
+      return { state: "fresh", models: intersectPreferred(preferred, cache.catalog), source: "cache" };
+    }
+    return { state: "refresh", preferred, source, cache };
+  } catch (error) {
+    return {
+      state: "fallback",
+      models: [],
+      source: "fallback",
+      warning: `model scope configuration is unavailable: ${error.message}`,
+    };
+  } finally {
+    await traceStartup(traceEnv, "model_cache_probe_complete");
+  }
+}
+
 export async function resolveModelScope({
   piPath,
   settingsPath,
@@ -329,6 +366,8 @@ export async function resolveModelScope({
   ttlMs = CACHE_TTL_MS,
   refreshCatalog = () => runCatalogProcess(piPath),
 }) {
+  const traceEnv = process.env;
+  await traceStartup(traceEnv, "model_cache_probe_start");
   let preferred;
   let source;
   try {
@@ -337,10 +376,12 @@ export async function resolveModelScope({
       buildSourceFingerprint({ piPath, modelsPath, authPath }),
     ]);
   } catch (error) {
+    await traceStartup(traceEnv, "model_cache_probe_complete");
     return { models: [], source: "fallback", warning: `model scope configuration is unavailable: ${error.message}` };
   }
 
   let cache = await readCache(cachePath, now);
+  await traceStartup(traceEnv, "model_cache_probe_complete");
   if (cacheIsFresh(cache, source, now, ttlMs)) {
     return { models: intersectPreferred(preferred, cache.catalog), source: "cache" };
   }
@@ -358,7 +399,9 @@ export async function resolveModelScope({
       return { models: intersectPreferred(preferred, cache.catalog), source: "cache" };
     }
 
+    await traceStartup(traceEnv, "model_cache_refresh_start");
     const catalog = await refreshCatalog();
+    await traceStartup(traceEnv, "model_cache_refresh_complete");
     const sourceAfterRefresh = await buildSourceFingerprint({ piPath, modelsPath, authPath });
     if (sourceAfterRefresh.fingerprint !== source.fingerprint) {
       throw new Error("model scope inputs changed during catalog refresh");

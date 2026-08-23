@@ -4,11 +4,16 @@ set -euo pipefail
 readonly SANDBOX_DIR="$HOME/.pi/sandbox"
 readonly GONDOLIN_CLIENT="$SANDBOX_DIR/client-cli.mjs"
 readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
-readonly GONDOLIN_SETTINGS="$SANDBOX_DIR/settings.json"
 readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
-readonly REPOSITORY_SCOPE="$SANDBOX_DIR/repository-scope.mjs"
 readonly MODEL_SCOPE_CACHE="$SANDBOX_DIR/model-scope-cache.mjs"
-readonly MODEL_SCOPE_CACHE_FILE="$HOME/.cache/pi-gondolin/model-scope.json"
+readonly HOST_CODE_CACHE_ROOT="$HOME/.cache/pi-gondolin/host"
+readonly NODE_COMPILE_CACHE_DIR="$HOST_CODE_CACHE_ROOT/node-compile"
+readonly JITI_FS_CACHE_DIR="$HOST_CODE_CACHE_ROOT/jiti"
+MODEL_SCOPE_CACHE_FILE="$HOME/.cache/pi-gondolin/model-scope.json"
+if [[ -n "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" && "${PI_GONDOLIN_BENCHMARK_MODEL_SCOPE_CACHE_FILE-}" == /* ]]; then
+    MODEL_SCOPE_CACHE_FILE="$PI_GONDOLIN_BENCHMARK_MODEL_SCOPE_CACHE_FILE"
+fi
+readonly MODEL_SCOPE_CACHE_FILE
 
 HANDSHAKE_DIR=""
 PI_CHILD_PID=""
@@ -19,7 +24,10 @@ trace_startup() {
     local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
 
     [[ "$trace_file" == /* && "$trace_file" != *$'\n'* && "$trace_file" != *$'\r'* && "$trace_file" != *$'\t'* ]] || return 0
-    printf '%s\n' "$phase" >>"$trace_file" 2>/dev/null || true
+    local at
+    at="$(/usr/bin/perl -MTime::HiRes -e 'printf "%.0f\n", Time::HiRes::time() * 1000' 2>/dev/null || true)"
+    [[ "$at" =~ ^[0-9]+$ ]] || at="$(( $(/bin/date +%s) * 1000 ))"
+    printf '{"phase":"%s","at":%s}\n' "$phase" "$at" >>"$trace_file" 2>/dev/null || true
 }
 CONTROLLER_SOCKET=""
 CONTROLLER_WORKSPACE_KEY=""
@@ -66,8 +74,6 @@ readonly LAUNCH_DIR="$(builtin pwd -P)"
 
 BOOTSTRAP_EXCLUDED_ROOTS=("$LAUNCH_DIR")
 CANDIDATE_WORKTREE_ROOT=""
-EXPECTED_WORKSPACE_ROOT=""
-EXPECTED_WORKSPACE_KEY=""
 
 path_is_within() {
     local candidate="$1"
@@ -218,22 +224,6 @@ find_real_pi() {
     return 1
 }
 
-discover_repository_scope() {
-    [[ -r "$REPOSITORY_SCOPE" ]] || die "repository scope module is missing: $REPOSITORY_SCOPE"
-    local result
-    result="$(trusted_node --input-type=module - "$REPOSITORY_SCOPE" "$LAUNCH_DIR" "${PATH-}" <<'NODE'
-import { pathToFileURL } from "node:url";
-const [modulePath, launchDirectory, pathValue] = process.argv.slice(2);
-const module = await import(pathToFileURL(modulePath).href);
-process.stdout.write(JSON.stringify(module.discoverRepositoryScope({ launchDirectory, pathValue })));
-NODE
-)" || die "repository scope discovery failed"
-    EXPECTED_WORKSPACE_ROOT="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).canonicalWorkspaceRoot)' "$result")" ||
-        die "repository workspace result is invalid"
-    EXPECTED_WORKSPACE_KEY="$(trusted_node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceKey)' "$result")" ||
-        die "repository workspace key is invalid"
-}
-
 yolo=false
 pi_args=()
 for arg in "$@"; do
@@ -302,27 +292,12 @@ trusted_node() {
         HOME="$HOME" \
         PATH="${HOST_NODE%/*}:/usr/bin:/bin" \
         LC_ALL=C \
+        NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" \
+        JITI_FS_CACHE="$JITI_FS_CACHE_DIR" \
         "$HOST_NODE" "$@"
 }
-trusted_node -e '
-    const [major, minor] = process.versions.node.split(".").map(Number);
-    process.exit(major > 23 || (major === 23 && minor >= 6) ? 0 : 1);
-' || die "Node.js 23.6 or newer is required"
-
-discover_repository_scope
-readonly EXPECTED_WORKSPACE_ROOT EXPECTED_WORKSPACE_KEY
-
-host_rg="$(find_host_executable rg)" || die "ripgrep (rg) is required"
-readonly HOST_RG="$host_rg"
-host_mktemp="$(find_host_executable mktemp)" || die "mktemp is required"
-readonly HOST_MKTEMP="$host_mktemp"
-trusted_mktemp() {
-    /usr/bin/env -i \
-        HOME="$HOME" \
-        PATH="${HOST_MKTEMP%/*}:/usr/bin:/bin" \
-        LC_ALL=C \
-        "$HOST_MKTEMP" "$@"
-}
+# The trusted preflight asserts the Node version and validates repository scope.
+# It is the only normal-launch Node process before Pi starts.
 
 CONTROLLER_PATH="$(IFS=:; printf '%s' "${SAFE_PATH_ENTRIES[*]}")"
 readonly CONTROLLER_PATH
@@ -333,12 +308,13 @@ trusted_controller_node() {
         TMPDIR="${TMPDIR:-/tmp}" \
         LC_ALL=C \
         PI_GONDOLIN_STARTUP_TRACE_FILE="${PI_GONDOLIN_STARTUP_TRACE_FILE-}" \
+        NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" \
+        JITI_FS_CACHE="$JITI_FS_CACHE_DIR" \
         "$HOST_NODE" "$@"
 }
 
 [[ -r "$GONDOLIN_CLIENT" ]] || die "Gondolin client is missing: $GONDOLIN_CLIENT"
 [[ -r "$GONDOLIN_CONTROLLER" ]] || die "Gondolin controller is missing: $GONDOLIN_CONTROLLER"
-[[ -r "$GONDOLIN_SETTINGS" ]] || die "Gondolin settings are missing: $GONDOLIN_SETTINGS"
 [[ -r "$GONDOLIN_EXTENSION" ]] || die "Gondolin routing extension is missing: $GONDOLIN_EXTENSION"
 real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
 readonly REAL_PI="$real_pi"
@@ -457,52 +433,6 @@ pi_args+=(--no-builtin-tools)
 
 umask 077
 trap cleanup_launcher EXIT
-trace_startup controller_acquire_start
-lease_json="$(trusted_controller_node "$GONDOLIN_CLIENT" acquire \
-    --launch-dir "$LAUNCH_DIR" \
-    --settings "$GONDOLIN_SETTINGS" \
-    --client-id "launcher-$$")" || die "could not acquire the workspace Gondolin controller"
-trace_startup controller_acquire_complete
-lease_record="$(trusted_node -e '
-const value = JSON.parse(process.argv[1]);
-const [expectedRoot, expectedKey] = process.argv.slice(2);
-const expectedKeys = [
-  "version", "socketPath", "leaseToken", "workspaceKey", "workspaceRoot",
-  "bareCommonDirectory", "policyGeneration", "imageGeneration", "vmId",
-  "dockerHealthy", "controllerPid", "runtimeRoot",
-];
-const safeText = (entry, limit = 4096) => typeof entry === "string" && entry.length > 0 &&
-  entry.length <= limit && !/[\t\r\n\0]/.test(entry);
-const hex = entry => typeof entry === "string" && /^[0-9a-f]{64}$/.test(entry);
-if (!value || typeof value !== "object" || Array.isArray(value) ||
-    Object.keys(value).length !== expectedKeys.length ||
-    expectedKeys.some(key => !Object.hasOwn(value, key)) || value.version !== 1 ||
-    !hex(value.leaseToken) || !hex(value.workspaceKey) || !hex(value.policyGeneration) ||
-    !hex(value.imageGeneration) || value.workspaceKey !== expectedKey ||
-    value.workspaceRoot !== expectedRoot || !safeText(value.socketPath) ||
-    !safeText(value.workspaceRoot) || !safeText(value.runtimeRoot) || !safeText(value.vmId, 256) ||
-    !value.socketPath.startsWith("/") || !value.workspaceRoot.startsWith("/") ||
-    !value.runtimeRoot.startsWith("/") || value.dockerHealthy !== true ||
-    !Number.isSafeInteger(value.controllerPid) || value.controllerPid < 1 ||
-    (value.bareCommonDirectory !== null &&
-      (!safeText(value.bareCommonDirectory) || !value.bareCommonDirectory.startsWith("/")))) {
-  console.error("lease manifest is invalid or mismatched");
-  process.exit(1);
-}
-process.stdout.write([
-  value.leaseToken, value.socketPath, value.workspaceKey, value.workspaceRoot,
-  value.policyGeneration, value.imageGeneration, value.vmId, value.runtimeRoot,
-].join("\t"));
-' "$lease_json" "$EXPECTED_WORKSPACE_ROOT" "$EXPECTED_WORKSPACE_KEY")" ||
-    die "controller returned an invalid or mismatched lease manifest"
-IFS=$'\t' read -r CONTROLLER_LEASE CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT \
-    CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT <<<"$lease_record" ||
-    die "controller returned an invalid lease record"
-readonly CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT
-readonly CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT
-HANDSHAKE_DIR="$(trusted_mktemp -d "$CONTROLLER_RUNTIME_ROOT/handshake.XXXXXX")" ||
-    die "cannot create the Gondolin handshake directory"
-readonly HANDSHAKE_FILE="$HANDSHAKE_DIR/ready.json"
 
 # Put only the real Pi package ahead of the trusted caller PATH. Nested Pi
 # processes inherit the controller capability and do not re-enter this launcher.
@@ -519,16 +449,44 @@ if [[ "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" == /* && "${PI_GONDOLIN_STARTUP_TRACE
 fi
 readonly startup_trace_file
 
+preflight_args=(
+    preflight --launch-dir "$LAUNCH_DIR" --pi "$REAL_PI" --settings "$HOME/.pi/agent/settings.json"
+    --auth "$HOME/.pi/agent/auth.json" --models "$HOME/.pi/agent/models.json"
+    --cache "$MODEL_SCOPE_CACHE_FILE" --client-id "launcher-$$"
+)
+automatic_model_scope_requested ${pi_args[@]+"${pi_args[@]}"} && preflight_args+=(--resolve-model-scope)
+trace_startup controller_acquire_start
+lease_record="$(trusted_controller_node "$GONDOLIN_CLIENT" "${preflight_args[@]}")" ||
+    die "could not acquire the workspace Gondolin controller"
+trace_startup controller_acquire_complete
+IFS=$'\t' read -r CONTROLLER_LEASE CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT \
+    CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT \
+    HANDSHAKE_FILE scope_models <<<"$lease_record" || die "controller returned an invalid preflight record"
+[[ "$CONTROLLER_LEASE" =~ ^[0-9a-f]{64}$ && "$CONTROLLER_WORKSPACE_KEY" =~ ^[0-9a-f]{64}$ &&
+   "$CONTROLLER_POLICY_GENERATION" =~ ^[0-9a-f]{64}$ && "$CONTROLLER_IMAGE_GENERATION" =~ ^[0-9a-f]{64}$ &&
+   "$CONTROLLER_SOCKET" == /* && "$CONTROLLER_WORKSPACE_ROOT" == /* && "$CONTROLLER_RUNTIME_ROOT" == /* &&
+   "$HANDSHAKE_FILE" == "$CONTROLLER_RUNTIME_ROOT"/* && "$scope_models" != *$'\t'* && "$scope_models" != *$'\n'* ]] ||
+    die "controller returned an invalid preflight record"
+HANDSHAKE_DIR="${HANDSHAKE_FILE%/*}"
+readonly CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT
+readonly CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT
+readonly HANDSHAKE_DIR HANDSHAKE_FILE
+if [[ -n "$scope_models" ]]; then
+    pi_args=(--models "$scope_models" "${pi_args[@]}")
+fi
+
 # Keep ambient cloud, package-manager, SSH, and application credentials out of
 # the host Pi environment. Pi still uses its managed auth.json on the host.
 safe_env=(
     "HOME=$HOME"
     "PATH=$inner_path"
     "TMPDIR=/tmp"
-    "XDG_CACHE_HOME=$HOME/.cache/pi-gondolin/host"
-    "NPM_CONFIG_CACHE=$HOME/.cache/pi-gondolin/host/npm"
-    "PIP_CACHE_DIR=$HOME/.cache/pi-gondolin/host/pip"
-    "CONDA_PKGS_DIRS=$HOME/.cache/pi-gondolin/host/conda"
+    "XDG_CACHE_HOME=$HOST_CODE_CACHE_ROOT"
+    "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE_DIR"
+    "JITI_FS_CACHE=$JITI_FS_CACHE_DIR"
+    "NPM_CONFIG_CACHE=$HOST_CODE_CACHE_ROOT/npm"
+    "PIP_CACHE_DIR=$HOST_CODE_CACHE_ROOT/pip"
+    "CONDA_PKGS_DIRS=$HOST_CODE_CACHE_ROOT/conda"
     "UV_CACHE_DIR=$HOME/.cache/uv"
     "HF_HOME=$HOME/.cache/huggingface"
     "CARGO_HOME=$HOME/.cargo"
@@ -544,6 +502,7 @@ safe_env=(
     "PI_GONDOLIN_HOST_TOOLS=$REQUESTED_HOST_TOOLS"
     "PI_GONDOLIN_HANDSHAKE_FILE=$HANDSHAKE_FILE"
     "PI_GONDOLIN_STARTUP_TRACE_FILE=$startup_trace_file"
+    "PI_TIMING=${startup_trace_file:+1}"
 )
 
 for name in \
@@ -556,7 +515,6 @@ do
 done
 
 requires_handshake=true
-automatic_model_scope=false
 for arg in "${pi_args[@]}"; do
     case "$arg" in
         -h|--help|-v|--version|--list-models|--list-models=*) requires_handshake=false ;;
@@ -565,25 +523,8 @@ done
 if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|update|list|config|auth)$ ]]; then
     requires_handshake=false
 fi
-automatic_model_scope_requested ${pi_args[@]+"${pi_args[@]}"} && automatic_model_scope=true
 
-if [[ "$automatic_model_scope" == true ]]; then
-    if [[ -r "$MODEL_SCOPE_CACHE" ]]; then
-        scope_models="$(/usr/bin/env -i "${safe_env[@]}" LC_ALL=C \
-            "$HOST_NODE" "$MODEL_SCOPE_CACHE" \
-            --pi "$REAL_PI" \
-            --settings "$HOME/.pi/agent/settings.json" \
-            --auth "$HOME/.pi/agent/auth.json" \
-            --models "$HOME/.pi/agent/models.json" \
-            --cache "$MODEL_SCOPE_CACHE_FILE")" || scope_models=""
-        if [[ -n "$scope_models" ]]; then
-            pi_args=(--models "$scope_models" "${pi_args[@]}")
-        fi
-    else
-        echo "pi: warning: model scope cache helper is missing; continuing with Pi's native model resolution" >&2
-    fi
-fi
-
+trace_startup pi_initialize_start
 trace_startup pi_child_spawn
 set +e
 /usr/bin/env -i "${safe_env[@]}" \
@@ -596,7 +537,9 @@ set +e
             trace_real_pi() {
                 local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
                 [[ -n "$trace_file" ]] || return 0
-                printf "%s\\n" real_pi_launch >>"$trace_file" 2>/dev/null || true
+                at="$(/usr/bin/perl -MTime::HiRes -e '\''printf "%.0f\n", Time::HiRes::time() * 1000'\'' 2>/dev/null || true)"
+                [[ "$at" =~ ^[0-9]+$ ]] || at="$(( $(/bin/date +%s) * 1000 ))"
+                printf '\''{"phase":"real_pi_launch","at":%s}\n'\'' "$at" >>"$trace_file" 2>/dev/null || true
             }
             exec_real_pi() {
                 trace_real_pi

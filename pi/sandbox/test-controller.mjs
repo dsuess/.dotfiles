@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ControllerClient } from "./client.mjs";
+import { configureRuntimeCaches, ControllerClient } from "./client.mjs";
 import {
   controllerInternals,
   WorkspaceController,
@@ -202,6 +202,25 @@ function makeController(t, options = {}) {
   t.after(() => controller.close());
   return { controller, state };
 }
+
+test("host code caches are private and use fixed private paths", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-code-cache-"));
+  const previousNode = process.env.NODE_COMPILE_CACHE;
+  const previousJiti = process.env.JITI_FS_CACHE;
+  t.after(() => {
+    if (previousNode === undefined) delete process.env.NODE_COMPILE_CACHE;
+    else process.env.NODE_COMPILE_CACHE = previousNode;
+    if (previousJiti === undefined) delete process.env.JITI_FS_CACHE;
+    else process.env.JITI_FS_CACHE = previousJiti;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const caches = configureRuntimeCaches(root);
+  assert.equal(caches.nodeCompile, path.join(root, "node-compile"));
+  assert.equal(caches.jiti, path.join(root, "jiti"));
+  for (const directory of [caches.root, caches.nodeCompile, caches.jiti]) {
+    assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+  }
+});
 
 test("exec calls are serialized and preserve streamed output", async (t) => {
   const { controller, state } = makeController(t);

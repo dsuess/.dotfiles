@@ -130,7 +130,7 @@ if (!fs.existsSync("$TEST_ROOT/controller-active")) {
 const get = (name) => args[args.indexOf(name) + 1];
 const launch = fs.realpathSync(get("--launch-dir"));
 fs.mkdirSync("$RUNTIME_ROOT", { recursive: true, mode: 0o700 });
-process.stdout.write(JSON.stringify({
+const record = {
   version: 1,
   socketPath: "$RUNTIME_ROOT/controller.sock",
   leaseToken: "a".repeat(64),
@@ -143,7 +143,26 @@ process.stdout.write(JSON.stringify({
   dockerHealthy: true,
   controllerPid: process.pid,
   runtimeRoot: "$RUNTIME_ROOT"
-}) + "\\n");
+};
+if (command === "preflight") {
+  let models = "";
+  if (args.includes("--resolve-model-scope")) {
+    const { resolveModelScope } = await import("$SANDBOX_HOME/model-scope-cache.mjs");
+    models = (await resolveModelScope({
+      piPath: get("--pi"), settingsPath: get("--settings"), authPath: get("--auth"),
+      modelsPath: get("--models"), cachePath: get("--cache"),
+    })).models.join(",");
+  }
+  const handshakeDirectory = "$RUNTIME_ROOT/handshake-" + process.pid;
+  fs.mkdirSync(handshakeDirectory, { recursive: true, mode: 0o700 });
+  process.stdout.write([
+    record.leaseToken, record.socketPath, record.workspaceKey, record.workspaceRoot,
+    record.policyGeneration, record.imageGeneration, record.vmId, record.runtimeRoot,
+    handshakeDirectory + "/ready.json", models,
+  ].join("\\t") + "\\n");
+} else {
+  process.stdout.write(JSON.stringify(record) + "\\n");
+}
 EOF_CLIENT
 
 cat >"$REAL_BIN/pi" <<EOF_PI
@@ -295,7 +314,7 @@ grep -F 'sandbox=1' <<<"$output" >/dev/null
 grep -E '^lease=[a-f0-9]{64}$' <<<"$output" >/dev/null
 grep -F 'builtins=read,write,edit,bash,grep,find,ls' <<<"$output" >/dev/null
 grep -F 'host_tools=ketch_search,ketch_scrape,ketch_code,ketch_docs,ketch_crawl,ask_user_question,subagent,submit_plan,plan_progress,complete_plan,complete_stage' <<<"$output" >/dev/null
-grep -q '^acquire ' "$CLIENT_LOG"
+grep -q '^preflight ' "$CLIENT_LOG"
 grep -q '^release ' "$CLIENT_LOG"
 
 # Explicit tool selection is removed from Pi argv and split into private,
@@ -406,7 +425,7 @@ grep -F 'routing extension rejected' "$TEST_ROOT/mismatch.out" >/dev/null
 ) &
 wrapper_pid=$!
 for _ in {1..200}; do
-    grep -q '^acquire ' "$CLIENT_LOG" 2>/dev/null && grep -q '^real=' "$TEST_ROOT/signal.out" 2>/dev/null && break
+    grep -q '^preflight ' "$CLIENT_LOG" 2>/dev/null && grep -q '^real=' "$TEST_ROOT/signal.out" 2>/dev/null && break
     sleep 0.01
 done
 kill -TERM "$wrapper_pid"

@@ -62,12 +62,25 @@ const ADAPTER_SCHEMAS: Readonly<Record<string, string>> = Object.freeze({
 
 export const HOST_ADAPTER_NAMES = Object.freeze(Object.keys(ADAPTER_SCHEMAS));
 
-function canonical(candidate: string): string | null {
+interface AuditCache {
+  canonicalPaths: Map<string, string | null>;
+  packageVersions: Map<string, string | null>;
+}
+
+function createAuditCache(): AuditCache {
+  return { canonicalPaths: new Map(), packageVersions: new Map() };
+}
+
+function canonical(candidate: string, cache?: AuditCache): string | null {
+  if (cache?.canonicalPaths.has(candidate)) return cache.canonicalPaths.get(candidate) ?? null;
+  let resolved: string | null;
   try {
-    return fs.realpathSync(candidate);
+    resolved = fs.realpathSync(candidate);
   } catch {
-    return null;
+    resolved = null;
   }
+  cache?.canonicalPaths.set(candidate, resolved);
+  return resolved;
 }
 
 export function schemaSha256(parameters: unknown): string {
@@ -140,35 +153,40 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
   return new Map(specs.map((spec) => [spec.name, Object.freeze(spec)]));
 }
 
-function packageVersionMatches(spec: AdapterSpec): boolean {
+function packageVersionMatches(spec: AdapterSpec, cache?: AuditCache): boolean {
   if (!spec.packageJson) return true;
-  try {
-    const packageJson = JSON.parse(fs.readFileSync(spec.packageJson, "utf8"));
-    return packageJson.version === spec.packageVersion;
-  } catch {
-    return false;
+  let version = cache?.packageVersions.get(spec.packageJson);
+  if (version === undefined) {
+    try {
+      version = JSON.parse(fs.readFileSync(spec.packageJson, "utf8")).version;
+    } catch {
+      version = null;
+    }
+    cache?.packageVersions.set(spec.packageJson, version);
   }
+  return version === spec.packageVersion;
 }
 
-function sourceMatches(sourceInfo: ToolSourceInfo, expected: AdapterSpec): boolean {
+function sourceMatches(sourceInfo: ToolSourceInfo, expected: AdapterSpec, cache?: AuditCache): boolean {
   return (
     sourceInfo.source === expected.source &&
     sourceInfo.scope === expected.scope &&
     sourceInfo.origin === expected.origin &&
-    canonical(sourceInfo.path) === canonical(expected.sourcePath) &&
-    canonical(sourceInfo.baseDir ?? "") === canonical(expected.baseDir)
+    canonical(sourceInfo.path, cache) === canonical(expected.sourcePath, cache) &&
+    canonical(sourceInfo.baseDir ?? "", cache) === canonical(expected.baseDir, cache)
   );
 }
 
 export function isAuditedHostAdapter(
   tool: ConfiguredToolInfo,
   manifest: ReadonlyMap<string, AdapterSpec> = createHostAdapterManifest(),
+  cache?: AuditCache,
 ): boolean {
   const spec = manifest.get(tool.name);
   return Boolean(
     spec &&
-      sourceMatches(tool.sourceInfo, spec) &&
-      packageVersionMatches(spec) &&
+      sourceMatches(tool.sourceInfo, spec, cache) &&
+      packageVersionMatches(spec, cache) &&
       schemaSha256(tool.parameters) === spec.schemaSha256,
   );
 }
@@ -176,6 +194,7 @@ export function isAuditedHostAdapter(
 export function isGondolinReplacement(
   tool: ConfiguredToolInfo,
   options: { extensionPath?: string; agentDir?: string } = {},
+  cache?: AuditCache,
 ): boolean {
   if (!GONDOLIN_BUILTIN_NAMES.includes(tool.name as (typeof GONDOLIN_BUILTIN_NAMES)[number])) {
     return false;
@@ -186,8 +205,8 @@ export function isGondolinReplacement(
     tool.sourceInfo.source === "auto" &&
     tool.sourceInfo.scope === "user" &&
     tool.sourceInfo.origin === "top-level" &&
-    canonical(tool.sourceInfo.path) === canonical(expectedPath) &&
-    canonical(tool.sourceInfo.baseDir ?? "") === canonical(expectedAgentDir) &&
+    canonical(tool.sourceInfo.path, cache) === canonical(expectedPath, cache) &&
+    canonical(tool.sourceInfo.baseDir ?? "", cache) === canonical(expectedAgentDir, cache) &&
     schemaSha256(tool.parameters) === BUILTIN_SCHEMA_HASHES[tool.name]
   );
 }
@@ -207,20 +226,21 @@ export function auditToolInventory(
   } = {},
 ): InventoryAudit {
   const manifest = options.manifest ?? createHostAdapterManifest({ agentDir: options.agentDir });
+  const cache = createAuditCache();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const allowedNames = new Set<string>();
   const replacementErrors: string[] = [];
 
   for (const name of GONDOLIN_BUILTIN_NAMES) {
     const tool = byName.get(name);
-    if (!tool || !isGondolinReplacement(tool, options)) {
+    if (!tool || !isGondolinReplacement(tool, options, cache)) {
       replacementErrors.push(`built-in slot '${name}' is not owned by the Gondolin routing extension`);
     } else {
       allowedNames.add(name);
     }
   }
   for (const tool of tools) {
-    if (isAuditedHostAdapter(tool, manifest)) allowedNames.add(tool.name);
+    if (isAuditedHostAdapter(tool, manifest, cache)) allowedNames.add(tool.name);
   }
   return {
     allowedNames,

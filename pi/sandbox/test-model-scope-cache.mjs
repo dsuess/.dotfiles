@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   CACHE_TTL_MS,
   parseCatalog,
+  probeModelScope,
   resolveModelScope,
   validateCacheRecord,
 } from "./model-scope-cache.mjs";
@@ -99,6 +100,17 @@ test("a warm cache skips refresh and expiry refreshes once", async (t) => {
   const expired = await resolve(files, { now: NOW + CACHE_TTL_MS, refreshCatalog });
   assert.equal(expired.source, "refresh");
   assert.equal(refreshes, 2);
+});
+
+test("a read-only probe returns a fresh cache without changing it", async (t) => {
+  const files = await fixture(t);
+  await resolve(files);
+  const before = await fs.readFile(files.cachePath, "utf8");
+  const result = await probeModelScope({ ...files, now: NOW + 1 });
+  assert.equal(result.state, "fresh");
+  assert.equal(result.source, "cache");
+  assert.deepEqual(result.models, CURRENT_SCOPE);
+  assert.equal(await fs.readFile(files.cachePath, "utf8"), before);
 });
 
 test("provider identity changes invalidate a fresh cache without storing values", async (t) => {

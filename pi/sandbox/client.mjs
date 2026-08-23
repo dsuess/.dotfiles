@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -21,6 +21,26 @@ const CONTROLLER_PATH = path.join(SCRIPT_DIR, "controller.mjs");
 const DEFAULT_SETTINGS_PATH = path.join(SCRIPT_DIR, "settings.json");
 const START_TIMEOUT_MS = 150_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
+const HOST_CODE_CACHE_ROOT = path.join(os.homedir(), ".cache", "pi-gondolin", "host");
+
+export function configureRuntimeCaches(cacheRoot = HOST_CODE_CACHE_ROOT) {
+  const uid = process.getuid?.() ?? null;
+  for (const directory of [cacheRoot, path.join(cacheRoot, "node-compile"), path.join(cacheRoot, "jiti")]) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(directory, 0o700);
+    const stat = fs.statSync(directory);
+    if (!stat.isDirectory() || (stat.mode & 0o077) !== 0 || (uid !== null && stat.uid !== uid)) {
+      throw clientError("invalid_cache", "host code cache directory is not private");
+    }
+  }
+  process.env.NODE_COMPILE_CACHE = path.join(cacheRoot, "node-compile");
+  process.env.JITI_FS_CACHE = path.join(cacheRoot, "jiti");
+  return Object.freeze({
+    root: cacheRoot,
+    nodeCompile: process.env.NODE_COMPILE_CACHE,
+    jiti: process.env.JITI_FS_CACHE,
+  });
+}
 
 function clientError(code, message) {
   const error = new Error(message);
@@ -44,6 +64,47 @@ function assertAbsolute(value, label) {
     throw clientError("invalid_manifest", `${label} is invalid`);
   }
   return value;
+}
+
+function isWithin(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+export function validateRepositoryScope(scope, launchDirectory) {
+  const keys = ["physicalLaunchDirectory", "canonicalWorkspaceRoot", "bareCommonDirectory", "workspaceKey"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope) ||
+      Object.keys(scope).length !== keys.length || !keys.every((key) => Object.hasOwn(scope, key))) {
+    throw clientError("invalid_scope", "repository scope has an invalid shape");
+  }
+  for (const key of ["physicalLaunchDirectory", "canonicalWorkspaceRoot"]) {
+    if (typeof scope[key] !== "string" || scope[key].length > 4096 || !path.isAbsolute(scope[key]) || /[\t\r\n\0]/.test(scope[key])) {
+      throw clientError("invalid_scope", `repository scope ${key} is invalid`);
+    }
+  }
+  if (scope.bareCommonDirectory !== null &&
+      (typeof scope.bareCommonDirectory !== "string" || scope.bareCommonDirectory.length > 4096 ||
+       !path.isAbsolute(scope.bareCommonDirectory) || /[\t\r\n\0]/.test(scope.bareCommonDirectory))) {
+    throw clientError("invalid_scope", "repository scope bare common directory is invalid");
+  }
+  const physicalLaunchDirectory = fs.realpathSync(scope.physicalLaunchDirectory);
+  const canonicalWorkspaceRoot = fs.realpathSync(scope.canonicalWorkspaceRoot);
+  if (!fs.statSync(physicalLaunchDirectory).isDirectory() || !fs.statSync(canonicalWorkspaceRoot).isDirectory() ||
+      !isWithin(physicalLaunchDirectory, canonicalWorkspaceRoot)) {
+    throw clientError("invalid_scope", "repository scope paths are not contained directories");
+  }
+  if (launchDirectory && physicalLaunchDirectory !== fs.realpathSync(launchDirectory)) {
+    throw clientError("invalid_scope", "repository scope launch directory does not match");
+  }
+  const bareCommonDirectory = scope.bareCommonDirectory === null ? null : fs.realpathSync(scope.bareCommonDirectory);
+  if (bareCommonDirectory !== null && !fs.statSync(bareCommonDirectory).isDirectory()) {
+    throw clientError("invalid_scope", "repository scope bare common directory is not a directory");
+  }
+  const workspaceKey = createHash("sha256")
+    .update(JSON.stringify([canonicalWorkspaceRoot, bareCommonDirectory]))
+    .digest("hex");
+  if (scope.workspaceKey !== workspaceKey) throw clientError("invalid_scope", "repository scope key does not match paths");
+  return Object.freeze({ physicalLaunchDirectory, canonicalWorkspaceRoot, bareCommonDirectory, workspaceKey });
 }
 
 function pidIsAlive(pid) {
@@ -515,7 +576,10 @@ function spawnController(scope, paths, options) {
     TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
     PI_GONDOLIN_RUNTIME_DIR: paths.runtimeRoot,
   };
-  for (const name of ["PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS", "PI_GONDOLIN_STARTUP_TRACE_FILE"]) {
+  for (const name of [
+    "PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS", "PI_GONDOLIN_STARTUP_TRACE_FILE",
+    "NODE_COMPILE_CACHE", "JITI_FS_CACHE",
+  ]) {
     if (process.env[name]) env[name] = process.env[name];
   }
   const logFd = fs.openSync(paths.logPath, "a", 0o600);
@@ -565,12 +629,14 @@ async function waitForManifest(paths, scope, child, timeoutMs) {
 }
 
 export async function ensureControllerLease(options = {}) {
-  const scope =
-    options.scope ??
-    discoverRepositoryScope({
-      launchDirectory: options.launchDirectory ?? process.cwd(),
+  const launchDirectory = options.launchDirectory ?? process.cwd();
+  const scope = validateRepositoryScope(
+    options.scope ?? discoverRepositoryScope({
+      launchDirectory,
       pathValue: options.pathValue ?? process.env.PATH,
-    });
+    }),
+    launchDirectory,
+  );
   const paths = getClientControllerPaths(scope.workspaceKey, {
     runtimeRoot: options.runtimeRoot,
   });
@@ -606,6 +672,8 @@ export async function ensureControllerLease(options = {}) {
 export const clientInternals = Object.freeze({
   connectSocket,
   pidIsAlive,
+  configureRuntimeCaches,
   spawnController,
+  validateRepositoryScope,
   waitForManifest,
 });

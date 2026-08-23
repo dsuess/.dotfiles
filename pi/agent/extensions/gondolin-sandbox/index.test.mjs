@@ -50,6 +50,7 @@ function createHarness(t, options = {}) {
   const sourceByName = new Map();
   const status = [];
   let active = ["read", "write", "edit", "bash", "grep", "find", "ls", "unknown_host_tool"];
+  let getAllToolsCalls = 0;
   let shutdownCalls = 0;
   const sourceInfo = {
     path: EXTENSION_PATH,
@@ -79,6 +80,7 @@ function createHarness(t, options = {}) {
       },
     },
     getAllTools() {
+      getAllToolsCalls += 1;
       const tools = [...definitions].map(([name, definition]) => ({
         name,
         description: definition.description,
@@ -165,6 +167,7 @@ function createHarness(t, options = {}) {
     connectCalls,
     emit,
     active: () => [...active],
+    getAllToolsCalls: () => getAllToolsCalls,
     shutdownCalls: () => shutdownCalls,
   };
 }
@@ -174,6 +177,7 @@ test("session handshake activates only requested replacements and audited curren
   await harness.emit("session_start", { reason: "startup" });
   assert.deepEqual(harness.active().sort(), ["bash", "read"]);
   assert.equal(harness.connectCalls.length, 1);
+  assert.equal(harness.getAllToolsCalls(), 1, "session_start reuses its first complete inventory audit");
   const handshake = JSON.parse(fs.readFileSync(harness.handshake, "utf8"));
   assert.equal(handshake.ok, true);
   assert.equal(handshake.vmId, "vm-shared");

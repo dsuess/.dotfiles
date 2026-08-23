@@ -14,17 +14,16 @@ A custom Pi extension still runs on the host. Gondolin does not isolate extensio
 
 A normal launch uses this sequence:
 
-1. The launcher discovers trusted Node.js, QEMU, Git, and the real Pi binary from one canonical safe PATH.
-2. The launcher acquires one workspace controller lease.
-3. A cold controller verifies the complete pinned image and Pi metadata, starts the VM, checks guest Docker, then publishes its healthy private manifest. An already healthy controller proves its pinned image generation through its manifest, socket, lease, and status checks; it does not hash the image again.
-4. The launcher reads the preferred-model cache for an eligible normal launch.
-5. If the cache is missing or stale, one metadata Pi process refreshes the authenticated catalog.
-6. The launcher disables all native Pi built-ins and starts the normal Pi process.
-7. Pi resolves the cached `--models` scope, model defaults, and explicit model arguments.
-8. The launcher passes private tool requests to the routing extension.
-9. The extension checks each tool source and connects to the controller. The launcher waits for the extension handshake.
+1. The launcher finds trusted QEMU and the real Pi binary from one canonical safe PATH.
+2. One trusted Node preflight discovers and validates the repository scope.
+3. The preflight starts a read-only preferred-model cache probe while it acquires one controller lease.
+4. A cold controller verifies the complete pinned image, creates the policy, starts the VM, and checks guest Docker.
+5. The preflight creates a private handshake directory after the controller is healthy.
+6. If the probe is stale, the preflight starts one metadata Pi process after controller health.
+7. The launcher disables native Pi built-ins and starts one normal Pi process.
+8. The routing extension audits the inventory, connects to the controller, and writes the readiness handshake.
 
-A warm-cache launch starts one Pi process. A cache refresh starts one metadata process and one normal process.
+A cache-hit launch uses one preflight process and one normal Pi process. A refresh adds one metadata Pi process. The cache probe overlaps controller acquisition. A refresh never starts before the healthy lease exists.
 
 Pi selects the planning default during the plan-mode `session_start` event. An explicit CLI model has higher priority.
 
@@ -35,6 +34,14 @@ The launch stops if a sandbox step fails. The launcher never retries with host b
 The canonical preferred list is `enabledModels` in `~/.pi/agent/settings.json`.
 The launcher stores catalog metadata in `~/.cache/pi-gondolin/model-scope.json`.
 The cache directory has mode `0700`. The cache file has mode `0600`.
+
+The host code-cache root is `~/.cache/pi-gondolin/host/`.
+
+Its `node-compile` and `jiti` directories have mode `0700`. `NODE_COMPILE_CACHE` and `JITI_FS_CACHE` use these directories for Pi and the controller.
+
+Node and Jiti invalidate changed source and runtime versions. A missing, damaged, or stale code cache is only a performance miss.
+
+These caches do not contain credentials, lease tokens, controller manifests, policies, inventories, or image attestations.
 
 The metadata process uses Pi's authenticated `--list-models` catalog. It does not create a session or send a model request.
 It disables tools, extensions, skills, prompts, themes, context files, and project settings.
@@ -57,7 +64,7 @@ A changed provider fingerprint prevents stale-cache use.
 An explicit `--models` value bypasses automatic scope discovery. Help, version, package, authentication, and `--list-models` commands also bypass it.
 The `--list-models` command always requests the complete authenticated catalog with `--models "*"`.
 
-The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires; it is not retained merely to accelerate a later launch.
+The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires. It is not retained to make a later launch faster. Pi starts only after a healthy lease. A cold controller always verifies the full image.
 
 ### Startup benchmark
 
@@ -69,7 +76,11 @@ npm --prefix pi/sandbox run benchmark:startup -- --samples 5
 
 It creates one disposable workspace identity, closes stdin after RPC initialization, and sends no model request or persistent session. It runs one untimed warm-up for each mode, then reports medians and ranges for cold controller launches and launches with an owned active-controller lease. Each cold sample waits for its own controller manifest and socket to disappear. The active-controller lease is released before cleanup, so unrelated controllers are never acquired, released, or stopped.
 
-Optional startup tracing records the controller acquisition, image verification, Pi launch, child spawn, routing handshake, and controller-ready phase counts. The benchmark uses it to distinguish a cold image verification from an active-controller run; it is diagnostic only and does not set performance thresholds.
+The benchmark reports cold-controller, active-controller, and forced-refresh samples. It reports medians, ranges, phase durations, and metadata and real Pi process counts.
+
+Optional startup tracing records repository scope, controller acquisition, image verification, policy creation, VM creation and start, Docker health, model-cache work, Pi initialization, routing audit, and handshake. The benchmark alone sets `PI_TIMING=1`. Normal launches do not forward ambient Pi diagnostics.
+
+The benchmark uses a disposable model-cache file. It never reads or writes the user's preferred-model cache.
 
 ## Host adapters
 
