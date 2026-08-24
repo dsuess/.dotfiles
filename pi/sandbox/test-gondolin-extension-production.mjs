@@ -6,7 +6,12 @@ import path from "node:path";
 import test from "node:test";
 
 import { ensureGondolinImage } from "./build-gondolin-image.mjs";
-import { ensureControllerLease } from "./client.mjs";
+import {
+  ControllerClient,
+  ensureControllerLease,
+  getClientRuntimeRoot,
+  readControllerManifest,
+} from "./client.mjs";
 
 const REAL_PI = process.env.PI_REAL_BINARY ?? "/opt/homebrew/bin/pi";
 const AUDITED_HOST_TOOLS = [
@@ -23,6 +28,82 @@ function settings() {
       allowedHosts: [],
       allowWebSockets: false,
       tcpMappings: [],
+    },
+  };
+}
+
+async function waitForWorkspaceManifest(workspaceRoot) {
+  const runtimeRoot = getClientRuntimeRoot();
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      for (const name of fs.readdirSync(runtimeRoot)) {
+        if (!/^[0-9a-f]{24}\.json$/.test(name)) continue;
+        const manifestPath = path.join(runtimeRoot, name);
+        try {
+          const manifest = readControllerManifest(manifestPath);
+          if (manifest.workspaceRoot === workspaceRoot) return { manifest, manifestPath };
+        } catch {
+          // A controller can be midway through publishing its manifest.
+        }
+      }
+    } catch {
+      // The runtime directory is created with the controller.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`controller manifest for ${workspaceRoot} did not appear`);
+}
+
+function startRpc(args, options) {
+  const child = spawn(options.command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending = new Map();
+  let stdout = "";
+  let stderr = "";
+  let buffer = "";
+  const closed = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try { message = JSON.parse(line); } catch { continue; }
+      if (message.type === "response" && message.id && pending.has(message.id)) {
+        const { resolve, timer } = pending.get(message.id);
+        clearTimeout(timer);
+        pending.delete(message.id);
+        resolve(message);
+      }
+    }
+  });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return {
+    child,
+    closed,
+    get stdout() { return stdout; },
+    get stderr() { return stderr; },
+    request(command) {
+      const id = `rpc-${pending.size + 1}-${Date.now()}`;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`RPC ${command.type} timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+        }, 30_000);
+        pending.set(id, { resolve, reject, timer });
+        child.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+      });
     },
   };
 }
@@ -124,6 +205,63 @@ function assertReplacementSources(inventory, expectedNames) {
   assert.equal(ketch.sourceInfo.source, "npm:pi-ketch@0.1.6");
   assert.equal(inventory.active.includes("ketch_search"), true);
 }
+
+test(
+  "production RPC new_session keeps the wrapper root lease and VM",
+  { timeout: 180_000 },
+  async (t) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-gondolin-rpc-replacement-")));
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(workspace);
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    await ensureGondolinImage({ verbose: false });
+
+    const rpc = startRpc([
+      "--mode", "rpc", "--no-session", "--no-context-files", "--no-skills", "--no-prompt-templates",
+      "--tools", "bash",
+    ], {
+      command: path.join(os.homedir(), "bin", "pi"),
+      cwd: workspace,
+      env: { ...process.env, PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS: "60000" },
+    });
+    t.after(async () => {
+      if (!rpc.child.killed) rpc.child.stdin.end();
+      const result = await Promise.race([
+        rpc.closed,
+        new Promise((resolve) => setTimeout(() => resolve(null), 10_000)),
+      ]);
+      if (result === null) rpc.child.kill("SIGKILL");
+    });
+
+    const initial = await rpc.request({ type: "get_state" });
+    assert.equal(initial.success, true, rpc.stderr);
+    const { manifest: before, manifestPath } = await waitForWorkspaceManifest(workspace);
+    const beforeBash = await rpc.request({ type: "bash", command: "printf before-replacement" });
+    assert.equal(beforeBash.success, true, rpc.stderr);
+    assert.equal(beforeBash.data.exitCode, 0);
+
+    const replacement = await rpc.request({ type: "new_session" });
+    assert.equal(replacement.success, true, rpc.stderr);
+    assert.equal(replacement.data.cancelled, false);
+    const afterBash = await rpc.request({ type: "bash", command: "printf after-replacement" });
+    assert.equal(afterBash.success, true, rpc.stderr);
+    assert.equal(afterBash.data.exitCode, 0);
+    assert.match(afterBash.data.output, /after-replacement/);
+
+    const after = readControllerManifest(manifestPath, {
+      workspaceKey: before.workspaceKey,
+      workspaceRoot: workspace,
+    });
+    assert.equal(after.vmId, before.vmId, "new_session must keep the original VM");
+    const monitor = await ControllerClient.acquire(after, { clientId: "replacement-test-monitor" });
+    try {
+      assert.equal(monitor.status.vmId, before.vmId);
+      assert.equal(monitor.status.attachedRoots, 2, "the original root lease remains attached exactly once");
+    } finally {
+      await monitor.client.release();
+    }
+  },
+);
 
 test(
   "production-shaped normal and planning children inherit one controller without native built-ins",

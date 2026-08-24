@@ -33,6 +33,8 @@ interface SandboxEnvironment {
   PI_GONDOLIN_STARTUP_DESCRIPTOR?: string;
   PI_GONDOLIN_SOCKET?: string;
   PI_GONDOLIN_LEASE?: string;
+  // Non-secret PID of the host Pi process that may release this lease.
+  PI_GONDOLIN_ROOT_OWNER_PID?: string;
   PI_GONDOLIN_WORKSPACE_KEY?: string;
   PI_GONDOLIN_WORKSPACE_ROOT?: string;
   PI_GONDOLIN_POLICY_GENERATION?: string;
@@ -54,7 +56,8 @@ interface ExtensionDependencies {
     policyGeneration: string;
     imageGeneration: string;
     vmId: string;
-  }) => Promise<{ client: SandboxClient & { destroy?: () => void }; status: any }>;
+    adoptLease: boolean;
+  }) => Promise<{ client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> }; status: any }>;
   acquire?: (options: { startup: any; clientId: string; signal: AbortSignal }) => Promise<{
     client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> };
     status: any;
@@ -63,6 +66,7 @@ interface ExtensionDependencies {
     manifest: { socketPath: string };
   }>;
   auditOptions?: { extensionPath?: string; agentDir?: string };
+  statusIntervalMs?: number;
 }
 
 function requiredHex(value: string | undefined, name: string): string {
@@ -134,6 +138,12 @@ function configuredTools(pi: ExtensionAPI): ConfiguredToolInfo[] {
   return pi.getAllTools() as ConfiguredToolInfo[];
 }
 
+const CAPABILITY_ENV_FIELDS = [
+  "PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_ROOT_OWNER_PID",
+  "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT", "PI_GONDOLIN_POLICY_GENERATION",
+  "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID",
+] as const;
+
 function traceStartup(phase: string): void {
   const filePath = process.env.PI_GONDOLIN_STARTUP_TRACE_FILE;
   if (!filePath || !path.isAbsolute(filePath) || /[\t\r\n\0]/.test(filePath)) return;
@@ -166,6 +176,10 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
     let rootStartup: any = null;
     let ownsRootLease = false;
     let released = false;
+    let retired = false;
+    const clearCapabilityEnvironment = (): void => {
+      for (const name of CAPABILITY_ENV_FIELDS) delete env[name];
+    };
     const settingsStore = new SandboxSettingsStore();
     const manifest = createHostAdapterManifest({ agentDir: dependencies.auditOptions?.agentDir });
     const getClient = (): SandboxClient => {
@@ -202,18 +216,16 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
     };
 
     const failClosed = (ctx: ExtensionContext | undefined, reason: string): void => {
+      if (retired) return;
       fatalError = reason;
-      client?.destroy?.();
+      const activeClient = client;
       client = null;
       pi.setActiveTools([]);
       if (ownsRootLease && !released) {
         released = true;
-        void client?.release?.().catch(() => {});
-      }
-      for (const name of [
-        "PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT",
-        "PI_GONDOLIN_POLICY_GENERATION", "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID",
-      ] as const) delete env[name];
+        void activeClient?.release?.().catch(() => {});
+      } else activeClient?.destroy?.();
+      clearCapabilityEnvironment();
       emitLifecycle({
         health: "failed",
         vmId: connectedStatus?.vmId ?? null,
@@ -259,6 +271,9 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       const requested = parseRequestedBuiltins(env.PI_GONDOLIN_BUILTIN_TOOLS);
       const requestedHostTools = parseRequestedHostTools(env.PI_GONDOLIN_HOST_TOOLS, manifest.keys());
       const inherited = env.PI_GONDOLIN_LEASE !== undefined;
+      // Only a replacement runtime in this same host process can adopt the
+      // release duty. Child Pi processes inherit the marker but have another PID.
+      const adoptRootLease = inherited && env.PI_GONDOLIN_ROOT_OWNER_PID === String(process.pid);
       acquisitionAbort = new AbortController();
       connectedStatus = {
         health: "starting", vmId: null, dockerHealthy: false, attachedRoots: 0,
@@ -281,6 +296,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
               policyGeneration: requiredHex(env.PI_GONDOLIN_POLICY_GENERATION, "PI_GONDOLIN_POLICY_GENERATION"),
               imageGeneration: requiredHex(env.PI_GONDOLIN_IMAGE_GENERATION, "PI_GONDOLIN_IMAGE_GENERATION"),
               vmId: requiredString(env.PI_GONDOLIN_VM_ID, "PI_GONDOLIN_VM_ID"),
+              adoptLease: adoptRootLease,
             });
           } else {
             const startup = parseStartupDescriptor(env.PI_GONDOLIN_STARTUP_DESCRIPTOR);
@@ -290,7 +306,12 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
             connected = await acquire({ startup, clientId: `pi-${process.pid}`, signal: acquisitionAbort!.signal });
             ownsRootLease = true;
           }
+          if (retired) {
+            connected.client.destroy?.();
+            throw new Error("Gondolin runtime retired during startup");
+          }
           client = connected.client;
+          ownsRootLease = !inherited || adoptRootLease;
           const status = connected.status;
           if (status.workspaceKey !== workspaceKey || status.workspaceRoot !== workspaceRoot ||
               status.health !== "healthy" || status.dockerHealthy !== true || !status.vmId ||
@@ -307,6 +328,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
           if (!inherited) {
             env.PI_GONDOLIN_SOCKET = connected.manifest.socketPath;
             env.PI_GONDOLIN_LEASE = connected.leaseToken;
+            env.PI_GONDOLIN_ROOT_OWNER_PID = String(process.pid);
             env.PI_GONDOLIN_WORKSPACE_KEY = workspaceKey;
             env.PI_GONDOLIN_WORKSPACE_ROOT = workspaceRoot;
             env.PI_GONDOLIN_POLICY_GENERATION = status.policyGeneration;
@@ -318,10 +340,15 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
           if (statusTimer) clearInterval(statusTimer);
           statusTimer = setInterval(() => {
             const activeClient = client as any;
-            if (!activeClient || fatalError) return;
-            void activeClient.status().then((next: any) => publishStatus(next)).catch((error: unknown) =>
-              failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error)));
-          }, 2000);
+            if (!activeClient || fatalError || retired) return;
+            void activeClient.status().then((next: any) => {
+              if (!retired && client === activeClient) publishStatus(next);
+            }).catch((error: unknown) => {
+              if (!retired && client === activeClient) {
+                failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error));
+              }
+            });
+          }, dependencies.statusIntervalMs ?? 2000);
           statusTimer.unref?.();
           writeHandshake(env.PI_GONDOLIN_HANDSHAKE_FILE, {
             ok: true, workspaceKey, workspaceRoot, policyGeneration: status.policyGeneration,
@@ -329,6 +356,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
             tools: [...GONDOLIN_BUILTIN_NAMES],
           });
         } catch (error) {
+          if (retired) throw error;
           const reason = error instanceof Error ? error.message : String(error);
           failClosed(ctx, reason);
           throw error;
@@ -396,22 +424,32 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       return { operations: createSandboxBashOperations(getClient) };
     });
 
-    pi.on("session_shutdown", async (_event, ctx) => {
+    pi.on("session_shutdown", async (event, ctx) => {
+      retired = true;
       if (statusTimer) clearInterval(statusTimer);
       statusTimer = null;
       const pendingAbort = acquisitionAbort;
       pendingAbort?.abort();
       acquisitionAbort = null;
-      if (!client && rootStartup && pendingAbort) stopStartedController(rootStartup);
-      if (ownsRootLease && !released) {
-        released = true;
-        await client?.release?.().catch(() => {});
-      } else client?.destroy?.();
+      const activeClient = client;
       client = null;
-      for (const name of [
-        "PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT",
-        "PI_GONDOLIN_POLICY_GENERATION", "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID",
-      ] as const) delete env[name];
+
+      if (event.reason === "quit") {
+        // A cold root owns the detached controller only until final quit. A
+        // conversation replacement must leave it running for the next runtime.
+        if (!activeClient && rootStartup && pendingAbort) stopStartedController(rootStartup);
+        if (ownsRootLease && !released) {
+          released = true;
+          await activeClient?.release?.().catch(() => {});
+        } else activeClient?.destroy?.();
+        clearCapabilityEnvironment();
+      } else {
+        // /new, /resume, /fork, and /reload reload extensions in this same
+        // process. Retire this connection without releasing its root lease.
+        activeClient?.destroy?.();
+      }
+
+      pi.setActiveTools([]);
       emitLifecycle({
         health: "stopped",
         vmId: connectedStatus?.vmId ?? null,

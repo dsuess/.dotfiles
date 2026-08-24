@@ -18,7 +18,7 @@ A normal launch uses this sequence:
 2. One trusted Node preflight discovers and validates the repository scope.
 3. The preflight begins or joins one controller and starts the read-only preferred-model cache probe. Its startup descriptor contains only expected workspace identity and private paths; it contains no controller token, lease, generation, or VM identity.
 4. The launcher creates a private handshake directory, disables native Pi built-ins, and starts one normal host Pi process while a cold controller verifies the complete pinned image, creates the policy, starts the VM, and checks guest Docker.
-5. The routing extension publishes `starting`, acquires the root lease, verifies the workspace, generations, VM, Docker health, inventory, and host-adapter provenance, then activates the permitted replacements and writes the readiness handshake.
+5. The routing extension publishes `starting`, acquires the root Pi-process lease, verifies the workspace, generations, VM, Docker health, inventory, and host-adapter provenance, then activates the permitted replacements and writes the readiness handshake.
 6. A submitted prompt or `!`/`!!` command while `starting` waits before message construction, model execution, or Bash RPC. It continues automatically after `healthy`; a failure handles queued input, leaves tools inactive, reports the error, and shuts Pi down.
 7. RPC, JSON, and print modes wait for the same readiness promise before their externally observable startup completes.
 
@@ -63,7 +63,7 @@ A changed provider fingerprint prevents stale-cache use.
 An explicit `--models` value bypasses automatic scope discovery. Help, version, package, authentication, and `--list-models` commands also bypass it.
 The `--list-models` command always requests the complete authenticated catalog with `--models "*"`.
 
-The controller uses one VM for all root sessions in one canonical workspace. The root extension owns its lease and publishes the verified capability only after readiness; child Pi processes inherit and connect to that lease but never release it. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires. It is not retained to make a later launch faster. A cold controller always verifies the full image.
+The controller uses one VM for all conversation sessions in one canonical workspace. The root Pi process owns its lease and publishes the verified capability only after readiness. `/new`, `/resume`, `/fork`, and `/reload` replace the conversation extension runtime, which reconnects to the same lease and VM; they do not acquire or release a root lease. Child Pi processes inherit and connect to the capability but never adopt or release the parent lease. Final quit or a fatal routing failure releases the root lease. Lease expiry remains the process-crash and failed-replacement backstop. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires. It is not retained to make a later launch faster. A cold controller always verifies the full image.
 
 Startup has three distinct states: **controller starting**, **host UI ready**, and **sandbox ready**. The trusted host UI is not VM-isolated. It can show the editor, model/session controls, extensions, and status while the sandbox is starting, but native built-ins are disabled from process launch and no agent turn, model-directed tool, or user Bash command crosses the readiness gate before the verified lease exists.
 

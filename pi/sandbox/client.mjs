@@ -296,7 +296,9 @@ export class ControllerClient {
       auth: options.leaseToken,
       policyGeneration: options.policyGeneration,
       workspaceKey: options.workspaceKey,
-      ownsLease: false,
+      // A replacement runtime in the original Pi process reconnects to its
+      // already-acquired lease. This never sends lease.acquire.
+      ownsLease: options.adoptLease === true,
     });
     try {
       const status = await client.status();
