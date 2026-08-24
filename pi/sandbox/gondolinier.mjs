@@ -12,9 +12,9 @@ import {
 } from "./client.mjs";
 
 const USAGE = `Usage:
-  pivm vm list
-  pivm storage list
-  pivm storage purge
+  gondolinier vm list
+  gondolinier storage list
+  gondolinier storage purge
 
 Commands:
   vm list       List connectable Gondolin VMs.
@@ -80,7 +80,7 @@ export async function inspectPiStorage(options = {}) {
   const controllers = [];
   try {
     for (const manifest of manifests) {
-      const acquired = await acquire(manifest, { clientId: "pivm-storage" });
+      const acquired = await acquire(manifest, { clientId: "gondolinier-storage" });
       controllers.push({ manifest, client: acquired.client });
     }
     const categories = new Map(
@@ -243,7 +243,7 @@ export function formatVmInventory(inventory) {
   return [render(headers), ...rows.map(render)].join("\n");
 }
 
-export async function runPivm(argv, options = {}) {
+export async function runGondolinier(argv, options = {}) {
   const output = options.stdout ?? process.stdout;
   const error = options.stderr ?? process.stderr;
   const args = argv.filter((argument) => argument !== "--help" && argument !== "-h");
@@ -254,11 +254,11 @@ export async function runPivm(argv, options = {}) {
     return 0;
   }
   if (help && args[0] === "vm" && (args.length === 1 || (args.length === 2 && args[1] === "list"))) {
-    write(output, "Usage: pivm vm list");
+    write(output, "Usage: gondolinier vm list");
     return 0;
   }
   if (help && args[0] === "storage" && (args.length === 1 || (args.length === 2 && ["list", "purge"].includes(args[1])))) {
-    write(output, `Usage: pivm storage ${args[1] ?? "list|purge"}`);
+    write(output, `Usage: gondolinier storage ${args[1] ?? "list|purge"}`);
     return 0;
   }
   if (args.length === 2 && args[0] === "vm" && args[1] === "list") {
@@ -273,17 +273,17 @@ export async function runPivm(argv, options = {}) {
     await runStoragePurge(options);
     return 0;
   }
-  write(error, args.length === 0 ? USAGE : `Unknown pivm command: ${args.join(" ")}\n${USAGE}`);
+  write(error, args.length === 0 ? USAGE : `Unknown gondolinier command: ${args.join(" ")}\n${USAGE}`);
   return 2;
 }
 
 async function main() {
-  process.exitCode = await runPivm(process.argv.slice(2));
+  process.exitCode = await runGondolinier(process.argv.slice(2));
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url))) {
   main().catch((error) => {
-    process.stderr.write(`pivm: ${error.message}\n`);
+    process.stderr.write(`gondolinier: ${error.message}\n`);
     process.exitCode = 1;
   });
 }

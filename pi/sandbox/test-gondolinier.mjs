@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   formatVmInventory,
   getVmInventory,
-  runPivm,
-} from "./pivm.mjs";
+  runGondolinier,
+} from "./gondolinier.mjs";
 
 function output() {
   let value = "";
@@ -51,7 +51,7 @@ const STORAGE_ROWS = [
   { Type: "Build Cache", Size: "300MB", Reclaimable: "250MB (83%)", Active: "0" },
 ].map(JSON.stringify).join("\n");
 
-test("pivm vm list shows only connectable sessions and maps Pi workspaces", async () => {
+test("gondolinier vm list shows only connectable sessions and maps Pi workspaces", async () => {
   const inventory = await getVmInventory({
     now: NOW,
     listSessions: async () => [
@@ -70,22 +70,22 @@ test("pivm vm list shows only connectable sessions and maps Pi workspaces", asyn
   assert.match(formatVmInventory(inventory), /pi-vm  12   2h   pi:abc    \/work\/project/);
 });
 
-test("pivm vm list reports an empty inventory and command help", async () => {
+test("gondolinier vm list reports an empty inventory and command help", async () => {
   const stdout = output();
   const stderr = output();
-  assert.equal(await runPivm(["vm", "list"], { stdout, stderr, listSessions: async () => [], manifests: [] }), 0);
+  assert.equal(await runGondolinier(["vm", "list"], { stdout, stderr, listSessions: async () => [], manifests: [] }), 0);
   assert.equal(stdout.value(), "No Gondolin VMs are running.\n");
   assert.equal(stderr.value(), "");
 
   const help = output();
-  assert.equal(await runPivm(["vm", "--help"], { stdout: help, stderr }), 0);
-  assert.equal(help.value(), "Usage: pivm vm list\n");
+  assert.equal(await runGondolinier(["vm", "--help"], { stdout: help, stderr }), 0);
+  assert.equal(help.value(), "Usage: gondolinier vm list\n");
 });
 
-test("pivm storage list aggregates Docker categories and warns about active volumes", async () => {
+test("gondolinier storage list aggregates Docker categories and warns about active volumes", async () => {
   const harness = storageHarness({ one: STORAGE_ROWS, two: STORAGE_ROWS });
   const stdout = output();
-  assert.equal(await runPivm(["storage", "list"], { stdout, ...harness }), 0);
+  assert.equal(await runGondolinier(["storage", "list"], { stdout, ...harness }), 0);
   assert.match(stdout.value(), /Images       3.00 GB/);
   assert.match(stdout.value(), /Containers   1.00 GB/);
   assert.match(stdout.value(), /Volumes      4.00 GB/);
@@ -95,10 +95,10 @@ test("pivm storage list aggregates Docker categories and warns about active volu
   assert.deepEqual(harness.releases.sort(), ["one", "two"]);
 });
 
-test("pivm storage purge defaults to no and prunes only after confirmation", async () => {
+test("gondolinier storage purge defaults to no and prunes only after confirmation", async () => {
   const declined = storageHarness({ one: STORAGE_ROWS });
   const declinedOutput = output();
-  await runPivm(["storage", "purge"], {
+  await runGondolinier(["storage", "purge"], {
     stdout: declinedOutput,
     confirm: async () => false,
     ...declined,
@@ -109,7 +109,7 @@ test("pivm storage purge defaults to no and prunes only after confirmation", asy
 
   const confirmed = storageHarness({ one: STORAGE_ROWS, two: STORAGE_ROWS });
   const confirmedOutput = output();
-  await runPivm(["storage", "purge"], {
+  await runGondolinier(["storage", "purge"], {
     stdout: confirmedOutput,
     confirm: async () => true,
     ...confirmed,
@@ -118,10 +118,10 @@ test("pivm storage purge defaults to no and prunes only after confirmation", asy
   assert.match(confirmedOutput.value(), /Reclaimable Docker storage purged/);
 });
 
-test("pivm storage purge skips an empty preview and aborts all deletion after inspection failure", async () => {
+test("gondolinier storage purge skips an empty preview and aborts all deletion after inspection failure", async () => {
   const empty = storageHarness({ one: "" });
   const emptyOutput = output();
-  await runPivm(["storage", "purge"], {
+  await runGondolinier(["storage", "purge"], {
     stdout: emptyOutput,
     confirm: async () => { throw new Error("must not prompt"); },
     ...empty,
@@ -130,7 +130,7 @@ test("pivm storage purge skips an empty preview and aborts all deletion after in
 
   const failed = storageHarness({ one: STORAGE_ROWS, two: STORAGE_ROWS }, "two");
   await assert.rejects(
-    () => runPivm(["storage", "purge"], { stdout: output(), confirm: async () => true, ...failed }),
+    () => runGondolinier(["storage", "purge"], { stdout: output(), confirm: async () => true, ...failed }),
     /inspection failed/,
   );
   assert.equal(failed.calls.filter(([, argv]) => argv[2] === "prune").length, 0);

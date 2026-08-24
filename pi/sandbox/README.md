@@ -227,21 +227,21 @@ Docker reset requires confirmation. It replaces the shared VM, deleting that VM'
 
 The footer shows a compact VM health marker. Detailed state remains in `/sandbox`.
 
-## `pivm` VM and storage management
+## `gondolinier` VM and storage management
 
-`pivm` is installed through Stow with `./install.sh config`. It never starts a controller or VM.
+`gondolinier` is installed through Stow with `./install.sh config`. It never starts a controller or VM.
 
 ```bash
-pivm vm list
-pivm storage list
-pivm storage purge
+gondolinier vm list
+gondolinier storage list
+gondolinier storage purge
 ```
 
-`pivm vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
+`gondolinier vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
 
-`pivm storage list` shows reclaimable Docker storage from active Pi VMs. It reports Images, Containers, Volumes, Build cache, and a decimal-gigabyte total. Active volumes are called out separately because purge preserves them.
+`gondolinier storage list` shows reclaimable Docker storage from active Pi VMs. It reports Images, Containers, Volumes, Build cache, and a decimal-gigabyte total. Active volumes are called out separately because purge preserves them.
 
-`pivm storage purge` displays the same preview, then asks for explicit confirmation. A declined or empty preview changes nothing. On confirmation it runs Docker's reclaimable-only system prune: stopped containers, unused images and volumes, and build cache are removed; active containers and volumes remain.
+`gondolinier storage purge` displays the same preview, then asks for explicit confirmation. A declined or empty preview changes nothing. On confirmation it runs Docker's reclaimable-only system prune: stopped containers, unused images and volumes, and build cache are removed; active containers and volumes remain.
 
 ## Installation
 
@@ -299,7 +299,7 @@ Rebuild the current image:
 node pi/sandbox/build-gondolin-image.mjs --force
 ```
 
-Use `/sandbox` to replace the shared VM and clear its ephemeral Docker state. Use `pivm storage purge` when the VM remains live and you want to reclaim only Docker objects that are safe to remove.
+Use `/sandbox` to replace the shared VM and clear its ephemeral Docker state. Use `gondolinier storage purge` when the VM remains live and you want to reclaim only Docker objects that are safe to remove.
 
 Do not connect the guest to the host Docker socket.
 
