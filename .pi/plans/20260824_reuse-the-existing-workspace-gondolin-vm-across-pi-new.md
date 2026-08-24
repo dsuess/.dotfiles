@@ -33,7 +33,7 @@ Keep all existing workspace, policy generation, image generation, VM identity, D
 On `session_shutdown { reason: "quit" }`, release the adopted root lease exactly once, clear all capability and owner fields, and allow the controller to stop normally. On final quit during pending cold startup, retain the existing cancellation behavior that stops a uniquely started controller. On fatal routing failure, capture the active client before clearing local state so an owned lease is actually released; keep child failures non-owning. If replacement-runtime construction fails after the handoff, allow lease expiry to clean up rather than letting a retired runtime act on the new session.
 
 ### Part C — Lock in process-lifetime reuse and document it
-- **Ledger:** {"status":"in_progress","note":"Production RPC regression and process-lifetime ownership documentation are added; running repository and native verification.","evidence":null}
+- **Ledger:** {"status":"completed","note":"Added the real wrapper/RPC new_session smoke test, documented process-level ownership, verified all suites, and committed the implementation plan with the change.","evidence":"npm --prefix pi/sandbox test passed; npm --prefix pi/sandbox run test:native passed (including production RPC/inventory); commit 410b728b."}
 
 Extend extension tests for ready and pending replacement, stale callback suppression, exact-once final release, root-owner adoption, non-owning child behavior, and unchanged fail-closed inventory enforcement. Add a production-shaped RPC scenario using Pi’s `new_session` command so the test exercises real extension teardown and reloading, then run sandbox Bash after replacement and confirm the controller reports the original VM with the expected lease count.
 
@@ -63,5 +63,5 @@ Update `pi/sandbox/README.md` and `pi/AGENTS.md` to state that the root Pi proce
 
 - ☑ Reproduce the replacement lifecycle failure
 - ☑ Transfer the root process lease safely
-- ▶ Lock in process-lifetime reuse and document it
+- ☑ Lock in process-lifetime reuse and document it
 <!-- pi-plan-mode:progress:end -->

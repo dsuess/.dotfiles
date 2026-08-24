@@ -12,6 +12,10 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 
 **Exception — `obsidian/`:** this one package is deployed by *copying* real files (not stow symlinks), because its iCloud vaults sync to iOS/iPadOS, which cannot follow symlinks. See the Obsidian section below.
 
+## Plan Documents
+
+Always commit a plan document in the same commit as the changes that implement it.
+
 ## Installation
 
 ```bash
