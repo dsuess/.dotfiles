@@ -48,8 +48,23 @@ function clientError(code, message) {
   return error;
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function abortError() {
+  return clientError("aborted", "controller startup was cancelled");
+}
+
+function sleep(milliseconds, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, milliseconds);
+    const onAbort = () => { clearTimeout(timer); done(abortError()); };
+    function done(error) {
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function assertHex(value, label) {
@@ -593,10 +608,11 @@ function spawnController(scope, paths, options) {
   return child;
 }
 
-async function waitForManifest(paths, scope, child, timeoutMs) {
+export async function waitForManifest(paths, scope, child, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw abortError();
     try {
       const manifest = readControllerManifest(paths.manifestPath, {
         workspaceKey: scope.workspaceKey,
@@ -608,7 +624,7 @@ async function waitForManifest(paths, scope, child, timeoutMs) {
     } catch (error) {
       lastError = error;
     }
-    if (child.exitCode !== null && child.exitCode !== 0) {
+    if (child?.exitCode !== null && child?.exitCode !== undefined && child.exitCode !== 0) {
       let detail = "";
       try {
         detail = fs.readFileSync(paths.logPath, "utf8").slice(-4096).trim();
@@ -620,7 +636,7 @@ async function waitForManifest(paths, scope, child, timeoutMs) {
         `controller exited with ${child.exitCode}${detail ? `: ${detail}` : ""}`,
       );
     }
-    await sleep(50);
+    await sleep(50, signal);
   }
   throw clientError(
     "controller_start_timeout",
@@ -628,7 +644,22 @@ async function waitForManifest(paths, scope, child, timeoutMs) {
   );
 }
 
-export async function ensureControllerLease(options = {}) {
+function controllerStartupDescriptor(scope, paths, child = null) {
+  return Object.freeze({
+    version: 1,
+    workspaceKey: scope.workspaceKey,
+    workspaceRoot: scope.canonicalWorkspaceRoot,
+    bareCommonDirectory: scope.bareCommonDirectory,
+    runtimeRoot: paths.runtimeRoot,
+    socketPath: paths.socketPath,
+    manifestPath: paths.manifestPath,
+    // This is cancellation bookkeeping, not a controller capability. It is
+    // present only for the process that began a cold controller.
+    startupPid: Number.isSafeInteger(child?.pid) ? child.pid : null,
+  });
+}
+
+export async function beginControllerStartup(options = {}) {
   const launchDirectory = options.launchDirectory ?? process.cwd();
   const scope = validateRepositoryScope(
     options.scope ?? discoverRepositoryScope({
@@ -637,36 +668,80 @@ export async function ensureControllerLease(options = {}) {
     }),
     launchDirectory,
   );
-  const paths = getClientControllerPaths(scope.workspaceKey, {
-    runtimeRoot: options.runtimeRoot,
-  });
+  const paths = getClientControllerPaths(scope.workspaceKey, { runtimeRoot: options.runtimeRoot });
   fs.mkdirSync(paths.runtimeRoot, { recursive: true, mode: 0o700 });
   fs.chmodSync(paths.runtimeRoot, 0o700);
 
-  let manifest = null;
+  let child = null;
   try {
-    manifest = readControllerManifest(paths.manifestPath, {
+    const manifest = readControllerManifest(paths.manifestPath, {
       workspaceKey: scope.workspaceKey,
       workspaceRoot: scope.canonicalWorkspaceRoot,
       socketPath: paths.socketPath,
     });
     await connectSocket(manifest.socketPath).then((socket) => socket.destroy());
   } catch {
-    const child = spawnController(scope, paths, options);
-    manifest = await waitForManifest(
-      paths,
-      scope,
-      child,
-      options.startTimeoutMs ?? START_TIMEOUT_MS,
-    );
+    // The daemon lock makes concurrent begin calls join one controller rather
+    // than publish a second one. No token or healthy-manifest data is returned.
+    child = spawnController(scope, paths, options);
   }
+  return controllerStartupDescriptor(scope, paths, child);
+}
 
-  const acquired = await ControllerClient.acquire(manifest, {
+function validateStartupDescriptor(descriptor) {
+  if (!descriptor || descriptor.version !== 1 || typeof descriptor.workspaceKey !== "string" ||
+      typeof descriptor.workspaceRoot !== "string" || typeof descriptor.runtimeRoot !== "string" ||
+      typeof descriptor.socketPath !== "string" || typeof descriptor.manifestPath !== "string" ||
+      (descriptor.startupPid !== undefined && descriptor.startupPid !== null && !Number.isSafeInteger(descriptor.startupPid))) {
+    throw clientError("invalid_startup_descriptor", "controller startup descriptor is invalid");
+  }
+  const scope = validateRepositoryScope({
+    physicalLaunchDirectory: descriptor.workspaceRoot,
+    canonicalWorkspaceRoot: descriptor.workspaceRoot,
+    bareCommonDirectory: descriptor.bareCommonDirectory ?? null,
+    workspaceKey: descriptor.workspaceKey,
+  });
+  const paths = getClientControllerPaths(scope.workspaceKey, { runtimeRoot: descriptor.runtimeRoot });
+  if (paths.socketPath !== descriptor.socketPath || paths.manifestPath !== descriptor.manifestPath) {
+    throw clientError("invalid_startup_descriptor", "controller startup descriptor paths do not match");
+  }
+  return { scope, paths };
+}
+
+export function stopStartedController(startup) {
+  let paths;
+  try { ({ paths } = validateStartupDescriptor(startup)); } catch { return false; }
+  const pid = startup.startupPid;
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  // A descriptor carries the PID only when this root spawned the detached
+  // daemon. Do not signal a warm/shared controller.
+  try {
+    const manifest = readControllerManifest(paths.manifestPath);
+    if (manifest.pid !== pid) return false;
+  } catch {
+    // A cold daemon has no healthy manifest yet; its captured PID is the only
+    // cancellation target and it owns no lease.
+  }
+  try { process.kill(pid, "SIGTERM"); return true; } catch { return false; }
+}
+
+export async function acquireControllerLease(options = {}) {
+  const startup = options.startup ?? await beginControllerStartup(options);
+  const { scope, paths } = validateStartupDescriptor(startup);
+  const manifest = await waitForManifest(
+    paths, scope, null, options.startTimeoutMs ?? START_TIMEOUT_MS, options.signal,
+  );
+  if (options.signal?.aborted) throw abortError();
+  const acquired = await ControllerClient.acquire(manifest, { 
     clientId: options.clientId,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
   });
   acquired.client.validateStatus(acquired.status, manifest);
-  return { ...acquired, manifest, scope, paths };
+  return { ...acquired, manifest, scope, paths, startup };
+}
+
+export async function ensureControllerLease(options = {}) {
+  return acquireControllerLease(options);
 }
 
 export const clientInternals = Object.freeze({

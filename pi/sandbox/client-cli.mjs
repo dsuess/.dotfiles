@@ -4,7 +4,13 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { configureRuntimeCaches, ControllerClient, ensureControllerLease, validateRepositoryScope } from "./client.mjs";
+import {
+  beginControllerStartup,
+  configureRuntimeCaches,
+  ControllerClient,
+  ensureControllerLease,
+  validateRepositoryScope,
+} from "./client.mjs";
 import { discoverRepositoryScope } from "./repository-scope.mjs";
 
 function parseOptions(argv) {
@@ -68,11 +74,11 @@ function privateHandshakeFile(runtimeRoot) {
   return path.join(directory, "ready.json");
 }
 
-function leaseRecord(lease, handshakeFile, models) {
+function startupRecord(startup, handshakeFile, models) {
   return [
-    lease.leaseToken, lease.paths.socketPath, lease.scope.workspaceKey, lease.scope.canonicalWorkspaceRoot,
-    lease.status.policyGeneration, lease.status.imageGeneration, lease.status.vmId, lease.paths.runtimeRoot,
-    handshakeFile, models.join(","),
+    Buffer.from(JSON.stringify(startup)).toString("base64"),
+    handshakeFile,
+    models.join(","),
   ].join("\t");
 }
 
@@ -99,44 +105,32 @@ async function preflight(options) {
     modelsPath: required(options, "models"), cachePath: required(options, "cache"),
   } : null;
   const modelScope = modelOptions ? import("./model-scope-cache.mjs").catch(() => null) : Promise.resolve(null);
-  // The probe performs only bounded local reads, so it can overlap VM acquisition.
+  // Trusted model metadata and controller boot intentionally overlap. Neither
+  // result grants Pi a controller token, lease, or tool capability.
   const probe = modelScope.then((module) => module && modelOptions
     ? module.probeModelScope(modelOptions)
     : modelOptions ? {
       state: "fallback", models: [], source: "fallback", warning: "model scope cache helper is missing; continuing with Pi's native model resolution",
     } : null);
-  let lease;
-  try {
-    lease = await ensureControllerLease({
-      launchDirectory: required(options, "launch_dir"), settingsPath: options.sandbox_settings,
-      cacheRoot: options.cache_root, runtimeRoot: options.runtime_root, imageDir: options.image_dir,
-      clientId: options.client_id, scope,
-    });
-  } catch (error) {
-    // Never start a metadata Pi process if the controller was not healthy.
-    await probe.catch(() => {});
-    throw error;
+  const startup = await beginControllerStartup({
+    launchDirectory: required(options, "launch_dir"), settingsPath: options.sandbox_settings,
+    cacheRoot: options.cache_root, runtimeRoot: options.runtime_root, imageDir: options.image_dir,
+    clientId: options.client_id, scope,
+  });
+  const probed = await probe;
+  let models = [];
+  let warning;
+  if (probed?.state === "fresh" || probed?.state === "fallback") {
+    models = probed.models;
+    warning = probed.warning;
+  } else if (modelOptions && await modelScope) {
+    const resolved = await (await modelScope).resolveModelScope(modelOptions);
+    models = resolved.models;
+    warning = resolved.warning;
   }
-  try {
-    const probed = await probe;
-    let models = [];
-    let warning;
-    if (probed?.state === "fresh" || probed?.state === "fallback") {
-      models = probed.models;
-      warning = probed.warning;
-    } else if (modelOptions && await modelScope) {
-      const resolved = await (await modelScope).resolveModelScope(modelOptions);
-      models = resolved.models;
-      warning = resolved.warning;
-    }
-    const handshakeFile = privateHandshakeFile(lease.paths.runtimeRoot);
-    if (warning) process.stderr.write(`pi: warning: ${warning}\n`);
-    lease.client.destroy();
-    process.stdout.write(`${leaseRecord(lease, handshakeFile, models)}\n`);
-  } catch (error) {
-    await lease.client.release().catch(() => {});
-    throw error;
-  }
+  const handshakeFile = privateHandshakeFile(startup.runtimeRoot);
+  if (warning) process.stderr.write(`pi: warning: ${warning}\n`);
+  process.stdout.write(`${startupRecord(startup, handshakeFile, models)}\n`);
 }
 
 async function release(options) {

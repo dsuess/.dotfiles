@@ -114,15 +114,6 @@ import path from "node:path";
 const args = process.argv.slice(2);
 const command = args.shift();
 fs.appendFileSync("$CLIENT_LOG", command + " " + args.join(" ") + "\\n");
-if (command === "release") {
-  if (!fs.existsSync("$TEST_ROOT/hold-controller")) fs.rmSync("$TEST_ROOT/controller-active", { force: true });
-  process.stdout.write('{"released":true}\\n');
-  process.exit(0);
-}
-if (fs.existsSync("$TEST_ROOT/fail-image")) {
-  process.stderr.write("image is missing or corrupt\\n");
-  process.exit(1);
-}
 if (!fs.existsSync("$TEST_ROOT/controller-active")) {
   fs.appendFileSync("$IMAGE_VERIFY_LOG", "verify\\n");
   fs.writeFileSync("$TEST_ROOT/controller-active", "active");
@@ -130,18 +121,13 @@ if (!fs.existsSync("$TEST_ROOT/controller-active")) {
 const get = (name) => args[args.indexOf(name) + 1];
 const launch = fs.realpathSync(get("--launch-dir"));
 fs.mkdirSync("$RUNTIME_ROOT", { recursive: true, mode: 0o700 });
-const record = {
+const startup = {
   version: 1,
   socketPath: "$RUNTIME_ROOT/controller.sock",
-  leaseToken: "a".repeat(64),
+  manifestPath: "$RUNTIME_ROOT/controller.json",
   workspaceKey: createHash("sha256").update(JSON.stringify([launch, null])).digest("hex"),
   workspaceRoot: launch,
   bareCommonDirectory: null,
-  policyGeneration: "c".repeat(64),
-  imageGeneration: "d".repeat(64),
-  vmId: "fake-vm-id",
-  dockerHealthy: true,
-  controllerPid: process.pid,
   runtimeRoot: "$RUNTIME_ROOT"
 };
 if (command === "preflight") {
@@ -156,12 +142,10 @@ if (command === "preflight") {
   const handshakeDirectory = "$RUNTIME_ROOT/handshake-" + process.pid;
   fs.mkdirSync(handshakeDirectory, { recursive: true, mode: 0o700 });
   process.stdout.write([
-    record.leaseToken, record.socketPath, record.workspaceKey, record.workspaceRoot,
-    record.policyGeneration, record.imageGeneration, record.vmId, record.runtimeRoot,
-    handshakeDirectory + "/ready.json", models,
+    Buffer.from(JSON.stringify(startup)).toString("base64"), handshakeDirectory + "/ready.json", models,
   ].join("\\t") + "\\n");
 } else {
-  process.stdout.write(JSON.stringify(record) + "\\n");
+  process.stdout.write(JSON.stringify(startup) + "\\n");
 }
 EOF_CLIENT
 
@@ -196,21 +180,19 @@ fi
 if [[ -e "$TEST_ROOT/no-handshake" ]]; then
     exit 0
 fi
-if [[ -n "\${PI_GONDOLIN_HANDSHAKE_FILE-}" ]]; then
+if [[ -n "\${PI_GONDOLIN_HANDSHAKE_FILE-}" && ! -e "$TEST_ROOT/no-handshake" && ! -e "$TEST_ROOT/fail-image" ]]; then
     node -e '
       const fs = require("node:fs");
+      const descriptor = JSON.parse(Buffer.from(process.env.PI_GONDOLIN_STARTUP_DESCRIPTOR, "base64").toString("utf8"));
       const mismatch = fs.existsSync(process.argv[1]);
-      fs.writeFileSync(process.env.PI_GONDOLIN_HANDSHAKE_FILE, JSON.stringify({
-        ok: true,
-        workspaceKey: process.env.PI_GONDOLIN_WORKSPACE_KEY,
-        workspaceRoot: process.env.PI_GONDOLIN_WORKSPACE_ROOT,
-        policyGeneration: process.env.PI_GONDOLIN_POLICY_GENERATION,
-        imageGeneration: process.env.PI_GONDOLIN_IMAGE_GENERATION,
-        vmId: mismatch ? "wrong-vm" : process.env.PI_GONDOLIN_VM_ID,
-        dockerHealthy: true,
+      const write = () => { fs.appendFileSync("$REAL_PI_LOG", "handshake\\n"); fs.writeFileSync(process.env.PI_GONDOLIN_HANDSHAKE_FILE, JSON.stringify({
+        ok: true, workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot,
+        policyGeneration: "c".repeat(64), imageGeneration: "d".repeat(64),
+        vmId: mismatch ? "" : "fake-vm-id", dockerHealthy: true,
         tools: ["read", "write", "edit", "bash", "grep", "find", "ls"]
-      }));
-    ' "$TEST_ROOT/bad-handshake"
+      })); };
+      if (fs.existsSync(process.argv[2])) setTimeout(write, 200); else write();
+    ' "$TEST_ROOT/bad-handshake" "$TEST_ROOT/delay-ready"
 fi
 printf 'real=%s\\n' "\$0"
 printf 'cwd=%s\\n' "\$PWD"
@@ -222,6 +204,7 @@ printf 'path=%s\\n' "\$PATH"
 printf 'builtins=%s\\n' "\${PI_GONDOLIN_BUILTIN_TOOLS-unset}"
 printf 'host_tools=%s\\n' "\${PI_GONDOLIN_HOST_TOOLS-unset}"
 printf 'sandbox=%s\\n' "\${PI_GONDOLIN_SANDBOX-unset}"
+printf 'descriptor=%s\\n' "\${PI_GONDOLIN_STARTUP_DESCRIPTOR-unset}"
 printf 'socket=%s\\n' "\${PI_GONDOLIN_SOCKET-unset}"
 printf 'lease=%s\\n' "\${PI_GONDOLIN_LEASE-unset}"
 if [[ "\$*" == *"--path-order-probe"* ]]; then
@@ -311,11 +294,12 @@ grep -F 'secret=unset' <<<"$output" >/dev/null
 grep -F 'node_options=unset' <<<"$output" >/dev/null
 grep -F 'tmpdir=/tmp' <<<"$output" >/dev/null
 grep -F 'sandbox=1' <<<"$output" >/dev/null
-grep -E '^lease=[a-f0-9]{64}$' <<<"$output" >/dev/null
+grep -E '^descriptor=[A-Za-z0-9+/=]+$' <<<"$output" >/dev/null
+! grep -q '^socket=/\|^lease=[a-f0-9]' <<<"$output"
 grep -F 'builtins=read,write,edit,bash,grep,find,ls' <<<"$output" >/dev/null
 grep -F 'host_tools=ketch_search,ketch_scrape,ketch_code,ketch_docs,ketch_crawl,ask_user_question,subagent,submit_plan,plan_progress,complete_plan,complete_stage' <<<"$output" >/dev/null
 grep -q '^preflight ' "$CLIENT_LOG"
-grep -q '^release ' "$CLIENT_LOG"
+! grep -q '^release ' "$CLIENT_LOG"
 
 # Explicit tool selection is removed from Pi argv and split into private,
 # post-handshake replacement and host-adapter capabilities.
@@ -331,7 +315,7 @@ grep -F '<--no-builtin-tools>' <<<"$output" >/dev/null
 output="$(run_wrapper "$BASE_PATH" --no-tools --flag none)"
 grep -F 'builtins=' <<<"$output" >/dev/null
 grep -F 'host_tools=' <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 
 if run_wrapper "$BASE_PATH" --no-extensions >"$TEST_ROOT/no-extensions.out" 2>&1; then
     echo "wrapper unexpectedly accepted --no-extensions" >&2
@@ -361,11 +345,11 @@ grep -F "args=<--models><$EXPECTED_SCOPE><--flag><expired><--no-builtin-tools>" 
 : >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --plan)"
 grep -F "args=<--models><$EXPECTED_SCOPE><--plan><--no-builtin-tools>" <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 : >"$REAL_PI_LOG"
 output="$(run_wrapper "$BASE_PATH" --plan --model anthropic/claude-opus-5 --thinking max)"
 grep -F "args=<--models><$EXPECTED_SCOPE><--plan><--model><anthropic/claude-opus-5><--thinking><max><--no-builtin-tools>" <<<"$output" >/dev/null
-[[ "$(wc -l <"$REAL_PI_LOG")" -eq 1 ]]
+[[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 
 # Explicit scopes and full-list commands bypass automatic discovery, even with
 # no cache. The user-requested full list remains unscoped.
@@ -399,6 +383,18 @@ grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE><--flag><provider-added><--no-bu
 [[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 ! grep -F 'fixture-anthropic-secret' "$MODEL_SCOPE_CACHE" >/dev/null
 
+# The trusted host Pi process starts before delayed sandbox readiness.
+: >"$REAL_PI_LOG"
+touch "$TEST_ROOT/delay-ready"
+run_wrapper "$BASE_PATH" --flag delayed >"$TEST_ROOT/delayed.out" &
+delayed_pid=$!
+for _ in {1..100}; do grep -q '^session$' "$REAL_PI_LOG" 2>/dev/null && break; sleep 0.01; done
+grep -q '^session$' "$REAL_PI_LOG"
+! grep -q '^handshake$' "$REAL_PI_LOG"
+wait "$delayed_pid"
+rm "$TEST_ROOT/delay-ready"
+grep -q '^handshake$' "$REAL_PI_LOG"
+
 # Routing failure never falls back to host tools.
 touch "$TEST_ROOT/no-handshake"
 if run_wrapper "$BASE_PATH" --flag timeout >"$TEST_ROOT/timeout.out" 2>&1; then
@@ -416,7 +412,7 @@ fi
 rm "$TEST_ROOT/bad-handshake"
 grep -F 'routing extension rejected' "$TEST_ROOT/mismatch.out" >/dev/null
 
-# Signals reach Pi and still release the controller lease.
+# Signals reach Pi without the launcher owning a controller lease.
 : >"$CLIENT_LOG"
 (
     cd "$SHIM_BIN"
@@ -434,8 +430,7 @@ wait "$wrapper_pid"
 signal_status=$?
 set -e
 [[ "$signal_status" -ne 0 ]]
-for _ in {1..100}; do grep -q '^release ' "$CLIENT_LOG" 2>/dev/null && break; sleep 0.01; done
-grep -q '^release ' "$CLIENT_LOG"
+! grep -q '^release ' "$CLIENT_LOG"
 
 # Missing prerequisites are fail-closed.
 if run_wrapper "$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$NO_QEMU_BIN:$TOOL_PATH" --flag no-qemu >"$TEST_ROOT/no-qemu.out" 2>&1; then
@@ -451,9 +446,9 @@ if run_wrapper "$BASE_PATH" --flag no-image >"$TEST_ROOT/no-image.out" 2>&1; the
     echo "wrapper unexpectedly ran with a missing image" >&2
     exit 1
 fi
-rm "$TEST_ROOT/fail-image"
-grep -F 'could not acquire the workspace Gondolin controller' "$TEST_ROOT/no-image.out" >/dev/null
-[[ ! -s "$REAL_PI_LOG" ]]
+rm "$TEST_ROOT/fail-image" "$TEST_ROOT/controller-active"
+grep -E 'exited before|timed out waiting' "$TEST_ROOT/no-image.out" >/dev/null
+[[ -s "$REAL_PI_LOG" ]]
 
 # An existing healthy controller is the only warm-start shortcut. The fake
 # controller owns image verification, so the wrapper must not invoke it again.

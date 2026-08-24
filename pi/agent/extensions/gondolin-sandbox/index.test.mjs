@@ -113,10 +113,18 @@ function createHarness(t, options = {}) {
     PI_GONDOLIN_HOST_TOOLS: "",
     PI_GONDOLIN_HANDSHAKE_FILE: handshake,
   };
+  if (options.root) {
+    for (const name of ["PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT", "PI_GONDOLIN_POLICY_GENERATION", "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID"]) delete env[name];
+    env.PI_GONDOLIN_STARTUP_DESCRIPTOR = Buffer.from(JSON.stringify({
+      version: 1, workspaceKey: HEX_C, workspaceRoot: "/physical/workspace", bareCommonDirectory: null,
+      runtimeRoot: root, socketPath: path.join(root, "controller.sock"), manifestPath: path.join(root, "controller.json"),
+    })).toString("base64");
+  }
   const connectCalls = [];
   extensionModule.createGondolinSandboxExtension({
     env,
     auditOptions: { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR },
+    acquire: options.acquire,
     async connect(request) {
       connectCalls.push(request);
       if (options.connectError) throw new Error(options.connectError);
@@ -229,9 +237,80 @@ test("user Bash runs synchronous planning preflight before any controller RPC", 
   assert.equal(controllerCalls, 0);
 });
 
-test("connection failure leaves no built-ins active and records failed handshake", async (t) => {
+test("interactive startup publishes starting and queues input and Bash until root acquisition", async (t) => {
+  let resolveAcquire;
+  const acquired = new Promise((resolve) => { resolveAcquire = resolve; });
+  const harness = createHarness(t, {
+    root: true,
+    acquire: async () => acquired,
+  });
+  const lifecycle = [];
+  harness.pi.events.on("gondolin-sandbox:lifecycle", (event) => lifecycle.push(event));
+  await harness.emit("session_start", { reason: "startup" });
+  assert.deepEqual(harness.active(), []);
+  assert.equal(lifecycle.at(-1).health, "starting");
+  let inputSettled = false;
+  const queuedInput = harness.emit("input", { text: "queued", source: "interactive" }).then((value) => { inputSettled = true; return value; });
+  let bashSettled = false;
+  const queuedBash = harness.emit("user_bash", { command: "pwd" }).then((value) => { bashSettled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(inputSettled, false);
+  assert.equal(bashSettled, false);
+  resolveAcquire({
+    client: harness.client,
+    leaseToken: HEX_A,
+    manifest: { socketPath: path.join(path.dirname(harness.handshake), "controller.sock") },
+    scope: { workspaceKey: HEX_C, canonicalWorkspaceRoot: "/physical/workspace" },
+    status: {
+      health: "healthy", dockerHealthy: true, vmId: "vm-shared", workspaceKey: HEX_C,
+      workspaceRoot: "/physical/workspace", policyGeneration: HEX_B, imageGeneration: HEX_A, attachedRoots: 1,
+    },
+  });
+  assert.deepEqual(await queuedInput, { action: "continue" });
+  assert.ok((await queuedBash).operations);
+  assert.deepEqual(harness.active().sort(), ["bash", "read"]);
+  assert.equal(lifecycle.at(-1).health, "healthy");
+  assert.equal(harness.env.PI_GONDOLIN_LEASE, HEX_A);
+});
+
+test("root shutdown aborts pending acquisition and releases an acquired lease once", async (t) => {
+  let signal;
+  const pending = createHarness(t, {
+    root: true,
+    acquire: async ({ signal: nextSignal }) => {
+      signal = nextSignal;
+      return new Promise(() => {});
+    },
+  });
+  await pending.emit("session_start", { reason: "startup" });
+  await pending.emit("session_shutdown", { reason: "quit" });
+  assert.equal(signal.aborted, true);
+
+  let resolveAcquire;
+  let releases = 0;
+  const ready = createHarness(t, {
+    root: true,
+    acquire: async () => new Promise((resolve) => { resolveAcquire = resolve; }),
+  });
+  ready.client.release = async () => { releases += 1; };
+  await ready.emit("session_start", { reason: "startup" });
+  resolveAcquire({
+    client: ready.client, leaseToken: HEX_A, manifest: { socketPath: "/tmp/controller.sock" },
+    scope: { workspaceKey: HEX_C, canonicalWorkspaceRoot: "/physical/workspace" },
+    status: { health: "healthy", dockerHealthy: true, vmId: "vm-shared", workspaceKey: HEX_C,
+      workspaceRoot: "/physical/workspace", policyGeneration: HEX_B, imageGeneration: HEX_A, attachedRoots: 1 },
+  });
+  await ready.emit("input", { text: "queued", source: "interactive" });
+  await ready.emit("session_shutdown", { reason: "quit" });
+  await ready.emit("session_shutdown", { reason: "quit" });
+  assert.equal(releases, 1);
+  assert.equal(ready.env.PI_GONDOLIN_LEASE, undefined);
+});
+
+test("connection failure handles queued input without activating built-ins", async (t) => {
   const harness = createHarness(t, { connectError: "controller unavailable" });
-  await assert.rejects(() => harness.emit("session_start", { reason: "startup" }), /controller unavailable/);
+  await harness.emit("session_start", { reason: "startup" });
+  assert.deepEqual(await harness.emit("input", { text: "queued" }), { action: "handled" });
   assert.equal(harness.active().some((name) => ["read", "write", "edit", "bash", "grep", "find", "ls"].includes(name)), false);
   assert.equal(harness.shutdownCalls(), 1);
   const handshake = JSON.parse(fs.readFileSync(harness.handshake, "utf8"));

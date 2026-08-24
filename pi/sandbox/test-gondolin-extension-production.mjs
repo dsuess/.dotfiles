@@ -94,7 +94,15 @@ async function runChild({ root, lease, planning = false, invalidLease = false })
   });
   assert.equal(result.code, 0, result.stderr);
   if (!fs.existsSync(inventoryPath)) {
-    throw new Error(`child inventory missing (${id})\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    if (!invalidLease && !fs.existsSync(handshakePath)) {
+      throw new Error(`child inventory missing (${id})\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    }
+    // Non-interactive startup now blocks on readiness. A rejected inherited
+    // lease therefore handles the submission before before_agent_start runs.
+    return {
+      inventory: { active: [], tools: [] },
+      handshake: JSON.parse(fs.readFileSync(handshakePath, "utf8")),
+    };
   }
   return {
     inventory: JSON.parse(fs.readFileSync(inventoryPath, "utf8")),

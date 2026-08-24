@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { ControllerClient } from "../../../sandbox/client.mjs";
+import { acquireControllerLease, ControllerClient, stopStartedController } from "../../../sandbox/client.mjs";
 import {
   auditToolInventory,
   createHostAdapterManifest,
@@ -30,6 +30,7 @@ export const SANDBOX_BEFORE_USER_BASH_EVENT = "gondolin-sandbox:before-user-bash
 
 interface SandboxEnvironment {
   PI_GONDOLIN_SANDBOX?: string;
+  PI_GONDOLIN_STARTUP_DESCRIPTOR?: string;
   PI_GONDOLIN_SOCKET?: string;
   PI_GONDOLIN_LEASE?: string;
   PI_GONDOLIN_WORKSPACE_KEY?: string;
@@ -54,6 +55,13 @@ interface ExtensionDependencies {
     imageGeneration: string;
     vmId: string;
   }) => Promise<{ client: SandboxClient & { destroy?: () => void }; status: any }>;
+  acquire?: (options: { startup: any; clientId: string; signal: AbortSignal }) => Promise<{
+    client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> };
+    status: any;
+    leaseToken: string;
+    scope: { workspaceKey: string; canonicalWorkspaceRoot: string };
+    manifest: { socketPath: string };
+  }>;
   auditOptions?: { extensionPath?: string; agentDir?: string };
 }
 
@@ -65,6 +73,24 @@ function requiredHex(value: string | undefined, name: string): string {
 function requiredString(value: string | undefined, name: string): string {
   if (!value || value.includes("\0")) throw new Error(`${name} is missing or invalid`);
   return value;
+}
+
+function parseStartupDescriptor(value: string | undefined): any {
+  if (!value || !/^[A-Za-z0-9+/=]+$/.test(value)) throw new Error("PI_GONDOLIN_STARTUP_DESCRIPTOR is missing or invalid");
+  let descriptor: any;
+  try { descriptor = JSON.parse(Buffer.from(value, "base64").toString("utf8")); } catch {
+    throw new Error("PI_GONDOLIN_STARTUP_DESCRIPTOR is invalid JSON");
+  }
+  if (descriptor?.version !== 1 || !/^[0-9a-f]{64}$/.test(descriptor.workspaceKey) ||
+      typeof descriptor.workspaceRoot !== "string" || !path.isAbsolute(descriptor.workspaceRoot) ||
+      typeof descriptor.runtimeRoot !== "string" || !path.isAbsolute(descriptor.runtimeRoot) ||
+      typeof descriptor.socketPath !== "string" || !path.isAbsolute(descriptor.socketPath) ||
+      typeof descriptor.manifestPath !== "string" || !path.isAbsolute(descriptor.manifestPath) ||
+      (descriptor.startupPid !== undefined && descriptor.startupPid !== null &&
+        (!Number.isSafeInteger(descriptor.startupPid) || descriptor.startupPid < 1))) {
+    throw new Error("PI_GONDOLIN_STARTUP_DESCRIPTOR has an invalid shape");
+  }
+  return descriptor;
 }
 
 export function parseRequestedBuiltins(value: string | undefined): string[] {
@@ -123,17 +149,23 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
   const connect =
     dependencies.connect ??
     ((options) => ControllerClient.connectInherited(options) as Promise<{ client: SandboxClient; status: any }>);
+  const acquire = dependencies.acquire ?? ((options) => acquireControllerLease(options) as Promise<any>);
 
   return function gondolinSandboxExtension(pi: ExtensionAPI): void {
     if (env.PI_GONDOLIN_SANDBOX !== "1") return;
 
     const cwd = process.cwd();
-    let client: (SandboxClient & { destroy?: () => void }) | null = null;
+    let client: (SandboxClient & { destroy?: () => void; release?: () => Promise<void> }) | null = null;
     let connectedStatus: any = null;
     let fatalError: string | null = null;
     let permittedNames = new Set<string>();
     let statusTimer: NodeJS.Timeout | null = null;
     let lastContext: ExtensionContext | null = null;
+    let readiness: Promise<void> | null = null;
+    let acquisitionAbort: AbortController | null = null;
+    let rootStartup: any = null;
+    let ownsRootLease = false;
+    let released = false;
     const settingsStore = new SandboxSettingsStore();
     const manifest = createHostAdapterManifest({ agentDir: dependencies.auditOptions?.agentDir });
     const getClient = (): SandboxClient => {
@@ -173,13 +205,15 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       fatalError = reason;
       client?.destroy?.();
       client = null;
-      const currentAudit = audit();
-      pi.setActiveTools(
-        pi
-          .getActiveTools()
-          .filter((name) => !GONDOLIN_BUILTIN_NAMES.includes(name as any))
-          .filter((name) => currentAudit.allowedNames.has(name)),
-      );
+      pi.setActiveTools([]);
+      if (ownsRootLease && !released) {
+        released = true;
+        void client?.release?.().catch(() => {});
+      }
+      for (const name of [
+        "PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT",
+        "PI_GONDOLIN_POLICY_GENERATION", "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID",
+      ] as const) delete env[name];
       emitLifecycle({
         health: "failed",
         vmId: connectedStatus?.vmId ?? null,
@@ -217,83 +251,114 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       if (result.replacementErrors.length > 0) payload.error = result.replacementErrors.join("; ");
     });
 
-    pi.on("session_start", async (_event, ctx) => {
+    const startReadiness = (ctx: ExtensionContext): Promise<void> => {
+      if (readiness) return readiness;
       lastContext = ctx;
-      try {
-        traceStartup("pi_initialize_complete");
-        traceStartup("routing_connection_audit_start");
-        const socketPath = requiredString(env.PI_GONDOLIN_SOCKET, "PI_GONDOLIN_SOCKET");
-        const leaseToken = requiredHex(env.PI_GONDOLIN_LEASE, "PI_GONDOLIN_LEASE");
-        const workspaceKey = requiredHex(env.PI_GONDOLIN_WORKSPACE_KEY, "PI_GONDOLIN_WORKSPACE_KEY");
-        const workspaceRoot = requiredString(
-          env.PI_GONDOLIN_WORKSPACE_ROOT,
-          "PI_GONDOLIN_WORKSPACE_ROOT",
-        );
-        const policyGeneration = requiredHex(
-          env.PI_GONDOLIN_POLICY_GENERATION,
-          "PI_GONDOLIN_POLICY_GENERATION",
-        );
-        const imageGeneration = requiredHex(
-          env.PI_GONDOLIN_IMAGE_GENERATION,
-          "PI_GONDOLIN_IMAGE_GENERATION",
-        );
-        const vmId = requiredString(env.PI_GONDOLIN_VM_ID, "PI_GONDOLIN_VM_ID");
-        const requested = parseRequestedBuiltins(env.PI_GONDOLIN_BUILTIN_TOOLS);
-        const requestedHostTools = parseRequestedHostTools(
-          env.PI_GONDOLIN_HOST_TOOLS,
-          manifest.keys(),
-        );
-        const connected = await connect({
-          socketPath,
-          leaseToken,
-          workspaceKey,
-          workspaceRoot,
-          policyGeneration,
-          imageGeneration,
-          vmId,
-        });
-        client = connected.client;
-        publishStatus(connected.status, ctx);
-        const result = audit();
-        if (result.replacementErrors.length > 0) throw new Error(result.replacementErrors.join("; "));
-        const missingHostTools = requestedHostTools.filter((name) => !result.allowedNames.has(name));
-        if (missingHostTools.length > 0) {
-          throw new Error(`Requested host adapters are missing or unaudited: ${missingHostTools.join(", ")}`);
+      permittedNames = new Set();
+      pi.setActiveTools([]);
+      const requested = parseRequestedBuiltins(env.PI_GONDOLIN_BUILTIN_TOOLS);
+      const requestedHostTools = parseRequestedHostTools(env.PI_GONDOLIN_HOST_TOOLS, manifest.keys());
+      const inherited = env.PI_GONDOLIN_LEASE !== undefined;
+      acquisitionAbort = new AbortController();
+      connectedStatus = {
+        health: "starting", vmId: null, dockerHealthy: false, attachedRoots: 0,
+        policyGeneration: null, imageGeneration: null, pendingRestart: false,
+      };
+      emitLifecycle(lifecycleFromStatus(connectedStatus), ctx);
+      readiness = (async () => {
+        try {
+          traceStartup("routing_connection_audit_start");
+          let connected: any;
+          let workspaceKey: string;
+          let workspaceRoot: string;
+          if (inherited) {
+            const socketPath = requiredString(env.PI_GONDOLIN_SOCKET, "PI_GONDOLIN_SOCKET");
+            const leaseToken = requiredHex(env.PI_GONDOLIN_LEASE, "PI_GONDOLIN_LEASE");
+            workspaceKey = requiredHex(env.PI_GONDOLIN_WORKSPACE_KEY, "PI_GONDOLIN_WORKSPACE_KEY");
+            workspaceRoot = requiredString(env.PI_GONDOLIN_WORKSPACE_ROOT, "PI_GONDOLIN_WORKSPACE_ROOT");
+            connected = await connect({
+              socketPath, leaseToken, workspaceKey, workspaceRoot,
+              policyGeneration: requiredHex(env.PI_GONDOLIN_POLICY_GENERATION, "PI_GONDOLIN_POLICY_GENERATION"),
+              imageGeneration: requiredHex(env.PI_GONDOLIN_IMAGE_GENERATION, "PI_GONDOLIN_IMAGE_GENERATION"),
+              vmId: requiredString(env.PI_GONDOLIN_VM_ID, "PI_GONDOLIN_VM_ID"),
+            });
+          } else {
+            const startup = parseStartupDescriptor(env.PI_GONDOLIN_STARTUP_DESCRIPTOR);
+            rootStartup = startup;
+            workspaceKey = startup.workspaceKey;
+            workspaceRoot = startup.workspaceRoot;
+            connected = await acquire({ startup, clientId: `pi-${process.pid}`, signal: acquisitionAbort!.signal });
+            ownsRootLease = true;
+          }
+          client = connected.client;
+          const status = connected.status;
+          if (status.workspaceKey !== workspaceKey || status.workspaceRoot !== workspaceRoot ||
+              status.health !== "healthy" || status.dockerHealthy !== true || !status.vmId ||
+              !/^[0-9a-f]{64}$/.test(status.policyGeneration) || !/^[0-9a-f]{64}$/.test(status.imageGeneration)) {
+            throw new Error("Gondolin controller status does not match the requested workspace");
+          }
+          const result = audit();
+          if (result.replacementErrors.length > 0) throw new Error(result.replacementErrors.join("; "));
+          const missingHostTools = requestedHostTools.filter((name) => !result.allowedNames.has(name));
+          if (missingHostTools.length > 0) throw new Error(`Requested host adapters are missing or unaudited: ${missingHostTools.join(", ")}`);
+          permittedNames = new Set([...requested, ...requestedHostTools]);
+          pi.setActiveTools([...permittedNames]);
+          enforceInventory(ctx, result);
+          if (!inherited) {
+            env.PI_GONDOLIN_SOCKET = connected.manifest.socketPath;
+            env.PI_GONDOLIN_LEASE = connected.leaseToken;
+            env.PI_GONDOLIN_WORKSPACE_KEY = workspaceKey;
+            env.PI_GONDOLIN_WORKSPACE_ROOT = workspaceRoot;
+            env.PI_GONDOLIN_POLICY_GENERATION = status.policyGeneration;
+            env.PI_GONDOLIN_IMAGE_GENERATION = status.imageGeneration;
+            env.PI_GONDOLIN_VM_ID = status.vmId;
+          }
+          publishStatus(status, ctx);
+          traceStartup("routing_connection_audit_complete");
+          if (statusTimer) clearInterval(statusTimer);
+          statusTimer = setInterval(() => {
+            const activeClient = client as any;
+            if (!activeClient || fatalError) return;
+            void activeClient.status().then((next: any) => publishStatus(next)).catch((error: unknown) =>
+              failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error)));
+          }, 2000);
+          statusTimer.unref?.();
+          writeHandshake(env.PI_GONDOLIN_HANDSHAKE_FILE, {
+            ok: true, workspaceKey, workspaceRoot, policyGeneration: status.policyGeneration,
+            imageGeneration: status.imageGeneration, vmId: status.vmId, dockerHealthy: true,
+            tools: [...GONDOLIN_BUILTIN_NAMES],
+          });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          failClosed(ctx, reason);
+          throw error;
         }
-        permittedNames = new Set([...requested, ...requestedHostTools]);
-        pi.setActiveTools([...permittedNames]);
-        enforceInventory(ctx, result);
-        traceStartup("routing_connection_audit_complete");
-        if (statusTimer) clearInterval(statusTimer);
-        statusTimer = setInterval(() => {
-          const activeClient = client as any;
-          if (!activeClient || fatalError) return;
-          void activeClient
-            .status()
-            .then((status: any) => publishStatus(status))
-            .catch((error: unknown) =>
-              failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error)),
-            );
-        }, 2000);
-        statusTimer.unref?.();
-        writeHandshake(env.PI_GONDOLIN_HANDSHAKE_FILE, {
-          ok: true,
-          workspaceKey,
-          workspaceRoot,
-          policyGeneration,
-          imageGeneration,
-          vmId: connected.status.vmId,
-          dockerHealthy: connected.status.dockerHealthy,
-          tools: [...GONDOLIN_BUILTIN_NAMES],
-        });
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        failClosed(ctx, reason);
-        throw error;
+      })();
+      return readiness;
+    };
+
+    pi.on("session_start", (_event, ctx) => {
+      traceStartup("pi_initialize_complete");
+      if (ctx.hasUI) traceStartup("host_ui_ready");
+      const pending = startReadiness(ctx);
+      if (!ctx.hasUI) return pending;
+      void pending.catch(() => {});
+    });
+
+    pi.on("input", async () => {
+      try {
+        await readiness;
+        enforceInventory();
+        return { action: "continue" };
+      } catch {
+        // Pi catches input-event errors and would continue the submission. A
+        // handled result is the fail-closed boundary for queued prompts.
+        return { action: "handled" };
       }
     });
 
     pi.on("before_agent_start", async () => {
+      await readiness;
       enforceInventory();
     });
 
@@ -318,24 +383,35 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       const gate = { command: event.command, result: undefined as any };
       pi.events.emit(SANDBOX_BEFORE_USER_BASH_EVENT, gate);
       if (gate.result) return gate.result;
-      if (!client || fatalError) {
+      try {
+        await readiness;
+      } catch {
         return {
           result: {
-            output: fatalError ?? "Gondolin controller handshake has not completed.",
-            exitCode: 126,
-            cancelled: false,
-            truncated: false,
+            output: fatalError ?? "Gondolin controller startup failed.", exitCode: 126,
+            cancelled: false, truncated: false,
           },
         };
       }
       return { operations: createSandboxBashOperations(getClient) };
     });
 
-    pi.on("session_shutdown", (_event, ctx) => {
+    pi.on("session_shutdown", async (_event, ctx) => {
       if (statusTimer) clearInterval(statusTimer);
       statusTimer = null;
-      client?.destroy?.();
+      const pendingAbort = acquisitionAbort;
+      pendingAbort?.abort();
+      acquisitionAbort = null;
+      if (!client && rootStartup && pendingAbort) stopStartedController(rootStartup);
+      if (ownsRootLease && !released) {
+        released = true;
+        await client?.release?.().catch(() => {});
+      } else client?.destroy?.();
       client = null;
+      for (const name of [
+        "PI_GONDOLIN_SOCKET", "PI_GONDOLIN_LEASE", "PI_GONDOLIN_WORKSPACE_KEY", "PI_GONDOLIN_WORKSPACE_ROOT",
+        "PI_GONDOLIN_POLICY_GENERATION", "PI_GONDOLIN_IMAGE_GENERATION", "PI_GONDOLIN_VM_ID",
+      ] as const) delete env[name];
       emitLifecycle({
         health: "stopped",
         vmId: connectedStatus?.vmId ?? null,
@@ -354,7 +430,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
       description: "Inspect or change the shared Gondolin sandbox",
       handler: async (_args, ctx) => {
         if (!client || fatalError) {
-          ctx.ui.notify(fatalError ?? "Gondolin is not connected.", "error");
+          ctx.ui.notify(fatalError ?? "Gondolin is starting; settings are available after readiness.", fatalError ? "error" : "info");
           return;
         }
         await showSandboxSettings(
@@ -375,8 +451,9 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
         }
         ctx.ui.notify(
           [
-            `VM: ${connectedStatus.vmId}`,
-            `Docker: ${connectedStatus.dockerHealthy ? "healthy" : "failed"}`,
+            `Health: ${connectedStatus.health ?? "healthy"}`,
+            `VM: ${connectedStatus.vmId ?? "starting"}`,
+            `Docker: ${connectedStatus.dockerHealthy ? "healthy" : "starting"}`, 
             `Policy: ${connectedStatus.policyGeneration}`,
             `Attached roots: ${connectedStatus.attachedRoots}`,
           ].join("\n"),

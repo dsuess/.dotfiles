@@ -11,10 +11,10 @@ import { discoverRepositoryScope } from "./repository-scope.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WRAPPER = path.resolve(SCRIPT_DIR, "../../bin/pi");
-const DEFAULT_SAMPLES = 5;
+const DEFAULT_SAMPLES = 10;
 const STOP_TIMEOUT_MS = 30_000;
 const PHASES = [
-  "repository_scope", "controller_acquire", "image_verify", "policy_create", "vm_create",
+  "repository_scope", "controller_begin", "image_verify", "policy_create", "vm_create",
   "vm_start", "docker_health", "model_cache_probe", "model_cache_refresh", "pi_initialize",
   "routing_connection_audit", "routing_handshake",
 ];
@@ -68,7 +68,16 @@ function traceSummary(tracePath) {
     phase,
     events.filter((event) => event.phase === phase).length,
   ]));
-  return { phaseDurations, phaseCounts };
+  const at = (phase) => events.find((event) => event.phase === phase && Number.isSafeInteger(event.at))?.at ?? null;
+  const launch = at("pi_child_spawn");
+  const hostUI = at("host_ui_ready") ?? at("pi_initialize_complete");
+  const ready = at("routing_handshake_complete");
+  return {
+    phaseDurations,
+    phaseCounts,
+    launchToHostUIMs: launch !== null && hostUI !== null && hostUI >= launch ? hostUI - launch : null,
+    hostUIToSandboxReadyMs: hostUI !== null && ready !== null && ready >= hostUI ? ready - hostUI : null,
+  };
 }
 
 function summarize(samples) {
@@ -84,9 +93,15 @@ function summarize(samples) {
     }
   }
   const range = (values) => ({ min: Math.min(...values), median: median(values), max: Math.max(...values) });
+  const interval = (name) => {
+    const values = samples.map((sample) => sample[name]).filter((value) => value !== null);
+    return values.length ? range(values) : null;
+  };
   return {
     samples: elapsedMs.length,
     medianMs: median(elapsedMs), minMs: Math.min(...elapsedMs), maxMs: Math.max(...elapsedMs),
+    launchToHostUIMs: interval("launchToHostUIMs"),
+    hostUIToSandboxReadyMs: interval("hostUIToSandboxReadyMs"),
     phaseDurationsMs: Object.fromEntries(Object.entries(phaseDurations).map(([phase, values]) => [phase, range(values)])),
     phaseCounts: Object.fromEntries(Object.entries(phaseCounts).map(([phase, values]) => [phase, range(values)])),
   };
@@ -115,9 +130,15 @@ async function launch(workspace, tracePath, cachePath, forceRefresh = false) {
     },
     stdio: ["pipe", "ignore", "pipe"],
   });
-  child.stdin.end();
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
+  // Closing RPC stdin during controller boot requests session shutdown in Pi.
+  // Keep it open until the externally required routing handshake is complete.
+  await waitFor(
+    () => parseTrace(tracePath).some((event) => event.phase === "routing_handshake_complete"),
+    "benchmark routing handshake did not complete",
+  );
+  child.stdin.end();
   const { code, signal } = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (exitCode, exitSignal) => resolve({ code: exitCode, signal: exitSignal }));
@@ -164,6 +185,7 @@ async function main() {
   if (options.json) process.stdout.write(`${JSON.stringify(result)}\n`);
   else for (const [label, summary] of Object.entries({ cold: result.cold, activeController: result.activeController, forcedRefresh: result.forcedRefresh })) {
     console.log(`${label}: median ${summary.medianMs.toFixed(1)} ms (range ${summary.minMs.toFixed(1)}–${summary.maxMs.toFixed(1)} ms)`);
+    console.log(`  UI: launch-to-host=${summary.launchToHostUIMs?.median ?? "unavailable"}ms, host-to-ready=${summary.hostUIToSandboxReadyMs?.median ?? "unavailable"}ms`);
     console.log(`  durations: ${Object.entries(summary.phaseDurationsMs).map(([phase, value]) => `${phase}=${value.median}ms`).join(", ") || "unavailable"}`);
     console.log(`  processes: ${Object.entries(summary.phaseCounts).map(([phase, value]) => `${phase}=${value.median}`).join(", ")}`);
   }

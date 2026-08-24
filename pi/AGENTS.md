@@ -23,13 +23,13 @@ This file contains repository-specific instructions for changes to Pi configurat
 ## Sandbox and launcher invariants
 
 - Keep Pi and reviewed extensions on the host. Run every built-in file and Bash operation through the shared Gondolin controller.
-- Keep normal startup fail-closed. A missing controller, image, settings file, routing extension, or handshake must stop the launch.
+- Keep normal startup fail-closed. Missing QEMU, Node, controller source, routing extension, or real Pi stop before UI; image, VM, Docker, lease, inventory, or handshake failures may appear after the trusted host UI opens, then must stop the launch without sending queued work.
 - Keep `--yolo` as the only explicit host-built-in bypass. This option must skip Gondolin and print a warning.
-- Start Pi with native built-ins disabled. Activate replacement names only after the extension verifies the inherited workspace, VM, image, and settings generations.
+- Start Pi with native built-ins disabled. The launcher may begin controller startup and open the trusted host UI before sandbox readiness, but no agent turn, model-directed tool, or user Bash command may cross the extension-owned readiness promise. Activate replacement names only after it verifies the workspace, root lease, VM, image, settings generations, and inventory.
 - Match each host adapter by name, source information, package version, and schema. Hide and block all other model tools.
 - Keep plan inspection, plan Bash, staged execution, subagents, and discussion children on the parent controller and settings generation.
 - Run the plan known-mutation check before a planning Bash RPC. Unknown planning commands remain subject to the VM boundary.
-- Use one controller and one Docker daemon for each canonical workspace. Use leases and expiry for root and child process lifetime.
+- Use one controller and one Docker daemon for each canonical workspace. The root extension owns and releases its lease; children inherit it, must not autostart another controller, and must not release the parent lease. Preserve expiry as the crash backstop.
 - Never mount the host Docker socket or Docker settings. Persist guest Docker data only in the workspace controller state.
 - Keep Ketch on its pinned direct-spawn path as an audited host adapter. Do not add a Ketch broker.
 - Save `/sandbox` changes to the resolved Stow source with a locked atomic replacement. Do not expose invariant exclusions as settings.

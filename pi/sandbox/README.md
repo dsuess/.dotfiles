@@ -16,14 +16,13 @@ A normal launch uses this sequence:
 
 1. The launcher finds trusted QEMU and the real Pi binary from one canonical safe PATH.
 2. One trusted Node preflight discovers and validates the repository scope.
-3. The preflight starts a read-only preferred-model cache probe while it acquires one controller lease.
-4. A cold controller verifies the complete pinned image, creates the policy, starts the VM, and checks guest Docker.
-5. The preflight creates a private handshake directory after the controller is healthy.
-6. If the probe is stale, the preflight starts one metadata Pi process after controller health.
-7. The launcher disables native Pi built-ins and starts one normal Pi process.
-8. The routing extension audits the inventory, connects to the controller, and writes the readiness handshake.
+3. The preflight begins or joins one controller and starts the read-only preferred-model cache probe. Its startup descriptor contains only expected workspace identity and private paths; it contains no controller token, lease, generation, or VM identity.
+4. The launcher creates a private handshake directory, disables native Pi built-ins, and starts one normal host Pi process while a cold controller verifies the complete pinned image, creates the policy, starts the VM, and checks guest Docker.
+5. The routing extension publishes `starting`, acquires the root lease, verifies the workspace, generations, VM, Docker health, inventory, and host-adapter provenance, then activates the permitted replacements and writes the readiness handshake.
+6. A submitted prompt or `!`/`!!` command while `starting` waits before message construction, model execution, or Bash RPC. It continues automatically after `healthy`; a failure handles queued input, leaves tools inactive, reports the error, and shuts Pi down.
+7. RPC, JSON, and print modes wait for the same readiness promise before their externally observable startup completes.
 
-A cache-hit launch uses one preflight process and one normal Pi process. A refresh adds one metadata Pi process. The cache probe overlaps controller acquisition. A refresh never starts before the healthy lease exists.
+A cache-hit launch uses one preflight process and one normal Pi process. A refresh adds one metadata Pi process. Trusted model-scope work may overlap controller startup; it grants neither tool access nor a controller capability.
 
 Pi selects the planning default during the plan-mode `session_start` event. An explicit CLI model has higher priority.
 
@@ -64,19 +63,21 @@ A changed provider fingerprint prevents stale-cache use.
 An explicit `--models` value bypasses automatic scope discovery. Help, version, package, authentication, and `--list-models` commands also bypass it.
 The `--list-models` command always requests the complete authenticated catalog with `--models "*"`.
 
-The controller uses one VM for all root sessions in one canonical workspace. Child Pi processes use the same lease and VM. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires. It is not retained to make a later launch faster. Pi starts only after a healthy lease. A cold controller always verifies the full image.
+The controller uses one VM for all root sessions in one canonical workspace. The root extension owns its lease and publishes the verified capability only after readiness; child Pi processes inherit and connect to that lease but never release it. A different workspace gets a different controller state directory. The controller stops after the last root lease ends or expires. It is not retained to make a later launch faster. A cold controller always verifies the full image.
+
+Startup has three distinct states: **controller starting**, **host UI ready**, and **sandbox ready**. The trusted host UI is not VM-isolated. It can show the editor, model/session controls, extensions, and status while the sandbox is starting, but native built-ins are disabled from process launch and no agent turn, model-directed tool, or user Bash command crosses the readiness gate before the verified lease exists.
 
 ### Startup benchmark
 
 Run the native benchmark from an ordinary terminal, not from a sandboxed Pi session:
 
 ```bash
-npm --prefix pi/sandbox run benchmark:startup -- --samples 5
+npm --prefix pi/sandbox run benchmark:startup -- --samples 10
 ```
 
 It creates one disposable workspace identity, closes stdin after RPC initialization, and sends no model request or persistent session. It runs one untimed warm-up for each mode, then reports medians and ranges for cold controller launches and launches with an owned active-controller lease. Each cold sample waits for its own controller manifest and socket to disappear. The active-controller lease is released before cleanup, so unrelated controllers are never acquired, released, or stopped.
 
-The benchmark reports cold-controller, active-controller, and forced-refresh samples. It reports medians, ranges, phase durations, and metadata and real Pi process counts.
+The benchmark reports cold-controller, active-controller, and forced-refresh samples. It reports medians, ranges, launch-to-host-UI and host-UI-to-sandbox-ready intervals, phase durations, and metadata and real Pi process counts.
 
 Optional startup tracing records repository scope, controller acquisition, image verification, policy creation, VM creation and start, Docker health, model-cache work, Pi initialization, routing audit, and handshake. The benchmark alone sets `PI_TIMING=1`. Normal launches do not forward ambient Pi diagnostics.
 
@@ -328,7 +329,7 @@ Run native QEMU, Docker, network, tool, child, and Ketch tests:
 npm --prefix pi/sandbox run test:native
 ```
 
-Measure startup separately with `npm --prefix pi/sandbox run benchmark:startup -- --samples 5`. Performance varies with QEMU and host load, so the benchmark is an acceptance observation rather than a unit-test threshold.
+Measure startup separately with `npm --prefix pi/sandbox run benchmark:startup -- --samples 10`. Performance varies with QEMU and host load, so the benchmark is an acceptance observation rather than a unit-test threshold.
 
 Run extension regressions:
 

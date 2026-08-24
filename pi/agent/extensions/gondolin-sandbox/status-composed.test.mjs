@@ -131,6 +131,10 @@ test("real sandbox lifecycle producer drives the real custom statusbar consumer"
   for (const handler of handlers.get("session_start") ?? []) {
     await handler({ reason: "startup" }, ctx);
   }
+  for (const handler of handlers.get("input") ?? []) {
+    await handler({ text: "queued", source: "interactive" }, ctx);
+  }
+  assert.ok(lifecycle.some((event) => event.health === "starting"));
   assert.equal(lifecycle.at(-1).health, "healthy");
   assert.equal(lifecycle.at(-1).attachedRoots, 2);
   assert.ok(statusCalls.some(([key, value]) => key === "gondolin-sandbox" && /sandbox:vm-share/.test(value)));

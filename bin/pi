@@ -17,7 +17,7 @@ readonly MODEL_SCOPE_CACHE_FILE
 
 HANDSHAKE_DIR=""
 PI_CHILD_PID=""
-CONTROLLER_LEASE=""
+STARTUP_DESCRIPTOR=""
 
 trace_startup() {
     local phase="$1"
@@ -29,33 +29,10 @@ trace_startup() {
     [[ "$at" =~ ^[0-9]+$ ]] || at="$(( $(/bin/date +%s) * 1000 ))"
     printf '{"phase":"%s","at":%s}\n' "$phase" "$at" >>"$trace_file" 2>/dev/null || true
 }
-CONTROLLER_SOCKET=""
 CONTROLLER_WORKSPACE_KEY=""
 CONTROLLER_WORKSPACE_ROOT=""
-CONTROLLER_POLICY_GENERATION=""
-CONTROLLER_IMAGE_GENERATION=""
-CONTROLLER_VM_ID=""
-
-release_controller_lease() {
-    [[ -n "$CONTROLLER_LEASE" && -n "${HOST_NODE-}" ]] || return 0
-    /usr/bin/env -i \
-        HOME="$HOME" \
-        PATH="${CONTROLLER_PATH-}" \
-        TMPDIR="${TMPDIR:-/tmp}" \
-        "$HOST_NODE" "$GONDOLIN_CLIENT" release \
-        --socket "$CONTROLLER_SOCKET" \
-        --lease "$CONTROLLER_LEASE" \
-        --workspace-key "$CONTROLLER_WORKSPACE_KEY" \
-        --workspace-root "$CONTROLLER_WORKSPACE_ROOT" \
-        --policy-generation "$CONTROLLER_POLICY_GENERATION" \
-        --image-generation "$CONTROLLER_IMAGE_GENERATION" \
-        --vm-id "$CONTROLLER_VM_ID" \
-        >/dev/null 2>&1 || true
-    CONTROLLER_LEASE=""
-}
 
 cleanup_launcher() {
-    release_controller_lease
     [[ -z "$HANDSHAKE_DIR" ]] || /bin/rm -rf -- "$HANDSHAKE_DIR"
 }
 
@@ -455,21 +432,30 @@ preflight_args=(
     --cache "$MODEL_SCOPE_CACHE_FILE" --client-id "launcher-$$"
 )
 automatic_model_scope_requested ${pi_args[@]+"${pi_args[@]}"} && preflight_args+=(--resolve-model-scope)
-trace_startup controller_acquire_start
-lease_record="$(trusted_controller_node "$GONDOLIN_CLIENT" "${preflight_args[@]}")" ||
-    die "could not acquire the workspace Gondolin controller"
-trace_startup controller_acquire_complete
-IFS=$'\t' read -r CONTROLLER_LEASE CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT \
-    CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT \
-    HANDSHAKE_FILE scope_models <<<"$lease_record" || die "controller returned an invalid preflight record"
-[[ "$CONTROLLER_LEASE" =~ ^[0-9a-f]{64}$ && "$CONTROLLER_WORKSPACE_KEY" =~ ^[0-9a-f]{64}$ &&
-   "$CONTROLLER_POLICY_GENERATION" =~ ^[0-9a-f]{64}$ && "$CONTROLLER_IMAGE_GENERATION" =~ ^[0-9a-f]{64}$ &&
-   "$CONTROLLER_SOCKET" == /* && "$CONTROLLER_WORKSPACE_ROOT" == /* && "$CONTROLLER_RUNTIME_ROOT" == /* &&
-   "$HANDSHAKE_FILE" == "$CONTROLLER_RUNTIME_ROOT"/* && "$scope_models" != *$'\t'* && "$scope_models" != *$'\n'* ]] ||
-    die "controller returned an invalid preflight record"
+trace_startup controller_begin_start
+startup_record="$(trusted_controller_node "$GONDOLIN_CLIENT" "${preflight_args[@]}")" ||
+    die "could not begin the workspace Gondolin controller"
+trace_startup controller_begin_complete
+IFS=$'\t' read -r STARTUP_DESCRIPTOR HANDSHAKE_FILE scope_models <<<"$startup_record" ||
+    die "controller returned an invalid startup record"
+[[ "$STARTUP_DESCRIPTOR" =~ ^[A-Za-z0-9+/=]+$ && "$HANDSHAKE_FILE" == /* &&
+   "$scope_models" != *$'\t'* && "$scope_models" != *$'\n'* ]] ||
+    die "controller returned an invalid startup record"
+descriptor_identity="$(trusted_node -e '
+    const descriptor = JSON.parse(Buffer.from(process.argv[1], "base64").toString("utf8"));
+    if (descriptor?.version !== 1 || !/^[0-9a-f]{64}$/.test(descriptor.workspaceKey) ||
+        typeof descriptor.workspaceRoot !== "string" || !descriptor.workspaceRoot.startsWith("/") ||
+        typeof descriptor.runtimeRoot !== "string" || !descriptor.runtimeRoot.startsWith("/") ||
+        typeof descriptor.socketPath !== "string" || !descriptor.socketPath.startsWith("/") ||
+        typeof descriptor.manifestPath !== "string" || !descriptor.manifestPath.startsWith("/") ||
+        (descriptor.startupPid !== null && descriptor.startupPid !== undefined &&
+          (!Number.isSafeInteger(descriptor.startupPid) || descriptor.startupPid < 1))) process.exit(1);
+    process.stdout.write(`${descriptor.workspaceKey}\t${descriptor.workspaceRoot}\t${descriptor.runtimeRoot}`);
+' "$STARTUP_DESCRIPTOR")" || die "controller returned an invalid startup descriptor"
+IFS=$'\t' read -r CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT CONTROLLER_RUNTIME_ROOT <<<"$descriptor_identity"
+[[ "$HANDSHAKE_FILE" == "$CONTROLLER_RUNTIME_ROOT"/* ]] || die "controller returned an invalid handshake path"
 HANDSHAKE_DIR="${HANDSHAKE_FILE%/*}"
-readonly CONTROLLER_SOCKET CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT
-readonly CONTROLLER_POLICY_GENERATION CONTROLLER_IMAGE_GENERATION CONTROLLER_VM_ID CONTROLLER_RUNTIME_ROOT
+readonly STARTUP_DESCRIPTOR CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT CONTROLLER_RUNTIME_ROOT
 readonly HANDSHAKE_DIR HANDSHAKE_FILE
 if [[ -n "$scope_models" ]]; then
     pi_args=(--models "$scope_models" "${pi_args[@]}")
@@ -491,13 +477,7 @@ safe_env=(
     "HF_HOME=$HOME/.cache/huggingface"
     "CARGO_HOME=$HOME/.cargo"
     "PI_GONDOLIN_SANDBOX=1"
-    "PI_GONDOLIN_SOCKET=$CONTROLLER_SOCKET"
-    "PI_GONDOLIN_LEASE=$CONTROLLER_LEASE"
-    "PI_GONDOLIN_WORKSPACE_KEY=$CONTROLLER_WORKSPACE_KEY"
-    "PI_GONDOLIN_WORKSPACE_ROOT=$CONTROLLER_WORKSPACE_ROOT"
-    "PI_GONDOLIN_POLICY_GENERATION=$CONTROLLER_POLICY_GENERATION"
-    "PI_GONDOLIN_IMAGE_GENERATION=$CONTROLLER_IMAGE_GENERATION"
-    "PI_GONDOLIN_VM_ID=$CONTROLLER_VM_ID"
+    "PI_GONDOLIN_STARTUP_DESCRIPTOR=$STARTUP_DESCRIPTOR"
     "PI_GONDOLIN_BUILTIN_TOOLS=$REQUESTED_BUILTINS"
     "PI_GONDOLIN_HOST_TOOLS=$REQUESTED_HOST_TOOLS"
     "PI_GONDOLIN_HANDSHAKE_FILE=$HANDSHAKE_FILE"
@@ -574,19 +554,18 @@ if [[ "$requires_handshake" == true ]]; then
         if [[ -s "$HANDSHAKE_FILE" ]]; then
             if trusted_node -e '
                 const fs = require("node:fs");
-                const [file, workspaceKey, workspaceRoot, policy, image, vm] = process.argv.slice(1);
+                const [file, workspaceKey, workspaceRoot] = process.argv.slice(1);
                 const value = JSON.parse(fs.readFileSync(file, "utf8"));
                 const expectedTools = ["bash", "edit", "find", "grep", "ls", "read", "write"];
                 if (value.ok !== true || value.workspaceKey !== workspaceKey ||
-                    value.workspaceRoot !== workspaceRoot || value.policyGeneration !== policy ||
-                    value.imageGeneration !== image || value.vmId !== vm ||
+                    value.workspaceRoot !== workspaceRoot || !/^[0-9a-f]{64}$/.test(value.policyGeneration) ||
+                    !/^[0-9a-f]{64}$/.test(value.imageGeneration) || typeof value.vmId !== "string" || !value.vmId ||
                     value.dockerHealthy !== true || !Array.isArray(value.tools) ||
                     JSON.stringify([...value.tools].sort()) !== JSON.stringify(expectedTools)) {
                     if (value.error) console.error(value.error);
                     process.exit(1);
                 }
-            ' "$HANDSHAKE_FILE" "$CONTROLLER_WORKSPACE_KEY" "$CONTROLLER_WORKSPACE_ROOT" \
-                "$CONTROLLER_POLICY_GENERATION" "$CONTROLLER_IMAGE_GENERATION" "$CONTROLLER_VM_ID"
+            ' "$HANDSHAKE_FILE" "$CONTROLLER_WORKSPACE_KEY" "$CONTROLLER_WORKSPACE_ROOT"
             then
                 handshake_ready=true
                 trace_startup routing_handshake_complete
