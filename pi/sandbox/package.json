@@ -6,8 +6,9 @@
   "scripts": {
     "build:image": "node build-gondolin-image.mjs",
     "benchmark:startup": "node benchmark-startup.mjs",
-    "test": "npm run test:model-scope && npm run test:palette && npm run test:controller && npm run test:image-builder && npm run test:gondolinier && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
+    "test": "npm run test:patch && npm run test:model-scope && npm run test:palette && npm run test:controller && npm run test:image-builder && npm run test:gondolinier && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
     "test:native": "npm run test:canary && npm run test:controller-native && npm run test:tools-native && npm run test:inventory && npm run test:ketch-live",
+    "test:patch": "node --test test-apply-gondolin-public-tcp-patch.mjs",
     "test:model-scope": "node --test test-model-scope-cache.mjs",
     "test:palette": "node --test ../agent/extensions/command-palette-models.test.mjs",
     "test:controller": "node --test test-policy.mjs test-protocol.mjs test-controller.mjs",

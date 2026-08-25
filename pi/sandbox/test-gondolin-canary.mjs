@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  createHttpHooks,
+  MemoryProvider,
   ReadonlyProvider,
   RealFSProvider,
   VM,
@@ -19,6 +19,7 @@ import {
 } from "./build-gondolin-image.mjs";
 import {
   buildSandboxPolicy,
+  createNetworkOptions,
   createPolicyProviders,
   parseSandboxSettings,
 } from "./policy.mjs";
@@ -32,6 +33,11 @@ const BUILT_IMAGE = "pi-gondolin-canary:local";
 const UV_COPY_IMAGE = "pi-gondolin-uv-copy:local";
 const PERSISTENT_CONTAINER = "pi-gondolin-canary-container";
 const PERSISTENT_VOLUME = "pi-gondolin-canary-volume";
+const REQUIRED_GIT_LS_REMOTE = `docker run --rm python:3.12-slim sh -ec '
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates git
+    git ls-remote --exit-code https://github.com/ytdl-org/youtube-dl.git HEAD
+  '`;
 
 function shQuote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
@@ -90,9 +96,8 @@ function createSigningKeyVm(imageDir, mounts) {
 }
 
 function createVm(imageDir, fixture) {
-  const { httpHooks } = createHttpHooks({
-    allowedHosts: ["*"],
-    blockInternalRanges: true,
+  const network = createNetworkOptions({
+    mode: "public-tcp", allowedHosts: [], allowWebSockets: false, tcpMappings: [],
   });
 
   return VM.create({
@@ -103,12 +108,13 @@ function createVm(imageDir, fixture) {
     rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_CANARY_ROOTFS_SIZE ?? "4G" },
     memory: process.env.PI_GONDOLIN_CANARY_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CANARY_CPUS ?? 4),
-    httpHooks,
-    allowWebSockets: false,
+    ...(network.publicTcp ? { publicTcp: network.publicTcp } : {}),
+    allowWebSockets: network.allowWebSockets,
     vfs: {
       mounts: {
         [fixture.workspace]: new RealFSProvider(fixture.workspace),
         [fixture.readonly]: new ReadonlyProvider(new RealFSProvider(fixture.readonly)),
+        "/etc/gondolin/mitm": new ReadonlyProvider(new MemoryProvider()),
       },
     },
   });
@@ -263,7 +269,18 @@ async function proveToolchainAndDocker(vm, fixture) {
     `docker run --rm ${ALPINE_IMAGE} wget -qO- ${shQuote(PUBLIC_URL)}`,
   );
   assert.match(nestedHttps.stdout, /Example Domain|example/i);
-  for (const blocked of ["http://127.0.0.1/", "http://10.255.255.1/", "http://192.168.0.1/", "http://169.254.169.254/latest/meta-data/"]) {
+  await runOk(
+    vm,
+    REQUIRED_GIT_LS_REMOTE,
+    { timeoutMs: 10 * 60 * 1000 },
+  );
+  await runOk(
+    vm,
+    "docker run --rm python:3.12-slim sh -ec '\n      test ! -e /run/gondolin/ca-certificates.crt\n      test -z \"${SSL_CERT_FILE:-}\"\n      test -z \"${CURL_CA_BUNDLE:-}\"\n      test -z \"${REQUESTS_CA_BUNDLE:-}\"\n      test -z \"${NODE_EXTRA_CA_CERTS:-}\"\n      apt-get update -qq\n      apt-get install -y -qq ca-certificates openssl\n      peer=$(openssl s_client -connect github.com:443 -servername github.com -verify_return_error -showcerts </dev/null 2>&1)\n      printf %s \"$peer\" | grep -q \"Verify return code: 0 (ok)\"\n      ! printf %s \"$peer\" | grep -qi gondolin\n    '",
+    { timeoutMs: 5 * 60 * 1000 },
+  );
+  await runOk(vm, `docker run --rm ${ALPINE_IMAGE} sh -ec 'nc -w 10 example.com 80 </dev/null'`);
+  for (const blocked of ["http://127.0.0.1/", "http://10.255.255.1/", "http://172.16.0.1/", "http://192.168.0.1/", "http://100.64.0.1/", "http://169.254.169.254/latest/meta-data/"]) {
     await runOk(
       vm,
       `docker run --rm ${ALPINE_IMAGE} sh -c ${shQuote(`if wget -q --timeout=5 -O- ${blocked}; then exit 97; fi; exit 0`)}`,
@@ -272,10 +289,9 @@ async function proveToolchainAndDocker(vm, fixture) {
 
   const contextDir = path.join(fixture.workspace, "docker-build");
   fs.mkdirSync(contextDir);
-  await runOk(vm, `cp /run/gondolin/ca-certificates.crt ${shQuote(path.join(contextDir, "gondolin-ca.crt"))}`);
   fs.writeFileSync(
     path.join(contextDir, "Dockerfile"),
-    `FROM ${ALPINE_IMAGE}\nCOPY gondolin-ca.crt /usr/local/share/ca-certificates/gondolin-ca.crt\nRUN cat /usr/local/share/ca-certificates/gondolin-ca.crt >> /etc/ssl/cert.pem && apk add --no-cache ca-certificates wget && update-ca-certificates && wget -qO- https://registry.npmjs.org/ >/dev/null && printf buildkit-ok > /buildkit-proof\nCMD [\"cat\", \"/buildkit-proof\"]\n`,
+    `FROM ${ALPINE_IMAGE}\nRUN apk add --no-cache ca-certificates wget && update-ca-certificates && wget -qO- https://registry.npmjs.org/ >/dev/null && printf buildkit-ok > /buildkit-proof\nCMD [\"cat\", \"/buildkit-proof\"]\n`,
   );
   await runOk(
     vm,
@@ -304,7 +320,7 @@ async function proveToolchainAndDocker(vm, fixture) {
       "services:",
       "  canary:",
       `    image: ${ALPINE_IMAGE}`,
-      '    command: ["/bin/sh", "-c", "printf compose-ok > /state/result"]',
+      '    command: ["/bin/sh", "-c", "wget -qO- https://registry.npmjs.org/ >/dev/null && printf compose-ok > /state/result"]',
       "    volumes:",
       "      - canary-data:/state",
       "volumes:",
@@ -400,7 +416,12 @@ test("production signing-public-key provider boots as a one-file read-only direc
     },
     settings: parseSandboxSettings({
       version: 1,
-      externalMounts: [{ path: publicKey, access: "ro" }],
+      filesystem: {
+        workspace: { access: "rw", writeProtectedPaths: [".git/config"] },
+        workspaceOverrides: [],
+        bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+        externalMounts: [{ path: publicKey, access: "ro" }],
+      },
       network: { mode: "offline", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
     }),
     homeDirectory: home,

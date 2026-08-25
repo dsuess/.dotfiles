@@ -31,9 +31,10 @@ This file contains repository-specific instructions for changes to Pi configurat
 - Run the plan known-mutation check before a planning Bash RPC. Unknown planning commands remain subject to the VM boundary.
 - Use one controller and one Docker daemon for each canonical workspace. The root Pi process, not one conversation extension runtime, owns and releases its lease. `/new`, `/resume`, `/fork`, and `/reload` reconnect replacement runtimes to the same VM. Children inherit it, must not autostart another controller, and never adopt or release the parent lease. Final quit or fatal routing failure is the release boundary; preserve expiry as the crash backstop.
 - Never mount the host Docker socket or Docker settings. Persist guest Docker data only in the workspace controller state.
+- `public-tcp` is raw public TCP, not a weaker name for mediated HTTP: preserve its per-host synthetic DNS attribution, all-address destination guard, and absence of Gondolin MITM CA mounts or environment overrides. Content-aware HTTP and WebSocket policy applies only to mediated modes.
 - `gondolinier image build` is the forced, verified Pi image rebuild command. Deploy its Stow-installed launcher only through `./install.sh config`; do not create manual links or copies.
 - Keep Ketch on its pinned direct-spawn path as an audited host adapter. Do not add a Ketch broker.
-- Save `/sandbox` changes to the resolved Stow source with a locked atomic replacement. Do not expose invariant exclusions as settings.
+- Save `/sandbox` changes to the resolved Stow source with a locked atomic replacement. Filesystem mount access and protected paths are versioned settings; preserve every nested filesystem field when editing external mounts or network settings. Keep credential, Docker, host-adapter, and exposed-root exclusions code-enforced. An empty workspace protection list is an explicit trusted-workspace exception, not a new default.
 - Send sandbox status through the typed lifecycle event. The custom footer must consume that event in a composed test.
 - When you diagnose launcher selection, distinguish the caller environment from the filtered host Pi environment.
 

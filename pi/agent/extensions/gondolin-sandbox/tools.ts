@@ -177,11 +177,6 @@ const FIXED_GUEST_ENV = Object.freeze({
   UV_CACHE_DIR: "/root/.cache/uv",
   HF_HOME: "/root/.cache/huggingface",
   CARGO_HOME: "/root/.cargo",
-  SSL_CERT_FILE: "/run/gondolin/ca-certificates.crt",
-  CURL_CA_BUNDLE: "/run/gondolin/ca-certificates.crt",
-  REQUESTS_CA_BUNDLE: "/run/gondolin/ca-certificates.crt",
-  NODE_EXTRA_CA_CERTS: "/etc/gondolin/mitm/ca.crt",
-  UV_SYSTEM_CERTS: "true",
 });
 
 export function sanitizeGuestEnvironment(input: NodeJS.ProcessEnv | undefined): Record<string, string> {

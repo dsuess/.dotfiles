@@ -3,8 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export type NetworkMode = "public-http" | "allowlist" | "offline";
+export type NetworkMode = "public-http" | "public-tcp" | "allowlist" | "offline";
 export type MountAccess = "ro" | "rw";
+
+export interface AccessPolicySetting {
+  access: MountAccess;
+  writeProtectedPaths: string[];
+}
+
+export interface WorkspaceOverrideSetting extends AccessPolicySetting {
+  root: string;
+}
 
 export interface ExternalMountSetting {
   path: string;
@@ -20,7 +29,12 @@ export interface TcpMappingSetting {
 
 export interface SandboxSettings {
   version: 1;
-  externalMounts: ExternalMountSetting[];
+  filesystem: {
+    workspace: AccessPolicySetting;
+    workspaceOverrides: WorkspaceOverrideSetting[];
+    bareCommon: AccessPolicySetting;
+    externalMounts: ExternalMountSetting[];
+  };
   network: {
     mode: NetworkMode;
     allowedHosts: string[];
@@ -35,6 +49,7 @@ export interface SandboxStatusForSettings {
 }
 
 const writeQueues = new Map<string, Promise<void>>();
+const maxProtectedPaths = 128;
 
 function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid < 1) return false;
@@ -99,6 +114,32 @@ function nonemptyString(value: unknown, label: string, maxLength = 4096): string
   return value;
 }
 
+function accessPolicy(value: unknown, label: string): AccessPolicySetting {
+  const policy = plainObject(value, label);
+  exactKeys(policy, ["access", "writeProtectedPaths"], label);
+  if (policy.access !== "ro" && policy.access !== "rw") {
+    throw new Error(`${label}.access must be ro or rw`);
+  }
+  if (!Array.isArray(policy.writeProtectedPaths) || policy.writeProtectedPaths.length > maxProtectedPaths) {
+    throw new Error(`${label}.writeProtectedPaths must be an array with at most ${maxProtectedPaths} entries`);
+  }
+  const writeProtectedPaths = policy.writeProtectedPaths.map((entry, index) => {
+    const protectedPath = nonemptyString(entry, `${label}.writeProtectedPaths[${index}]`);
+    if (
+      path.isAbsolute(protectedPath) ||
+      protectedPath === "." ||
+      protectedPath.split(/[\\/]/).some((part) => !part || part === "..")
+    ) {
+      throw new Error(`${label}.writeProtectedPaths[${index}] must be a bounded relative path without traversal`);
+    }
+    return protectedPath;
+  });
+  if (new Set(writeProtectedPaths).size !== writeProtectedPaths.length) {
+    throw new Error(`${label}.writeProtectedPaths contains duplicates`);
+  }
+  return { access: policy.access, writeProtectedPaths };
+}
+
 function hostname(value: unknown, label: string, allowWildcard: boolean): string {
   const result = nonemptyString(value, label, 253).toLowerCase();
   if (result === "*" || /[:/\s]/.test(result)) throw new Error(`${label} is not a hostname`);
@@ -121,35 +162,81 @@ function port(value: unknown, label: string): number {
   return Number(value);
 }
 
-export function validateSandboxSettings(value: unknown): SandboxSettings {
-  const root = plainObject(value, "settings");
-  exactKeys(root, ["version", "externalMounts", "network"], "settings");
-  if (root.version !== 1) throw new Error("settings.version must be 1");
-  if (!Array.isArray(root.externalMounts) || root.externalMounts.length > 64) {
-    throw new Error("settings.externalMounts must be an array with at most 64 entries");
+function expandHome(input: string, home: string): string {
+  if (input === "~") return home;
+  if (input.startsWith("~/")) return path.join(home, input.slice(2));
+  return input;
+}
+
+function canonicalWorkspaceOverrideRoot(value: unknown, label: string, home: string): { root: string; canonicalRoot: string } {
+  const root = nonemptyString(value, label);
+  const expanded = expandHome(root, home);
+  if (!path.isAbsolute(expanded)) throw new Error(`${label} must be absolute or use ~/`);
+  try {
+    const canonicalRoot = fs.realpathSync(path.resolve(expanded));
+    if (!fs.statSync(canonicalRoot).isDirectory()) throw new Error("not a directory");
+    return { root, canonicalRoot };
+  } catch {
+    throw new Error(`${label} must be an existing directory`);
   }
-  const externalMounts = root.externalMounts.map((entry, index) => {
-    const mount = plainObject(entry, `externalMounts[${index}]`);
-    exactKeys(mount, ["path", "access"], `externalMounts[${index}]`);
+}
+
+export function validateSandboxSettings(value: unknown, homeDirectory = os.homedir()): SandboxSettings {
+  const root = plainObject(value, "settings");
+  exactKeys(root, ["version", "filesystem", "network"], "settings");
+  if (root.version !== 1) throw new Error("settings.version must be 1");
+  const home = fs.realpathSync(homeDirectory);
+  const filesystem = plainObject(root.filesystem, "settings.filesystem");
+  exactKeys(filesystem, ["workspace", "workspaceOverrides", "bareCommon", "externalMounts"], "settings.filesystem");
+  const workspace = accessPolicy(filesystem.workspace, "settings.filesystem.workspace");
+  const bareCommon = accessPolicy(filesystem.bareCommon, "settings.filesystem.bareCommon");
+  if (!Array.isArray(filesystem.workspaceOverrides) || filesystem.workspaceOverrides.length > 64) {
+    throw new Error("settings.filesystem.workspaceOverrides must be an array with at most 64 entries");
+  }
+  const overrideRoots = new Set<string>();
+  const workspaceOverrides = filesystem.workspaceOverrides.map((entry, index) => {
+    const override = plainObject(entry, `settings.filesystem.workspaceOverrides[${index}]`);
+    exactKeys(override, ["root", "access", "writeProtectedPaths"], `settings.filesystem.workspaceOverrides[${index}]`);
+    const { root: configuredRoot, canonicalRoot } = canonicalWorkspaceOverrideRoot(
+      override.root,
+      `settings.filesystem.workspaceOverrides[${index}].root`,
+      home,
+    );
+    if (overrideRoots.has(canonicalRoot)) {
+      throw new Error("settings.filesystem.workspaceOverrides contains duplicate canonical roots");
+    }
+    overrideRoots.add(canonicalRoot);
+    const policy = accessPolicy(
+      { access: override.access, writeProtectedPaths: override.writeProtectedPaths },
+      `settings.filesystem.workspaceOverrides[${index}]`,
+    );
+    return { root: configuredRoot, ...policy };
+  });
+  if (!Array.isArray(filesystem.externalMounts) || filesystem.externalMounts.length > 64) {
+    throw new Error("settings.filesystem.externalMounts must be an array with at most 64 entries");
+  }
+  const externalMounts = filesystem.externalMounts.map((entry, index) => {
+    const mount = plainObject(entry, `settings.filesystem.externalMounts[${index}]`);
+    exactKeys(mount, ["path", "access"], `settings.filesystem.externalMounts[${index}]`);
     if (mount.access !== "ro" && mount.access !== "rw") {
-      throw new Error(`externalMounts[${index}].access must be ro or rw`);
+      throw new Error(`settings.filesystem.externalMounts[${index}].access must be ro or rw`);
     }
     return {
-      path: nonemptyString(mount.path, `externalMounts[${index}].path`),
+      path: nonemptyString(mount.path, `settings.filesystem.externalMounts[${index}].path`),
       access: mount.access,
     };
   });
 
   const network = plainObject(root.network, "settings.network");
   exactKeys(network, ["mode", "allowedHosts", "allowWebSockets", "tcpMappings"], "settings.network");
-  if (!new Set(["public-http", "allowlist", "offline"]).has(network.mode as string)) {
+  if (!new Set(["public-http", "public-tcp", "allowlist", "offline"]).has(network.mode as string)) {
     throw new Error("settings.network.mode is invalid");
   }
   if (!Array.isArray(network.allowedHosts) || network.allowedHosts.length > 128) {
     throw new Error("settings.network.allowedHosts must have at most 128 entries");
   }
   const allowedHosts = network.allowedHosts.map((entry, index) =>
-    hostname(entry, `allowedHosts[${index}]`, true),
+    hostname(entry, `settings.network.allowedHosts[${index}]`, true),
   );
   if (new Set(allowedHosts).size !== allowedHosts.length) {
     throw new Error("settings.network.allowedHosts contains duplicates");
@@ -161,13 +248,13 @@ export function validateSandboxSettings(value: unknown): SandboxSettings {
     throw new Error("settings.network.tcpMappings must have at most 32 entries");
   }
   const tcpMappings = network.tcpMappings.map((entry, index) => {
-    const mapping = plainObject(entry, `tcpMappings[${index}]`);
+    const mapping = plainObject(entry, `settings.network.tcpMappings[${index}]`);
     exactKeys(mapping, ["guestHost", "guestPort", "connectHost", "connectPort"], `tcpMappings[${index}]`);
     return {
-      guestHost: hostname(mapping.guestHost, `tcpMappings[${index}].guestHost`, false),
-      guestPort: port(mapping.guestPort, `tcpMappings[${index}].guestPort`),
-      connectHost: hostname(mapping.connectHost, `tcpMappings[${index}].connectHost`, false),
-      connectPort: port(mapping.connectPort, `tcpMappings[${index}].connectPort`),
+      guestHost: hostname(mapping.guestHost, `settings.network.tcpMappings[${index}].guestHost`, false),
+      guestPort: port(mapping.guestPort, `settings.network.tcpMappings[${index}].guestPort`),
+      connectHost: hostname(mapping.connectHost, `settings.network.tcpMappings[${index}].connectHost`, false),
+      connectPort: port(mapping.connectPort, `settings.network.tcpMappings[${index}].connectPort`),
     };
   });
   const tcpKeys = tcpMappings.map((entry) => `${entry.guestHost}:${entry.guestPort}`);
@@ -176,8 +263,8 @@ export function validateSandboxSettings(value: unknown): SandboxSettings {
   }
 
   const mode = network.mode as NetworkMode;
-  if (mode === "public-http" && allowedHosts.length > 0) {
-    throw new Error("public-http mode does not use allowedHosts");
+  if ((mode === "public-http" || mode === "public-tcp") && allowedHosts.length > 0) {
+    throw new Error(`${mode} mode does not use allowedHosts`);
   }
   if (mode === "allowlist" && allowedHosts.length === 0) {
     throw new Error("allowlist mode requires at least one allowed host");
@@ -188,13 +275,8 @@ export function validateSandboxSettings(value: unknown): SandboxSettings {
 
   return {
     version: 1,
-    externalMounts,
-    network: {
-      mode,
-      allowedHosts,
-      allowWebSockets: network.allowWebSockets,
-      tcpMappings,
-    },
+    filesystem: { workspace, workspaceOverrides, bareCommon, externalMounts },
+    network: { mode, allowedHosts, allowWebSockets: network.allowWebSockets, tcpMappings },
   };
 }
 
@@ -205,12 +287,6 @@ function isWithin(candidate: string, root: string): boolean {
 
 function overlaps(left: string, right: string): boolean {
   return isWithin(left, right) || isWithin(right, left);
-}
-
-function expandHome(input: string, home: string): string {
-  if (input === "~") return home;
-  if (input.startsWith("~/")) return path.join(home, input.slice(2));
-  return input;
 }
 
 function canonicalIfPresent(candidate: string): string {
@@ -259,41 +335,44 @@ export function canonicalizeSandboxSettings(
   status: SandboxStatusForSettings,
   homeDirectory = os.homedir(),
 ): SandboxSettings {
-  const settings = validateSandboxSettings(value);
   const home = fs.realpathSync(homeDirectory);
+  const settings = validateSandboxSettings(value, home);
   const boundaries = [
     fs.realpathSync(status.workspaceRoot),
     ...(status.bareCommonDirectory ? [fs.realpathSync(status.bareCommonDirectory)] : []),
     ...invariantRoots(home),
   ];
   const resolved: ExternalMountSetting[] = [];
-  for (const [index, mount] of settings.externalMounts.entries()) {
+  for (const [index, mount] of settings.filesystem.externalMounts.entries()) {
     const expanded = expandHome(mount.path, home);
-    if (!path.isAbsolute(expanded)) throw new Error(`externalMounts[${index}].path must be absolute or use ~/`);
+    if (!path.isAbsolute(expanded)) throw new Error(`settings.filesystem.externalMounts[${index}].path must be absolute or use ~/`);
     const lexical = path.resolve(expanded);
     if (lexical === path.parse(lexical).root || lexical === home) {
-      throw new Error(`externalMounts[${index}] cannot mount / or the whole home directory`);
+      throw new Error(`settings.filesystem.externalMounts[${index}] cannot mount / or the whole home directory`);
     }
     let canonical: string;
     try {
       canonical = fs.realpathSync(lexical);
     } catch {
-      throw new Error(`externalMounts[${index}] does not exist: ${mount.path}`);
+      throw new Error(`settings.filesystem.externalMounts[${index}] does not exist: ${mount.path}`);
     }
     const isSigningPublicKey =
       canonical === signingPublicKeyPath(home) && fs.statSync(canonical).isFile() && mount.access === "ro";
     if (!fs.statSync(canonical).isDirectory() && !isSigningPublicKey) {
-      throw new Error(`externalMounts[${index}] must be a directory or the read-only signing public key`);
+      throw new Error(`settings.filesystem.externalMounts[${index}] must be a directory or the read-only signing public key`);
     }
     if (!isSigningPublicKey && boundaries.some((boundary) => overlaps(canonical, boundary) || overlaps(lexical, boundary))) {
-      throw new Error(`externalMounts[${index}] overlaps a code-enforced sandbox boundary`);
+      throw new Error(`settings.filesystem.externalMounts[${index}] overlaps a code-enforced sandbox boundary`);
     }
     if (resolved.some((entry) => overlaps(entry.path, canonical))) {
-      throw new Error(`externalMounts[${index}] overlaps another external mount`);
+      throw new Error(`settings.filesystem.externalMounts[${index}] overlaps another external mount`);
     }
     resolved.push({ path: canonical, access: mount.access });
   }
-  return { ...settings, externalMounts: resolved };
+  return {
+    ...settings,
+    filesystem: { ...settings.filesystem, externalMounts: resolved },
+  };
 }
 
 export class SandboxSettingsStore {

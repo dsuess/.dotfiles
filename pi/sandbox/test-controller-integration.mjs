@@ -11,7 +11,12 @@ import { loadSandboxPolicy } from "./policy.mjs";
 function settings(mode = "public-http") {
   return {
     version: 1,
-    externalMounts: [],
+    filesystem: {
+      workspace: { access: "rw", writeProtectedPaths: [".git/config"] },
+      workspaceOverrides: [],
+      bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+      externalMounts: [],
+    },
     network: {
       mode,
       allowedHosts: [],

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { VM } from "@earendil-works/gondolin";
+import { MemoryProvider, ReadonlyProvider, VM } from "@earendil-works/gondolin";
 
 import { ensureGondolinImage, verifyImageDirectory } from "./build-gondolin-image.mjs";
 import {
@@ -47,11 +47,6 @@ export const GUEST_ENVIRONMENT = Object.freeze({
   UV_CACHE_DIR: "/root/.cache/uv",
   HF_HOME: "/root/.cache/huggingface",
   CARGO_HOME: "/root/.cargo",
-  SSL_CERT_FILE: "/run/gondolin/ca-certificates.crt",
-  CURL_CA_BUNDLE: "/run/gondolin/ca-certificates.crt",
-  REQUESTS_CA_BUNDLE: "/run/gondolin/ca-certificates.crt",
-  NODE_EXTRA_CA_CERTS: "/etc/gondolin/mitm/ca.crt",
-  UV_SYSTEM_CERTS: "true",
 });
 
 function controllerError(code, message) {
@@ -135,11 +130,19 @@ async function defaultVmFactory({ policy, imageDir }) {
     rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "32G" },
     memory: process.env.PI_GONDOLIN_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CPUS ?? 4),
-    vfs: { mounts: createPolicyProviders(policy) },
+    vfs: {
+      mounts: {
+        ...createPolicyProviders(policy),
+        // Suppress Gondolin's generated CA while retaining its /etc/gondolin
+        // control mount for ingress configuration.
+        "/etc/gondolin/mitm": new ReadonlyProvider(new MemoryProvider()),
+      },
+    },
     env: GUEST_ENVIRONMENT,
     ...(network.httpHooks ? { httpHooks: network.httpHooks } : {}),
     ...(network.dns ? { dns: network.dns } : {}),
     ...(network.tcp ? { tcp: network.tcp } : {}),
+    ...(network.publicTcp ? { publicTcp: network.publicTcp } : {}),
     allowWebSockets: network.allowWebSockets,
     sessionLabel: `pi:${policy.scope.workspaceKey.slice(0, 12)}`,
   });

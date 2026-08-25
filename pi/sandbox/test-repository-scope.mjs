@@ -40,7 +40,12 @@ function makeTrustedBin(root) {
 function gondolinSettings() {
   return parseSandboxSettings({
     version: 1,
-    externalMounts: [],
+    filesystem: {
+      workspace: { access: "rw", writeProtectedPaths: [".git/config", ".pi"] },
+      workspaceOverrides: [],
+      bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+      externalMounts: [],
+    },
     network: { mode: "public-http", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
   });
 }

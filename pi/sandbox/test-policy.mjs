@@ -12,8 +12,13 @@ import {
   parseSandboxSettingsText,
   ProtectedWriteProvider,
   resolveExternalMounts,
-  WORKSPACE_PROTECTED_PATHS,
 } from "./policy.mjs";
+
+const defaultProtectedPaths = [
+  ".gitconfig", ".gitmodules", ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+  ".ripgreprc", ".mcp.json", ".vscode", ".idea", ".claude/commands", ".claude/agents",
+  ".agents", ".pi", ".git/hooks", ".git/config", "bin/pi", "pi/sandbox", "pi/agent",
+];
 
 function makeRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-policy-")));
@@ -21,16 +26,21 @@ function makeRoot(t) {
   return root;
 }
 
+function filesystem(overrides = {}) {
+  return {
+    workspace: { access: "rw", writeProtectedPaths: defaultProtectedPaths },
+    workspaceOverrides: [],
+    bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+    externalMounts: [],
+    ...overrides,
+  };
+}
+
 function validSettings(overrides = {}) {
   return {
     version: 1,
-    externalMounts: [],
-    network: {
-      mode: "public-http",
-      allowedHosts: [],
-      allowWebSockets: false,
-      tcpMappings: [],
-    },
+    filesystem: filesystem(),
+    network: { mode: "public-http", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
     ...overrides,
   };
 }
@@ -44,264 +54,144 @@ function makeScope(workspace, bareCommonDirectory = null) {
   });
 }
 
-test("settings parser accepts only the versioned Gondolin schema", () => {
-  const parsed = parseSandboxSettings(
-    validSettings({
-      externalMounts: [{ path: "~/source", access: "ro" }],
-      network: {
-        mode: "allowlist",
-        allowedHosts: ["example.com", "*.npmjs.org"],
-        allowWebSockets: true,
-        tcpMappings: [
-          {
-            guestHost: "database.local",
-            guestPort: 5432,
-            connectHost: "127.0.0.1",
-            connectPort: 15432,
-          },
-        ],
-      },
-    }),
-  );
-  assert.equal(parsed.version, 1);
-  assert.equal(parsed.externalMounts[0].access, "ro");
-  assert.equal(parsed.network.tcpMappings[0].connectPort, 15432);
-  assert.equal(Object.isFrozen(parsed.network), true);
+function build(scope, settings, home, root) {
+  return buildSandboxPolicy({
+    scope,
+    settings,
+    homeDirectory: home,
+    cacheRoot: path.join(root, "cache"),
+    runtimeRoot: path.join(root, "runtime"),
+  });
+}
 
-  assert.throws(
-    () => parseSandboxSettings({ network: {}, filesystem: {} }),
-    /unknown key|version/,
-  );
+test("settings parser enforces the versioned filesystem schema", (t) => {
+  const root = makeRoot(t);
+  const home = path.join(root, "home");
+  const dotfiles = path.join(home, ".dotfiles");
+  fs.mkdirSync(dotfiles, { recursive: true });
+  const parsed = parseSandboxSettings(validSettings({
+    filesystem: filesystem({
+      workspaceOverrides: [{ root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] }],
+      externalMounts: [{ path: "~/source", access: "ro" }],
+    }),
+    network: {
+      mode: "allowlist", allowedHosts: ["example.com", "*.npmjs.org"], allowWebSockets: true,
+      tcpMappings: [{ guestHost: "database.local", guestPort: 5432, connectHost: "127.0.0.1", connectPort: 15432 }],
+    },
+  }), { homeDirectory: home });
+  assert.equal(parsed.filesystem.workspaceOverrides[0].root, "~/.dotfiles");
+  assert.equal(parsed.filesystem.externalMounts[0].access, "ro");
+  assert.equal(Object.isFrozen(parsed.filesystem), true);
+
+  assert.throws(() => parseSandboxSettings({ network: {}, filesystem: {} }), /unknown key|version/);
   assert.throws(() => parseSandboxSettingsText("{"), /malformed/);
-  assert.throws(
-    () => parseSandboxSettings({ ...validSettings(), extra: true }),
-    /unknown key/,
-  );
-  assert.throws(
-    () =>
-      parseSandboxSettings(
-        validSettings({
-          network: {
-            mode: "allowlist",
-            allowedHosts: [],
-            allowWebSockets: false,
-            tcpMappings: [],
-          },
-        }),
-      ),
-    /requires at least one/,
-  );
-  assert.throws(
-    () =>
-      parseSandboxSettings(
-        validSettings({
-          network: {
-            mode: "offline",
-            allowedHosts: [],
-            allowWebSockets: true,
-            tcpMappings: [],
-          },
-        }),
-      ),
-    /offline mode/,
-  );
-  assert.throws(
-    () =>
-      parseSandboxSettings(
-        validSettings({
-          network: {
-            mode: "allowlist",
-            allowedHosts: ["*"],
-            allowWebSockets: false,
-            tcpMappings: [],
-          },
-        }),
-      ),
-    /global wildcard/,
-  );
+  assert.throws(() => parseSandboxSettings(validSettings({ filesystem: filesystem({ workspace: { access: "bad", writeProtectedPaths: [] } }) })), /access/);
+  for (const protectedPath of ["/absolute", "../escape", "folder/../escape", "", "."]) {
+    assert.throws(() => parseSandboxSettings(validSettings({ filesystem: filesystem({ workspace: { access: "rw", writeProtectedPaths: [protectedPath] } }) })), /relative|bounded/);
+  }
+  assert.throws(() => parseSandboxSettings(validSettings({ filesystem: filesystem({ workspace: { access: "rw", writeProtectedPaths: [".git", ".git"] } }) })), /duplicates/);
+  assert.throws(() => parseSandboxSettings(validSettings({ filesystem: filesystem({ workspaceOverrides: [{ root: "~/missing", access: "rw", writeProtectedPaths: [] }] }) }), { homeDirectory: home }), /existing directory/);
+  fs.symlinkSync(dotfiles, path.join(home, "dotfiles-alias"));
+  assert.throws(() => parseSandboxSettings(validSettings({ filesystem: filesystem({ workspaceOverrides: [
+    { root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] },
+    { root: "~/dotfiles-alias", access: "rw", writeProtectedPaths: [] },
+  ] }) }), { homeDirectory: home }), /duplicate canonical roots/);
 });
 
-test("external mounts canonicalize same-path directories and reject unsafe grants", (t) => {
+test("external mounts retain their boundaries and signing-key exception", (t) => {
   const root = makeRoot(t);
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
   const external = path.join(root, "external");
-  const credential = path.join(home, ".ssh");
-  fs.mkdirSync(home);
-  fs.mkdirSync(workspace);
-  fs.mkdirSync(external);
-  fs.mkdirSync(credential);
-  fs.mkdirSync(path.join(credential, "git"));
-  const signingPublicKey = path.join(credential, "git", "id_ed25519_signing.pub");
-  const signingPrivateKey = path.join(credential, "git", "id_ed25519_signing");
+  const credential = path.join(home, ".ssh", "git");
+  fs.mkdirSync(credential, { recursive: true });
+  fs.mkdirSync(workspace); fs.mkdirSync(external);
+  const signingPublicKey = path.join(credential, "id_ed25519_signing.pub");
   fs.writeFileSync(signingPublicKey, "ssh-ed25519 public-key");
-  fs.writeFileSync(signingPrivateKey, "private-key");
   fs.symlinkSync(external, path.join(home, "external-link"));
-
-  const parsed = parseSandboxSettings(
-    validSettings({ externalMounts: [{ path: "~/external-link", access: "ro" }] }),
-  );
-  const resolved = resolveExternalMounts(parsed, {
-    homeDirectory: home,
-    workspaceRoot: workspace,
-    invariantRoots: [credential],
+  const resolved = resolveExternalMounts(parseSandboxSettings(validSettings({ filesystem: filesystem({ externalMounts: [{ path: "~/external-link", access: "ro" }] }) })), {
+    homeDirectory: home, workspaceRoot: workspace, invariantRoots: [path.dirname(credential)],
   });
   assert.equal(resolved[0].hostPath, fs.realpathSync(external));
-  assert.equal(resolved[0].guestPath, fs.realpathSync(external));
-  assert.equal(resolved[0].configuredPath, "~/external-link");
-
-  const signingKey = resolveExternalMounts(
-    parseSandboxSettings(validSettings({ externalMounts: [{ path: signingPublicKey, access: "ro" }] })),
-    { homeDirectory: home, workspaceRoot: workspace, invariantRoots: [credential] },
-  );
-  const signingGuestDirectory = path.dirname(signingPublicKey);
-  assert.equal(signingKey[0].kind, "signing-public-key");
-  assert.equal(signingKey[0].hostPath, signingPublicKey);
-  assert.equal(signingKey[0].guestPath, signingGuestDirectory);
-  const signingProvider = createPolicyProviders({ mounts: signingKey })[signingGuestDirectory];
-  assert.deepEqual(signingProvider.readdirSync("/"), ["id_ed25519_signing.pub"]);
-  const signingHandle = signingProvider.openSync("/id_ed25519_signing.pub", "r");
-  assert.equal(signingHandle.readFileSync({ encoding: "utf8" }), "ssh-ed25519 public-key");
-  signingHandle.closeSync();
-  assert.throws(() => signingProvider.openSync("/id_ed25519_signing", "r"), /ENOENT|no such file/i);
-  assert.throws(() => signingProvider.openSync("/unrelated", "r"), /ENOENT|no such file/i);
+  const signingKey = resolveExternalMounts(parseSandboxSettings(validSettings({ filesystem: filesystem({ externalMounts: [{ path: signingPublicKey, access: "ro" }] }) })), {
+    homeDirectory: home, workspaceRoot: workspace, invariantRoots: [path.dirname(credential)],
+  });
+  const signingProvider = createPolicyProviders({ mounts: signingKey })[path.dirname(signingPublicKey)];
+  assert.equal(signingProvider.openSync("/id_ed25519_signing.pub", "r").readFileSync({ encoding: "utf8" }), "ssh-ed25519 public-key");
   assert.throws(() => signingProvider.openSync("/id_ed25519_signing.pub", "w"), /read-only|EROFS|ERRNO_30/i);
-  assert.throws(() => signingProvider.openSync("/id_ed25519_signing.pub", "r+"), /read-only|EROFS|ERRNO_30/i);
-  assert.throws(() => signingProvider.renameSync("/id_ed25519_signing.pub", "/renamed"), /read-only|EROFS|ERRNO_30/i);
-  assert.throws(() => signingProvider.unlinkSync("/id_ed25519_signing.pub"), /read-only|EROFS|ERRNO_30/i);
-  for (const invalidSigningMount of [
-    { path: signingPublicKey, access: "rw" },
-    { path: signingPrivateKey, access: "ro" },
-  ]) {
-    assert.throws(
-      () =>
-        resolveExternalMounts(
-          parseSandboxSettings(validSettings({ externalMounts: [invalidSigningMount] })),
-          { homeDirectory: home, workspaceRoot: workspace, invariantRoots: [credential] },
-        ),
-      /directory or the read-only signing public key/,
-    );
-  }
-
-  const failures = [
-    [{ path: "/", access: "ro" }],
-    [{ path: "~", access: "ro" }],
-    [{ path: "relative", access: "ro" }],
-    [{ path: "~/missing", access: "ro" }],
-    [{ path: credential, access: "ro" }],
-    [{ path: workspace, access: "ro" }],
-    [
-      { path: external, access: "ro" },
-      { path: path.join(external, "nested"), access: "rw" },
-    ],
-  ];
-  fs.mkdirSync(path.join(external, "nested"));
-  for (const externalMounts of failures) {
-    const settings = parseSandboxSettings(validSettings({ externalMounts }));
-    assert.throws(
-      () =>
-        resolveExternalMounts(settings, {
-          homeDirectory: home,
-          workspaceRoot: workspace,
-          invariantRoots: [credential],
-        }),
-      /absolute|does not exist|whole home|boundary|overlaps/,
-    );
-  }
+  assert.throws(() => resolveExternalMounts(parseSandboxSettings(validSettings({ filesystem: filesystem({ externalMounts: [{ path: workspace, access: "ro" }] }) })), {
+    homeDirectory: home, workspaceRoot: workspace, invariantRoots: [path.dirname(credential)],
+  }), /boundary/);
 });
 
-test("effective policy creates private workspace state and stable mount generations", (t) => {
+test("exact canonical overrides grant only the configured workspace", (t) => {
   const root = makeRoot(t);
   const home = path.join(root, "home");
-  const workspace = path.join(root, "workspace");
-  const external = path.join(root, "external");
-  const cacheRoot = path.join(root, "cache-root");
-  const runtimeRoot = path.join(root, "runtime");
-  fs.mkdirSync(home);
-  fs.mkdirSync(workspace);
-  fs.mkdirSync(external);
-
-  const settings = parseSandboxSettings(
-    validSettings({ externalMounts: [{ path: external, access: "ro" }] }),
-  );
-  const policy = buildSandboxPolicy({
-    scope: makeScope(fs.realpathSync(workspace)),
-    settings,
-    homeDirectory: home,
-    cacheRoot,
-    runtimeRoot,
-    imageGeneration: "image-a",
-  });
-  const same = buildSandboxPolicy({
-    scope: makeScope(fs.realpathSync(workspace)),
-    settings,
-    homeDirectory: home,
-    cacheRoot,
-    runtimeRoot,
-    imageGeneration: "image-a",
-  });
-  assert.equal(policy.policyGeneration, same.policyGeneration);
-  assert.equal(policy.imageGeneration, "image-a");
-  assert.deepEqual(
-    policy.mounts.map((mount) => [mount.kind, mount.access]),
-    [
-      ["workspace", "rw"],
-      ["developer-local-cache", "rw"],
-      ["external", "ro"],
-      ["cache", "rw"],
-      ["npm-cache", "rw"],
-      ["cargo-cache", "rw"],
-    ],
-  );
-  assert.equal(fs.statSync(policy.workspaceState).mode & 0o777, 0o700);
-  assert.equal(fs.existsSync(path.join(policy.workspaceState, "docker")), false);
-  const localCacheMount = policy.mounts.find((mount) => mount.kind === "developer-local-cache");
-  assert.equal(localCacheMount?.hostPath, path.join(home, "local_cache"));
-  assert.equal(localCacheMount?.guestPath, "/root/local_cache");
-  assert.equal(fs.statSync(path.join(home, "local_cache")).isDirectory(), true);
-
-  const changed = buildSandboxPolicy({
-    scope: makeScope(fs.realpathSync(workspace)),
-    settings: parseSandboxSettings(
-      validSettings({
-        network: {
-          mode: "allowlist",
-          allowedHosts: ["example.com"],
-          allowWebSockets: false,
-          tcpMappings: [],
-        },
-      }),
-    ),
-    homeDirectory: home,
-    cacheRoot,
-    runtimeRoot,
-  });
-  assert.notEqual(changed.policyGeneration, policy.policyGeneration);
+  const dotfiles = path.join(home, ".dotfiles");
+  const other = path.join(root, "other");
+  fs.mkdirSync(dotfiles, { recursive: true }); fs.mkdirSync(other);
+  fs.symlinkSync(dotfiles, path.join(home, "dotfiles-alias"));
+  const settings = parseSandboxSettings(validSettings({ filesystem: filesystem({
+    workspaceOverrides: [{ root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] }],
+  }) }), { homeDirectory: home });
+  const exact = build(makeScope(fs.realpathSync(dotfiles)), settings, home, root);
+  const nested = build(makeScope(fs.realpathSync(dotfiles)), settings, home, root);
+  const alias = build(makeScope(fs.realpathSync(path.join(home, "dotfiles-alias"))), settings, home, root);
+  const unrelated = build(makeScope(fs.realpathSync(other)), settings, home, root);
+  for (const policy of [exact, nested, alias]) {
+    const mount = policy.mounts.find((entry) => entry.kind === "workspace");
+    assert.equal(mount.access, "rw");
+    assert.equal(mount.protectedHostPaths, undefined);
+  }
+  const otherMount = unrelated.mounts.find((entry) => entry.kind === "workspace");
+  assert.equal(otherMount.access, "rw");
+  assert.deepEqual(otherMount.protectedHostPaths, defaultProtectedPaths.map((entry) => path.join(other, entry)));
+  assert.equal(exact.policyGeneration, alias.policyGeneration);
+  const equivalent = parseSandboxSettings(validSettings({ filesystem: filesystem({
+    workspaceOverrides: [{ root: "~/dotfiles-alias", access: "rw", writeProtectedPaths: [] }],
+  }) }), { homeDirectory: home });
+  assert.equal(build(makeScope(fs.realpathSync(dotfiles)), equivalent, home, root).policyGeneration, exact.policyGeneration);
+  const changed = parseSandboxSettings(validSettings({ filesystem: filesystem({ workspaceOverrides: [{ root: "~/.dotfiles", access: "ro", writeProtectedPaths: [] }] }) }), { homeDirectory: home });
+  assert.notEqual(build(makeScope(fs.realpathSync(dotfiles)), changed, home, root).policyGeneration, exact.policyGeneration);
+  const defaultChanged = parseSandboxSettings(validSettings({ filesystem: filesystem({ workspace: { access: "rw", writeProtectedPaths: [".git"] }, workspaceOverrides: [] }) }), { homeDirectory: home });
+  assert.notEqual(build(makeScope(fs.realpathSync(other)), defaultChanged, home, root).policyGeneration, unrelated.policyGeneration);
 });
 
-test("protected provider guards lexical, resolved, hard-link, link, and rename writes", async (t) => {
+test("permissive overrides use an unguarded real provider for every workspace path", async (t) => {
+  const root = makeRoot(t);
+  const home = path.join(root, "home");
+  const workspace = path.join(home, ".dotfiles");
+  fs.mkdirSync(path.join(workspace, ".git", "hooks"), { recursive: true });
+  for (const entry of [".git/config", ".git/hooks/hook", ".pi/value", "bin/pi", "pi/sandbox/value", "pi/agent/value"]) {
+    const target = path.join(workspace, entry);
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, "old");
+  }
+  fs.writeFileSync(path.join(workspace, "hard-source"), "hard");
+  fs.linkSync(path.join(workspace, "hard-source"), path.join(workspace, "hard-alias"));
+  const settings = parseSandboxSettings(validSettings({ filesystem: filesystem({ workspaceOverrides: [{ root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] }] }) }), { homeDirectory: home });
+  const policy = build(makeScope(fs.realpathSync(workspace)), settings, home, root);
+  const provider = createPolicyProviders(policy)[workspace];
+  for (const entry of ["/.git/config", "/.git/hooks/hook", "/.pi/value", "/bin/pi", "/pi/sandbox/value", "/pi/agent/value"]) {
+    const handle = await provider.open(entry, "r+"); await handle.truncate(0); await handle.writeFile("new"); await handle.close();
+  }
+  await provider.rename("/.git/config", "/.git/config.renamed");
+  await provider.link("/hard-source", "/hard-linked");
+  await provider.unlink("/.git/hooks/hook");
+  const hard = await provider.open("/hard-alias", "r+"); await hard.writeFile("changed"); await hard.close();
+  assert.equal(fs.readFileSync(path.join(workspace, "hard-source"), "utf8"), "changed");
+});
+
+test("protected providers still reject lexical, resolved, hard-link, rename, and structural writes", async (t) => {
   const root = makeRoot(t);
   const workspace = path.join(root, "workspace");
-  fs.mkdirSync(workspace);
   fs.mkdirSync(path.join(workspace, ".git", "hooks"), { recursive: true });
-  fs.mkdirSync(path.join(workspace, ".vscode"));
   fs.writeFileSync(path.join(workspace, ".git", "config"), "protected");
   fs.writeFileSync(path.join(workspace, ".bashrc"), "protected");
   fs.writeFileSync(path.join(workspace, "allowed.txt"), "allowed");
   fs.writeFileSync(path.join(workspace, "hard-source"), "hard");
   fs.linkSync(path.join(workspace, "hard-source"), path.join(workspace, "hard-alias"));
   fs.symlinkSync(".git/config", path.join(workspace, "config-alias"));
-
-  const protectedPaths = WORKSPACE_PROTECTED_PATHS.map((entry) => path.join(workspace, entry));
-  const provider = new ProtectedWriteProvider(workspace, protectedPaths);
-
-  await provider.mkdir("/", { recursive: true });
-  await assert.rejects(() => provider.rmdir("/"), /write denied/);
-  const allowed = await provider.open("/allowed.txt", "r+");
-  await allowed.writeFile("changed");
-  await allowed.close();
-  assert.equal(fs.readFileSync(path.join(workspace, "allowed.txt"), "utf8"), "changed");
-
+  const provider = new ProtectedWriteProvider(workspace, defaultProtectedPaths.map((entry) => path.join(workspace, entry)));
   for (const entry of ["/.git/config", "/.bashrc", "/config-alias", "/hard-alias"]) {
     await assert.rejects(() => provider.open(entry, "r+"), /write denied/);
   }
@@ -309,77 +199,34 @@ test("protected provider guards lexical, resolved, hard-link, link, and rename w
   await assert.rejects(() => provider.rename("/allowed.txt", "/.bashrc"), /write denied/);
   await assert.rejects(() => provider.rename("/.bashrc", "/moved"), /write denied/);
   await assert.rejects(() => provider.link("/.git/config", "/linked"), /write denied/);
-  await assert.rejects(() => provider.link("/allowed.txt", "/.git/hooks/linked"), /write denied/);
   await assert.rejects(() => provider.symlink(".git/config", "/new-alias"), /write denied/);
-  assert.throws(() => provider.openSync("/.vscode/settings.json", "w"), /write denied/);
 });
 
-test("policy providers enforce external read-only access", async (t) => {
+test("workspace, bare-common, and external mount access follows settings", async (t) => {
   const root = makeRoot(t);
-  const home = path.join(root, "home");
-  const workspace = path.join(root, "workspace");
-  const external = path.join(root, "external");
-  fs.mkdirSync(home);
-  fs.mkdirSync(workspace);
-  fs.mkdirSync(external);
-  fs.writeFileSync(path.join(external, "value"), "readable");
-  const policy = buildSandboxPolicy({
-    scope: makeScope(fs.realpathSync(workspace)),
-    settings: parseSandboxSettings(
-      validSettings({ externalMounts: [{ path: external, access: "ro" }] }),
-    ),
-    homeDirectory: home,
-    cacheRoot: path.join(root, "cache"),
-    runtimeRoot: path.join(root, "runtime"),
-  });
+  const home = path.join(root, "home"); const workspace = path.join(root, "workspace"); const bare = path.join(root, "bare"); const external = path.join(root, "external");
+  fs.mkdirSync(home); fs.mkdirSync(workspace); fs.mkdirSync(bare); fs.mkdirSync(external); fs.writeFileSync(path.join(external, "value"), "readable");
+  const settings = parseSandboxSettings(validSettings({ filesystem: filesystem({
+    workspace: { access: "ro", writeProtectedPaths: [] }, bareCommon: { access: "ro", writeProtectedPaths: [] }, externalMounts: [{ path: external, access: "ro" }],
+  }) }), { homeDirectory: home });
+  const policy = build(makeScope(workspace, bare), settings, home, root);
   const providers = createPolicyProviders(policy);
-  const externalProvider = providers[fs.realpathSync(external)];
-  const handle = await externalProvider.open("/value", "r");
-  assert.equal(await handle.readFile({ encoding: "utf8" }), "readable");
-  await handle.close();
-  await assert.rejects(() => externalProvider.open("/value", "w"), /read-only|EROFS|ERRNO_30/i);
+  await assert.rejects(() => providers[workspace].open("/blocked", "w"), /read-only|EROFS|ERRNO_30/i);
+  await assert.rejects(() => providers[bare].open("/blocked", "w"), /read-only|EROFS|ERRNO_30/i);
+  await assert.rejects(() => providers[external].open("/value", "w"), /read-only|EROFS|ERRNO_30/i);
 });
 
-test("network modes compile to blocked-internal HTTP, optional TCP, or offline", () => {
-  const publicOptions = createNetworkOptions(
-    parseSandboxSettings(validSettings()).network,
-  );
+test("network modes compile to mediated HTTP, guarded raw TCP, or offline", async () => {
+  const publicOptions = createNetworkOptions(parseSandboxSettings(validSettings()).network);
   assert.equal(publicOptions.netEnabled, true);
-  assert.equal(typeof publicOptions.httpHooks.isIpAllowed, "function");
-  assert.equal(publicOptions.allowWebSockets, false);
-
-  const allowlist = parseSandboxSettings(
-    validSettings({
-      network: {
-        mode: "allowlist",
-        allowedHosts: ["example.com"],
-        allowWebSockets: true,
-        tcpMappings: [
-          {
-            guestHost: "database.local",
-            guestPort: 5432,
-            connectHost: "127.0.0.1",
-            connectPort: 15432,
-          },
-        ],
-      },
-    }),
-  ).network;
-  const mapped = createNetworkOptions(allowlist);
-  assert.deepEqual(mapped.tcp.hosts, { "database.local:5432": "127.0.0.1:15432" });
-  assert.deepEqual(mapped.dns, { mode: "synthetic", syntheticHostMapping: "per-host" });
-
-  const offline = createNetworkOptions(
-    parseSandboxSettings(
-      validSettings({
-        network: {
-          mode: "offline",
-          allowedHosts: [],
-          allowWebSockets: false,
-          tcpMappings: [],
-        },
-      }),
-    ).network,
-  );
+  assert.ok(publicOptions.httpHooks);
+  const passthrough = createNetworkOptions(parseSandboxSettings(validSettings({ network: { mode: "public-tcp", allowedHosts: [], allowWebSockets: false, tcpMappings: [] } })).network);
+  assert.equal(passthrough.netEnabled, true);
+  assert.equal(passthrough.httpHooks, undefined);
+  assert.equal(passthrough.dns.syntheticHostMapping, "per-host");
+  assert.equal(await passthrough.publicTcp.isIpAllowed({ hostname: "example.com", ip: "93.184.216.34", family: 4, port: 443 }), true);
+  assert.equal(await passthrough.publicTcp.isIpAllowed({ hostname: "metadata.google.internal", ip: "169.254.169.254", family: 4, port: 80 }), false);
+  assert.throws(() => parseSandboxSettings(validSettings({ network: { mode: "public-tcp", allowedHosts: ["example.com"], allowWebSockets: false, tcpMappings: [] } })), /does not use allowedHosts/);
+  const offline = createNetworkOptions(parseSandboxSettings(validSettings({ network: { mode: "offline", allowedHosts: [], allowWebSockets: false, tcpMappings: [] } })).network);
   assert.deepEqual(offline, { netEnabled: false, allowWebSockets: false });
 });

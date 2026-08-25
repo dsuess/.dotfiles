@@ -16,29 +16,10 @@ import {
 export const SETTINGS_VERSION = 1;
 export const SETTINGS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "settings.json");
 
-export const WORKSPACE_PROTECTED_PATHS = Object.freeze([
-  ".gitconfig",
-  ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
-  ".zshrc",
-  ".zprofile",
-  ".profile",
-  ".ripgreprc",
-  ".mcp.json",
-  ".vscode",
-  ".idea",
-  ".claude/commands",
-  ".claude/agents",
-  ".agents",
-  ".pi",
-  ".git/hooks",
-  ".git/config",
-]);
-
-export const BARE_PROTECTED_PATHS = Object.freeze(["hooks", "config"]);
-
-const SETTINGS_ROOT_KEYS = new Set(["version", "externalMounts", "network"]);
+const SETTINGS_ROOT_KEYS = new Set(["version", "filesystem", "network"]);
+const FILESYSTEM_KEYS = new Set(["workspace", "workspaceOverrides", "bareCommon", "externalMounts"]);
+const ACCESS_POLICY_KEYS = new Set(["access", "writeProtectedPaths"]);
+const WORKSPACE_OVERRIDE_KEYS = new Set(["root", "access", "writeProtectedPaths"]);
 const MOUNT_KEYS = new Set(["path", "access"]);
 const NETWORK_KEYS = new Set([
   "mode",
@@ -47,9 +28,10 @@ const NETWORK_KEYS = new Set([
   "tcpMappings",
 ]);
 const TCP_KEYS = new Set(["guestHost", "guestPort", "connectHost", "connectPort"]);
-const NETWORK_MODES = new Set(["public-http", "allowlist", "offline"]);
+const NETWORK_MODES = new Set(["public-http", "public-tcp", "allowlist", "offline"]);
 const ACCESS_MODES = new Set(["ro", "rw"]);
 const MAX_MOUNTS = 64;
+const MAX_PROTECTED_PATHS = 128;
 const MAX_HOSTS = 128;
 const MAX_TCP_MAPPINGS = 32;
 
@@ -106,22 +88,87 @@ function deepFreeze(value) {
   return value;
 }
 
-export function parseSandboxSettings(value) {
+function parseWriteProtectedPaths(value, label) {
+  if (!Array.isArray(value) || value.length > MAX_PROTECTED_PATHS) {
+    throw new Error(`${label} must be an array with at most ${MAX_PROTECTED_PATHS} entries`);
+  }
+  const paths = value.map((entry, index) => {
+    const protectedPath = assertString(entry, `${label}[${index}]`);
+    if (
+      path.isAbsolute(protectedPath) ||
+      protectedPath === "." ||
+      protectedPath.split(/[\\/]/).some((part) => !part || part === "..")
+    ) {
+      throw new Error(`${label}[${index}] must be a bounded relative path without traversal`);
+    }
+    return protectedPath;
+  });
+  if (new Set(paths).size !== paths.length) throw new Error(`${label} contains duplicates`);
+  return paths;
+}
+
+function parseAccessPolicy(value, label) {
+  const policy = assertPlainObject(value, label);
+  rejectUnknownKeys(policy, ACCESS_POLICY_KEYS, label);
+  if (!ACCESS_MODES.has(policy.access)) throw new Error(`${label}.access must be ro or rw`);
+  return { access: policy.access, writeProtectedPaths: parseWriteProtectedPaths(policy.writeProtectedPaths, `${label}.writeProtectedPaths`) };
+}
+
+function canonicalWorkspaceOverrideRoot(value, label, homeDirectory) {
+  const configuredRoot = assertString(value, label);
+  const expanded = expandHome(configuredRoot, homeDirectory);
+  if (!path.isAbsolute(expanded)) throw new Error(`${label} must be absolute or use ~/`);
+  try {
+    const canonicalRoot = fs.realpathSync(path.resolve(expanded));
+    if (!fs.statSync(canonicalRoot).isDirectory()) throw new Error("not a directory");
+    return { configuredRoot, canonicalRoot };
+  } catch {
+    throw new Error(`${label} must be an existing directory`);
+  }
+}
+
+export function parseSandboxSettings(value, options = {}) {
   const root = assertPlainObject(value, "settings");
   rejectUnknownKeys(root, SETTINGS_ROOT_KEYS, "settings");
   if (root.version !== SETTINGS_VERSION) {
     throw new Error(`settings.version must be ${SETTINGS_VERSION}`);
   }
-  if (!Array.isArray(root.externalMounts) || root.externalMounts.length > MAX_MOUNTS) {
-    throw new Error(`settings.externalMounts must be an array with at most ${MAX_MOUNTS} entries`);
+  const homeDirectory = fs.realpathSync(options.homeDirectory ?? os.homedir());
+  const rawFilesystem = assertPlainObject(root.filesystem, "settings.filesystem");
+  rejectUnknownKeys(rawFilesystem, FILESYSTEM_KEYS, "settings.filesystem");
+  const workspace = parseAccessPolicy(rawFilesystem.workspace, "settings.filesystem.workspace");
+  const bareCommon = parseAccessPolicy(rawFilesystem.bareCommon, "settings.filesystem.bareCommon");
+  if (!Array.isArray(rawFilesystem.workspaceOverrides) || rawFilesystem.workspaceOverrides.length > MAX_MOUNTS) {
+    throw new Error(`settings.filesystem.workspaceOverrides must be an array with at most ${MAX_MOUNTS} entries`);
   }
-
-  const externalMounts = root.externalMounts.map((raw, index) => {
-    const mount = assertPlainObject(raw, `externalMounts[${index}]`);
-    rejectUnknownKeys(mount, MOUNT_KEYS, `externalMounts[${index}]`);
-    const mountPath = assertString(mount.path, `externalMounts[${index}].path`);
+  const canonicalOverrideRoots = new Set();
+  const workspaceOverrides = rawFilesystem.workspaceOverrides.map((raw, index) => {
+    const override = assertPlainObject(raw, `settings.filesystem.workspaceOverrides[${index}]`);
+    rejectUnknownKeys(override, WORKSPACE_OVERRIDE_KEYS, `settings.filesystem.workspaceOverrides[${index}]`);
+    const { configuredRoot, canonicalRoot } = canonicalWorkspaceOverrideRoot(
+      override.root,
+      `settings.filesystem.workspaceOverrides[${index}].root`,
+      homeDirectory,
+    );
+    if (canonicalOverrideRoots.has(canonicalRoot)) {
+      throw new Error("settings.filesystem.workspaceOverrides contains duplicate canonical roots");
+    }
+    canonicalOverrideRoots.add(canonicalRoot);
+    const policy = parseAccessPolicy(
+      { access: override.access, writeProtectedPaths: override.writeProtectedPaths },
+      `settings.filesystem.workspaceOverrides[${index}]`,
+    );
+    return { root: configuredRoot, ...policy };
+  });
+  if (!Array.isArray(rawFilesystem.externalMounts) || rawFilesystem.externalMounts.length > MAX_MOUNTS) {
+    throw new Error(`settings.filesystem.externalMounts must be an array with at most ${MAX_MOUNTS} entries`);
+  }
+  const externalMounts = rawFilesystem.externalMounts.map((raw, index) => {
+    const mount = assertPlainObject(raw, `settings.filesystem.externalMounts[${index}]`);
+    rejectUnknownKeys(mount, MOUNT_KEYS, `settings.filesystem.externalMounts[${index}]`);
+    const mountPath = assertString(mount.path, `settings.filesystem.externalMounts[${index}].path`);
     if (!ACCESS_MODES.has(mount.access)) {
-      throw new Error(`externalMounts[${index}].access must be ro or rw`);
+      throw new Error(`settings.filesystem.externalMounts[${index}].access must be ro or rw`);
     }
     return { path: mountPath, access: mount.access };
   });
@@ -161,8 +208,8 @@ export function parseSandboxSettings(value) {
     throw new Error("settings.network.tcpMappings contains duplicate guest targets");
   }
 
-  if (rawNetwork.mode === "public-http" && allowedHosts.length !== 0) {
-    throw new Error("public-http mode does not use allowedHosts");
+  if ((rawNetwork.mode === "public-http" || rawNetwork.mode === "public-tcp") && allowedHosts.length !== 0) {
+    throw new Error(`${rawNetwork.mode} mode does not use allowedHosts`);
   }
   if (rawNetwork.mode === "allowlist" && allowedHosts.length === 0) {
     throw new Error("allowlist mode requires at least one allowed host");
@@ -176,7 +223,7 @@ export function parseSandboxSettings(value) {
 
   return deepFreeze({
     version: SETTINGS_VERSION,
-    externalMounts,
+    filesystem: { workspace, workspaceOverrides, bareCommon, externalMounts },
     network: {
       mode: rawNetwork.mode,
       allowedHosts,
@@ -186,14 +233,14 @@ export function parseSandboxSettings(value) {
   });
 }
 
-export function parseSandboxSettingsText(text) {
+export function parseSandboxSettingsText(text, options) {
   let value;
   try {
     value = JSON.parse(text);
   } catch (error) {
     throw new Error(`settings JSON is malformed: ${error.message}`);
   }
-  return parseSandboxSettings(value);
+  return parseSandboxSettings(value, options);
 }
 
 function isWithin(candidate, root) {
@@ -271,7 +318,7 @@ export function resolveExternalMounts(settings, options) {
   ].map(canonicalIfPresent);
   const resolved = [];
 
-  for (const [index, mount] of settings.externalMounts.entries()) {
+  for (const [index, mount] of settings.filesystem.externalMounts.entries()) {
     const expanded = expandHome(mount.path, homeDirectory);
     if (!path.isAbsolute(expanded)) {
       throw new Error(`externalMounts[${index}].path must be absolute or use ~/`);
@@ -327,24 +374,23 @@ function ensureDeveloperLocalCache(homeDirectory) {
   return fs.realpathSync(directory);
 }
 
-function existingControlPlanePaths(workspaceRoot) {
-  const sandboxSource = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    sandboxSource,
-    path.resolve(sandboxSource, "../../bin/pi"),
-    path.resolve(sandboxSource, "../agent"),
-  ];
-  return candidates
-    .filter((candidate) => fs.existsSync(candidate))
-    .map((candidate) => fs.realpathSync(candidate))
-    .filter((candidate) => isWithin(candidate, workspaceRoot));
+function protectedHostPaths(root, relatives) {
+  return Object.freeze(relatives.map((relative) => path.join(root, relative)));
 }
 
-function protectedHostPaths(root, relatives, extra = []) {
-  return Object.freeze([
-    ...relatives.map((relative) => path.join(root, relative)),
-    ...extra,
-  ]);
+function selectWorkspacePolicy(filesystem, workspaceRoot, homeDirectory) {
+  const canonicalWorkspaceRoot = fs.realpathSync(workspaceRoot);
+  for (const override of filesystem.workspaceOverrides) {
+    const { canonicalRoot } = canonicalWorkspaceOverrideRoot(
+      override.root,
+      "settings.filesystem.workspaceOverrides.root",
+      homeDirectory,
+    );
+    if (canonicalRoot === canonicalWorkspaceRoot) {
+      return { ...override, canonicalRoot };
+    }
+  }
+  return { ...filesystem.workspace, canonicalRoot: null };
 }
 
 function computeGeneration(value) {
@@ -379,18 +425,21 @@ export function buildSandboxPolicy(options) {
     bareCommonDirectory: scope.bareCommonDirectory,
     invariantRoots,
   });
-  const workspaceProtected = protectedHostPaths(
+  const workspacePolicy = selectWorkspacePolicy(
+    options.settings.filesystem,
     scope.canonicalWorkspaceRoot,
-    WORKSPACE_PROTECTED_PATHS,
-    existingControlPlanePaths(scope.canonicalWorkspaceRoot),
+    homeDirectory,
   );
+  const workspaceProtected = workspacePolicy.access === "rw" && workspacePolicy.writeProtectedPaths.length > 0
+    ? protectedHostPaths(scope.canonicalWorkspaceRoot, workspacePolicy.writeProtectedPaths)
+    : null;
   const mounts = [
     deepFreeze({
       kind: "workspace",
       hostPath: scope.canonicalWorkspaceRoot,
       guestPath: scope.canonicalWorkspaceRoot,
-      access: "rw",
-      protectedHostPaths: workspaceProtected,
+      access: workspacePolicy.access,
+      ...(workspaceProtected ? { protectedHostPaths: workspaceProtected } : {}),
     }),
     deepFreeze({
       kind: "developer-local-cache",
@@ -400,16 +449,20 @@ export function buildSandboxPolicy(options) {
     }),
   ];
   if (scope.bareCommonDirectory) {
+    const bareProtected = options.settings.filesystem.bareCommon.access === "rw" &&
+      options.settings.filesystem.bareCommon.writeProtectedPaths.length > 0
+      ? protectedHostPaths(
+        scope.bareCommonDirectory,
+        options.settings.filesystem.bareCommon.writeProtectedPaths,
+      )
+      : null;
     mounts.push(
       deepFreeze({
         kind: "bare-common",
         hostPath: scope.bareCommonDirectory,
         guestPath: scope.bareCommonDirectory,
-        access: "rw",
-        protectedHostPaths: protectedHostPaths(
-          scope.bareCommonDirectory,
-          BARE_PROTECTED_PATHS,
-        ),
+        access: options.settings.filesystem.bareCommon.access,
+        ...(bareProtected ? { protectedHostPaths: bareProtected } : {}),
       }),
     );
   }
@@ -424,6 +477,7 @@ export function buildSandboxPolicy(options) {
     settingsVersion: options.settings.version,
     workspaceKey: scope.workspaceKey,
     workspaceRoot: scope.canonicalWorkspaceRoot,
+    workspaceOverrideRoot: workspacePolicy.canonicalRoot,
     bareCommonDirectory: scope.bareCommonDirectory,
     mounts: mounts.map(({ protectedHostPaths: protectedPaths, ...mount }) => ({
       ...mount,
@@ -447,7 +501,7 @@ export function buildSandboxPolicy(options) {
 
 export function loadSandboxPolicy(options) {
   const settingsPath = options.settingsPath ?? SETTINGS_PATH;
-  const settings = parseSandboxSettingsText(fs.readFileSync(settingsPath, "utf8"));
+  const settings = parseSandboxSettingsText(fs.readFileSync(settingsPath, "utf8"), options);
   return buildSandboxPolicy({ ...options, settings });
 }
 
@@ -708,11 +762,12 @@ export function createPolicyProviders(policy) {
       signingKeyProvider.writeFileSync(`/${path.basename(mount.hostPath)}`, fs.readFileSync(mount.hostPath));
       signingKeyProvider.setReadOnly();
       provider = new ReadonlyProvider(signingKeyProvider);
-    } else if (mount.protectedHostPaths) {
-      provider = new ProtectedWriteProvider(mount.hostPath, mount.protectedHostPaths);
     } else {
       provider = new RealFSProvider(mount.hostPath);
       if (mount.access === "ro") provider = new ReadonlyProvider(provider);
+      else if (mount.protectedHostPaths?.length > 0) {
+        provider = new ProtectedWriteProvider(mount.hostPath, mount.protectedHostPaths);
+      }
     }
     mounts[mount.guestPath] = provider;
   }
@@ -723,21 +778,36 @@ export function createNetworkOptions(network) {
   if (network.mode === "offline") {
     return deepFreeze({ netEnabled: false, allowWebSockets: false });
   }
-  const allowedHosts = network.mode === "allowlist" ? network.allowedHosts : ["*"];
-  const { httpHooks } = createHttpHooks({ allowedHosts, blockInternalRanges: true });
   const tcpHosts = {};
   for (const mapping of network.tcpMappings) {
     tcpHosts[`${mapping.guestHost}:${mapping.guestPort}`] =
       `${mapping.connectHost}:${mapping.connectPort}`;
   }
+  const dns = network.tcpMappings.length > 0 || network.mode === "public-tcp"
+    ? { mode: "synthetic", syntheticHostMapping: "per-host" }
+    : { mode: "synthetic" };
+  if (network.mode === "public-tcp") {
+    // Reuse Gondolin's reviewed public-address classifier, but do not install
+    // HTTP hooks: public TCP must remain raw through the origin TLS handshake.
+    const { httpHooks } = createHttpHooks({ allowedHosts: ["*"], blockInternalRanges: true });
+    return {
+      netEnabled: true,
+      publicTcp: {
+        isIpAllowed: ({ hostname, ip, family, port }) =>
+          httpHooks.isIpAllowed({ hostname, ip, family, port, protocol: "https" }),
+      },
+      allowWebSockets: network.allowWebSockets,
+      dns,
+      ...(network.tcpMappings.length > 0 ? { tcp: { hosts: tcpHosts } } : {}),
+    };
+  }
+  const allowedHosts = network.mode === "allowlist" ? network.allowedHosts : ["*"];
+  const { httpHooks } = createHttpHooks({ allowedHosts, blockInternalRanges: true });
   return {
     netEnabled: true,
     httpHooks,
     allowWebSockets: network.allowWebSockets,
-    dns:
-      network.tcpMappings.length > 0
-        ? { mode: "synthetic", syntheticHostMapping: "per-host" }
-        : { mode: "synthetic" },
+    dns,
     ...(network.tcpMappings.length > 0 ? { tcp: { hosts: tcpHosts } } : {}),
   };
 }

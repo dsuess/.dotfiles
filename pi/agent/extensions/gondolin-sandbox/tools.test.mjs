@@ -192,4 +192,7 @@ test("bash and rewritten RTK commands receive only guest-safe environment", asyn
   assert.equal(sanitized.GITHUB_TOKEN, undefined);
   assert.equal(sanitized.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(sanitized.LC_TIME, "C");
+  for (const name of ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]) {
+    assert.equal(sanitized[name], undefined, `${name} must not propagate Gondolin MITM trust`);
+  }
 });

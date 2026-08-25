@@ -329,6 +329,7 @@ cmd_config() {
     (
         cd ~/.pi/sandbox
         npm_config_cache=~/.cache/pi-gondolin/npm npm ci --omit=dev --ignore-scripts
+        node apply-gondolin-public-tcp-patch.mjs
         # The normal cache-aware path and `gondolinier image build` both use
         # ensureGondolinImage(); only a missing or changed image needs Docker.
         PATH="$gondolin_e2fs_path:$PATH" node build-gondolin-image.mjs --quiet

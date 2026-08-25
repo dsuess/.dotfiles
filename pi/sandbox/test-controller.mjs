@@ -8,6 +8,7 @@ import test from "node:test";
 import { configureRuntimeCaches, ControllerClient } from "./client.mjs";
 import {
   controllerInternals,
+  GUEST_ENVIRONMENT,
   WorkspaceController,
 } from "./controller.mjs";
 
@@ -15,6 +16,12 @@ const GENERATION_A = "a".repeat(64);
 const GENERATION_B = "b".repeat(64);
 const WORKSPACE_KEY = "c".repeat(64);
 const CONTROLLER_TOKEN = "d".repeat(64);
+
+test("guest defaults do not propagate Gondolin MITM CA overrides", () => {
+  for (const name of ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]) {
+    assert.equal(GUEST_ENVIRONMENT[name], undefined);
+  }
+});
 
 function sleep(milliseconds, signal) {
   return new Promise((resolve, reject) => {

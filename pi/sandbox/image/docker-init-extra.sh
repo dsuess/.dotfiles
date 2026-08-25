@@ -32,40 +32,6 @@ mkdir -p /var/run /var/lib/docker /run/docker
 export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 
-# Containers do not inherit the guest trust store. For `docker run`, mount the
-# Gondolin-composed CA bundle and point common TLS clients at it. Keep Docker's
-# default bridge network: build and runtime containers need ordinary DNS, NAT,
-# and user-defined bridge networks.
-DOCKER_BIN="$(command -v docker || true)"
-if [ -n "$DOCKER_BIN" ]; then
-  mkdir -p /usr/local/libexec
-  ln -sf "$DOCKER_BIN" /usr/local/libexec/gondolin-docker
-  cat > /usr/local/bin/docker <<'EOF'
-#!/bin/sh
-set -eu
-
-DOCKER_BIN=/usr/local/libexec/gondolin-docker
-CA_BUNDLE="${SSL_CERT_FILE:-/run/gondolin/ca-certificates.crt}"
-
-if [ "$#" -gt 0 ] && [ "$1" = "run" ]; then
-  shift
-  if [ -r "$CA_BUNDLE" ]; then
-    exec "$DOCKER_BIN" run \
-      -e "SSL_CERT_FILE=$CA_BUNDLE" \
-      -e "CURL_CA_BUNDLE=$CA_BUNDLE" \
-      -e "REQUESTS_CA_BUNDLE=$CA_BUNDLE" \
-      -v "$CA_BUNDLE:$CA_BUNDLE:ro" \
-      "$@"
-  fi
-  exec "$DOCKER_BIN" run "$@"
-fi
-
-exec "$DOCKER_BIN" "$@"
-EOF
-  chmod 0755 /usr/local/bin/docker
-  log "[init] installed Docker CA wrapper"
-fi
-
 # Keep all daemon state in the guest-native filesystem. Never connect to a host
 # Docker socket. The vfs driver is intentional; Docker storage is ephemeral
 # because the VM root filesystem is replaced with the VM.

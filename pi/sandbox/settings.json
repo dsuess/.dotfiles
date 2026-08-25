@@ -1,10 +1,48 @@
 {
   "version": 1,
-  "externalMounts": [
-    { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
-  ],
+  "filesystem": {
+    "workspace": {
+      "access": "rw",
+      "writeProtectedPaths": [
+        ".gitconfig",
+        ".gitmodules",
+        ".bashrc",
+        ".bash_profile",
+        ".zshrc",
+        ".zprofile",
+        ".profile",
+        ".ripgreprc",
+        ".mcp.json",
+        ".vscode",
+        ".idea",
+        ".claude/commands",
+        ".claude/agents",
+        ".agents",
+        ".pi",
+        ".git/hooks",
+        ".git/config",
+        "bin/pi",
+        "pi/sandbox",
+        "pi/agent"
+      ]
+    },
+    "workspaceOverrides": [
+      {
+        "root": "~/.dotfiles",
+        "access": "rw",
+        "writeProtectedPaths": []
+      }
+    ],
+    "bareCommon": {
+      "access": "rw",
+      "writeProtectedPaths": ["hooks", "config"]
+    },
+    "externalMounts": [
+      { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
+    ]
+  },
   "network": {
-    "mode": "public-http",
+    "mode": "public-tcp",
     "allowedHosts": [],
     "allowWebSockets": false,
     "tcpMappings": []

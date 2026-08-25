@@ -22,7 +22,12 @@ const AUDITED_HOST_TOOLS = [
 function settings() {
   return {
     version: 1,
-    externalMounts: [],
+    filesystem: {
+      workspace: { access: "rw", writeProtectedPaths: [".git/config"] },
+      workspaceOverrides: [],
+      bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+      externalMounts: [],
+    },
     network: {
       mode: "public-http",
       allowedHosts: [],

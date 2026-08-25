@@ -107,12 +107,29 @@ Staged execution uses the same controller. Every subagent and discussion child s
 ```json
 {
   "version": 1,
-  "externalMounts": [
-    { "path": "~/src/shared", "access": "ro" },
-    { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
-  ],
+  "filesystem": {
+    "workspace": {
+      "access": "rw",
+      "writeProtectedPaths": [".git/config", ".git/hooks"]
+    },
+    "workspaceOverrides": [
+      {
+        "root": "~/.dotfiles",
+        "access": "rw",
+        "writeProtectedPaths": []
+      }
+    ],
+    "bareCommon": {
+      "access": "rw",
+      "writeProtectedPaths": ["config", "hooks"]
+    },
+    "externalMounts": [
+      { "path": "~/src/shared", "access": "ro" },
+      { "path": "~/.ssh/git/id_ed25519_signing.pub", "access": "ro" }
+    ]
+  },
   "network": {
-    "mode": "public-http",
+    "mode": "public-tcp",
     "allowedHosts": [],
     "allowWebSockets": false,
     "tcpMappings": []
@@ -120,7 +137,11 @@ Staged execution uses the same controller. Every subagent and discussion child s
 }
 ```
 
-The controller mounts the canonical workspace root as read-write. A verified bare common directory is also read-write for linked worktrees. It also mounts the developer's `~/local_cache` at `/root/local_cache`, so guest-root Docker Compose expansion of `~/local_cache` reaches the required bind-mount source without exposing the rest of the developer home.
+`filesystem.workspace` is the default canonical-workspace policy. `workspaceOverrides` replace that policy only when an override root resolves to the exact canonical workspace root. An override therefore applies to nested launches and symlink aliases of the same repository, but never to another repository. Override roots must be existing absolute or `~/` directories; duplicate canonical roots are rejected. Protected paths are bounded workspace-relative paths with no traversal or duplicates.
+
+The checked-in `~/.dotfiles` override is intentionally temporary and durable: it remains until it is manually removed or restored in `pi/sandbox/settings.json`. Its empty `writeProtectedPaths` list means the workspace provider is unguarded. Pi can then write Git configuration and hooks, `.pi`, `bin/pi`, `pi/sandbox`, and `pi/agent` in this repository. Do not use an empty list for a workspace you do not intend to trust with those control-plane files. To revert, remove this override (or restore the populated default protection list), then run `./install.sh config` and restart the controller.
+
+The controller mounts the canonical workspace root and a verified bare common directory with the access and protection policies in `filesystem`. It also mounts the developer's `~/local_cache` at `/root/local_cache`, so guest-root Docker Compose expansion of `~/local_cache` reaches the required bind-mount source without exposing the rest of the developer home.
 
 Ordinary external mounts expose their canonical host directories directly at the same guest paths and can use `ro` or `rw` access. The signing public key at `~/.ssh/git/id_ed25519_signing.pub` is the sole file-setting exception and must be read-only. Its guest mount point is the canonical parent directory, not the `.pub` file path. When the VM starts, the controller captures the public-key content in a one-file read-only virtual directory; it contains only `id_ed25519_signing.pub`, not the private-key sibling or other host entries. Restart the VM after key rotation to capture the new public key.
 
@@ -144,23 +165,24 @@ Private workspace data uses these guest paths:
 
 The private host root is `~/.cache/pi-gondolin/workspaces/<workspace-key>/`. Docker is deliberately not stored there or mounted from the host.
 
-The workspace provider blocks writes to Git hooks, Git settings, shell startup files, editor settings, and agent settings. It checks lexical and resolved paths.
-
-The provider checks both paths for rename and link operations. It also blocks writes through protected symlinks and pre-existing hard links.
+A read-only workspace or bare-common mount rejects all writes. A read-write mount with protected paths checks lexical and resolved paths, both paths of rename and link operations, protected symlinks, and pre-existing hard links. A read-write mount with an empty protected-path list intentionally uses an unguarded real provider, so it does not retain the hard-link guard.
 
 Pi state, Ketch state, host private-credential directories, and the host Docker socket are not guest mounts. A project-local `.gcloud/adc.json` remains available through the workspace mount after project authentication; the launcher forwards `GOOGLE_APPLICATION_CREDENTIALS` only when it names that workspace-contained file.
 
 ## Network settings
 
-The `network.mode` value has three choices:
+The `network.mode` value has four choices:
 
-- `public-http` permits public HTTP and HTTPS destinations.
-- `allowlist` permits only `allowedHosts` entries.
+- `public-tcp` permits raw TCP to public destinations. It is the checked-in default.
+- `public-http` permits public HTTP and HTTPS destinations through Gondolin's mediated HTTP/TLS path.
+- `allowlist` permits only `allowedHosts` entries through that mediated path.
 - `offline` disables guest networking.
 
-Gondolin blocks loopback, private, link-local, and metadata addresses. It checks redirects and connection-time DNS results.
+`public-tcp` retains synthetic DNS hostname attribution. Immediately before a host socket opens, it resolves the attributed hostname and rejects the complete result set if any IPv4 or IPv6 answer is loopback, private, carrier-grade NAT, link-local, metadata, or otherwise internal. It therefore blocks direct internal IPs, mixed DNS answers, and DNS rebinding. DNS remains host-controlled and non-DNS UDP remains blocked. Explicit TCP mappings retain their existing narrow behavior.
 
-WebSockets are disabled by default. Set `allowWebSockets` to `true` to permit them.
+Public TCP is not an unrestricted network mode. It deliberately does not MITM TLS, inject HTTP secrets, inspect HTTP methods or paths, or selectively block WebSocket upgrades. `allowWebSockets` governs the mediated `public-http` and `allowlist` modes only. In exchange, guest tools, Docker builds, and normal Docker/Compose bridge containers validate public origin certificates using their normal distribution or image CA stores. Gondolin's MITM CA is not mounted into the guest or containers, and no Gondolin CA environment override is set.
+
+WebSockets are disabled by default. Set `allowWebSockets` to `true` only for a mediated mode.
 
 A TCP mapping is an explicit exception:
 
@@ -213,7 +235,7 @@ The host Docker socket and host Docker settings are not mounted. Privileged gues
 
 Run `/sandbox` in the Pi TUI to inspect or change the sandbox.
 
-The view shows controller health, VM ID, Docker health, roots, mounts, network settings, and generation IDs.
+The view shows controller health, VM ID, Docker health, canonical workspace and bare-common mount access, external mounts, network settings, and generation IDs.
 
 You can do these actions:
 
@@ -224,7 +246,7 @@ You can do these actions:
 - Restart the VM.
 - Replace the shared VM and clear its ephemeral Docker state.
 
-Each accepted settings change replaces the Stow source atomically. Then the controller drains active work and restarts once.
+Each accepted settings change preserves the complete `filesystem` policy, replaces the Stow source atomically, then drains active work and restarts once. `/sandbox` currently edits external mounts and network settings; it does not create or remove workspace overrides.
 
 Docker reset requires confirmation. It replaces the shared VM, deleting that VM's guest-native images, containers, volumes, and build cache.
 

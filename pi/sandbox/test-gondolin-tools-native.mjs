@@ -19,10 +19,15 @@ const { registerSandboxTools } = await jiti.import(
   new URL("../agent/extensions/gondolin-sandbox/tools.ts", import.meta.url).pathname,
 );
 
-function settings() {
+function settings(workspaceOverrideRoot) {
   return {
     version: 1,
-    externalMounts: [],
+    filesystem: {
+      workspace: { access: "rw", writeProtectedPaths: [".git/config"] },
+      workspaceOverrides: [{ root: workspaceOverrideRoot, access: "rw", writeProtectedPaths: [] }],
+      bareCommon: { access: "rw", writeProtectedPaths: ["hooks", "config"] },
+      externalMounts: [],
+    },
     network: {
       mode: "public-http",
       allowedHosts: [],
@@ -36,8 +41,9 @@ test("all seven Pi replacements execute through one native controller VM", { tim
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-gondolin-tools-native-")));
   const workspace = path.join(root, "workspace");
   const settingsPath = path.join(root, "settings.json");
-  fs.mkdirSync(workspace);
-  fs.writeFileSync(settingsPath, `${JSON.stringify(settings(), null, 2)}\n`);
+  fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, ".git", "config"), "protected-by-default");
+  fs.writeFileSync(settingsPath, `${JSON.stringify(settings(workspace), null, 2)}\n`);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
   const image = await ensureGondolinImage({ verbose: false });
@@ -60,6 +66,8 @@ test("all seven Pi replacements execute through one native controller VM", { tim
   const execute = (name, params, signal) =>
     tools.get(name).execute(`${name}-native`, params, signal, undefined, { cwd: workspace });
 
+  await execute("write", { path: ".git/config", content: "permissive-override\n" });
+  assert.equal(fs.readFileSync(path.join(workspace, ".git", "config"), "utf8"), "permissive-override\n");
   await execute("write", { path: "sample.txt", content: "alpha\nbeta\n" });
   const read = await execute("read", { path: "sample.txt" });
   assert.match(read.content[0].text, /alpha\nbeta/);

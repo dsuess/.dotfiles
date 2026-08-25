@@ -58,6 +58,8 @@ function parseTcpMappings(value: string): TcpMappingSetting[] {
 }
 
 function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
+  const workspaceAccess = status.mounts?.find((mount: any) => mount.kind === "workspace")?.access ?? "unknown";
+  const bareCommonAccess = status.mounts?.find((mount: any) => mount.kind === "bare-common")?.access;
   const items: SettingItem[] = [
     {
       id: "status",
@@ -68,9 +70,15 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
     {
       id: "workspace",
       label: "Workspace",
-      currentValue: status.workspaceRoot,
-      values: [status.workspaceRoot],
+      currentValue: `${status.workspaceRoot} · ${workspaceAccess}`,
+      values: [`${status.workspaceRoot} · ${workspaceAccess}`],
     },
+    ...(bareCommonAccess ? [{
+      id: "bare-common",
+      label: "Bare common",
+      currentValue: `${status.bareCommonDirectory} · ${bareCommonAccess}`,
+      values: [`${status.bareCommonDirectory} · ${bareCommonAccess}`],
+    }] : []),
     {
       id: "generations",
       label: "Policy / image",
@@ -81,7 +89,7 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
       id: "network-mode",
       label: "Network mode",
       currentValue: settings.network.mode,
-      values: ["public-http", "allowlist", "offline"],
+      values: ["public-http", "public-tcp", "allowlist", "offline"],
     },
     {
       id: "allowed-hosts",
@@ -103,7 +111,7 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
     },
   ];
 
-  for (const [index, mount] of settings.externalMounts.entries()) {
+  for (const [index, mount] of settings.filesystem.externalMounts.entries()) {
     items.push({
       id: `mount:${index}`,
       label: `External ${mount.path}`,
@@ -166,7 +174,7 @@ export async function showSandboxSettings(
     const settings = store.load();
     const action = await chooseAction(ctx, settings, status);
     if (!action) return;
-    if (["status", "workspace", "generations"].includes(action.id)) continue;
+    if (["status", "workspace", "bare-common", "generations"].includes(action.id)) continue;
 
     try {
       if (action.id === "restart" && action.value === "restart") {
@@ -188,7 +196,7 @@ export async function showSandboxSettings(
       const next = structuredClone(settings);
       if (action.id === "network-mode") {
         next.network.mode = action.value as SandboxSettings["network"]["mode"];
-        if (next.network.mode === "public-http") next.network.allowedHosts = [];
+        if (next.network.mode === "public-http" || next.network.mode === "public-tcp") next.network.allowedHosts = [];
         if (next.network.mode === "offline") {
           next.network.allowedHosts = [];
           next.network.allowWebSockets = false;
@@ -219,12 +227,12 @@ export async function showSandboxSettings(
         if (!mountPath?.trim()) continue;
         const access = await ctx.ui.select("Mount access", ["ro", "rw"]);
         if (access !== "ro" && access !== "rw") continue;
-        next.externalMounts.push({ path: mountPath.trim(), access });
+        next.filesystem.externalMounts.push({ path: mountPath.trim(), access });
       } else if (action.id.startsWith("mount:")) {
         const index = Number(action.id.slice("mount:".length));
-        if (!Number.isInteger(index) || !next.externalMounts[index]) continue;
-        if (action.value === "remove") next.externalMounts.splice(index, 1);
-        else next.externalMounts[index].access = action.value as "ro" | "rw";
+        if (!Number.isInteger(index) || !next.filesystem.externalMounts[index]) continue;
+        if (action.value === "remove") next.filesystem.externalMounts.splice(index, 1);
+        else next.filesystem.externalMounts[index].access = action.value as "ro" | "rw";
       } else {
         continue;
       }
