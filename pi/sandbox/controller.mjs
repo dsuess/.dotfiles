@@ -104,6 +104,27 @@ function splitChunk(data) {
   return chunks;
 }
 
+export async function synchronizeVmClock(vm) {
+  let result;
+  try {
+    result = await vm.exec(["/bin/sh", "-lc", "exec hwclock --hctosys --utc"], {
+      cwd: "/",
+      env: {},
+    });
+  } catch (error) {
+    throw controllerError(
+      "clock_sync_failed",
+      `guest RTC synchronization failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!result?.ok || result.exitCode !== 0) {
+    throw controllerError(
+      "clock_sync_failed",
+      `guest RTC synchronization failed: ${result?.stderr || result?.stdout || "hwclock exited unsuccessfully"}`,
+    );
+  }
+}
+
 async function defaultVmFactory({ policy, imageDir }) {
   const network = createNetworkOptions(policy.network);
   return VM.create({
@@ -111,7 +132,7 @@ async function defaultVmFactory({ policy, imageDir }) {
       imagePath: imageDir,
       netEnabled: network.netEnabled,
     },
-    rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "4G" },
+    rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "32G" },
     memory: process.env.PI_GONDOLIN_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CPUS ?? 4),
     vfs: { mounts: createPolicyProviders(policy) },
@@ -131,6 +152,7 @@ export class WorkspaceController {
     this.imageDir = options.imageDir;
     this.vmFactory = options.vmFactory ?? defaultVmFactory;
     this.dockerHealthCheck = options.dockerHealthCheck ?? true;
+    this.clockSynchronizer = options.clockSynchronizer ?? synchronizeVmClock;
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     this.cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
     this.onIdle = options.onIdle ?? (() => {});
@@ -177,6 +199,7 @@ export class WorkspaceController {
       traceStartup("vm_start_start");
       await vm.start();
       traceStartup("vm_start_complete");
+      await this.clockSynchronizer(vm);
       if (this.dockerHealthCheck) {
         traceStartup("docker_health_start");
         const health = await vm.exec([
@@ -187,6 +210,17 @@ export class WorkspaceController {
         ]);
         if (!health.ok || !/^vfs\|\/var\/lib\/docker/m.test(health.stdout)) {
           throw new Error(`guest Docker health check failed: ${health.stderr || health.stdout}`);
+        }
+        const bridge = await vm.exec([
+          "/usr/bin/docker",
+          "network",
+          "inspect",
+          "--format",
+          "{{.Driver}}|{{.Name}}",
+          "bridge",
+        ]);
+        if (!bridge.ok || bridge.stdout.trim() !== "bridge|bridge") {
+          throw new Error(`guest Docker bridge readiness check failed: ${bridge.stderr || bridge.stdout}`);
         }
         traceStartup("docker_health_complete");
       }
@@ -436,6 +470,8 @@ export class WorkspaceController {
     if (record.cancelled) {
       throw controllerError("cancelled", record.cancelReason ?? "execution cancelled before start");
     }
+    // A request is active while its fail-closed clock preflight runs so a
+    // cancellation still replaces the VM exactly as it did before this check.
     record.active = true;
     this.activeExec = record;
     let outputBytes = 0;
@@ -447,6 +483,10 @@ export class WorkspaceController {
 
     let processHandle = null;
     try {
+      await this.clockSynchronizer(this.vm);
+      if (record.cancelled) {
+        throw controllerError("cancelled", record.cancelReason ?? "execution cancelled before start");
+      }
       processHandle = this.vm.exec(record.params.argv, {
         cwd: record.params.cwd,
         env: record.params.env,

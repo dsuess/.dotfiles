@@ -170,6 +170,7 @@ test("bash and rewritten RTK commands receive only guest-safe environment", asyn
       GENERIC_SECRET_TOKEN: "secret-generic",
       OPENAI_API_KEY: "secret-provider",
       NPM_TOKEN: "secret-package",
+      GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
     },
   });
   const call = client.execCalls[0];
@@ -179,10 +180,16 @@ test("bash and rewritten RTK commands receive only guest-safe environment", asyn
   assert.equal(call.options.env.GENERIC_SECRET_TOKEN, undefined);
   assert.equal(call.options.env.OPENAI_API_KEY, undefined);
   assert.equal(call.options.env.NPM_TOKEN, undefined);
+  assert.equal(call.options.env.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(call.options.env.NPM_CONFIG_CACHE, "/root/.npm");
   assert.deepEqual(chunks, ["bash-output"]);
 
-  const sanitized = sanitizeGuestEnvironment({ GITHUB_TOKEN: "secret", LC_TIME: "C" });
+  const sanitized = sanitizeGuestEnvironment({
+    GITHUB_TOKEN: "secret",
+    GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
+    LC_TIME: "C",
+  });
   assert.equal(sanitized.GITHUB_TOKEN, undefined);
+  assert.equal(sanitized.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(sanitized.LC_TIME, "C");
 });

@@ -462,7 +462,9 @@ if [[ -n "$scope_models" ]]; then
 fi
 
 # Keep ambient cloud, package-manager, SSH, and application credentials out of
-# the host Pi environment. Pi still uses its managed auth.json on the host.
+# the host Pi environment. The sole exception is a project-local ADC path: it
+# is already inside the mounted workspace and is required by its Docker binds.
+# Pi still uses its managed auth.json on the host.
 safe_env=(
     "HOME=$HOME"
     "PATH=$inner_path"
@@ -484,6 +486,18 @@ safe_env=(
     "PI_GONDOLIN_STARTUP_TRACE_FILE=$startup_trace_file"
     "PI_TIMING=${startup_trace_file:+1}"
 )
+
+project_adc_path="${GOOGLE_APPLICATION_CREDENTIALS-}"
+if [[ "$project_adc_path" == /* && "$project_adc_path" != *$'\n'* && "$project_adc_path" != *$'\r'* &&
+      "$project_adc_path" != *$'\t'* && -f "$project_adc_path" ]]; then
+    project_adc_directory="$(canonical_directory "${project_adc_path%/*}")" || project_adc_directory=""
+    project_adc_name="${project_adc_path##*/}"
+    if [[ -n "$project_adc_directory" && -n "$project_adc_name" &&
+          "$project_adc_name" != . && "$project_adc_name" != .. ]] &&
+       path_is_within "$project_adc_directory/$project_adc_name" "$CONTROLLER_WORKSPACE_ROOT"; then
+        safe_env+=("GOOGLE_APPLICATION_CREDENTIALS=$project_adc_directory/$project_adc_name")
+    fi
+fi
 
 for name in \
     USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \

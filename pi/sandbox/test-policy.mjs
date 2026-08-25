@@ -246,6 +246,7 @@ test("effective policy creates private workspace state and stable mount generati
     policy.mounts.map((mount) => [mount.kind, mount.access]),
     [
       ["workspace", "rw"],
+      ["developer-local-cache", "rw"],
       ["external", "ro"],
       ["cache", "rw"],
       ["npm-cache", "rw"],
@@ -254,6 +255,10 @@ test("effective policy creates private workspace state and stable mount generati
   );
   assert.equal(fs.statSync(policy.workspaceState).mode & 0o777, 0o700);
   assert.equal(fs.existsSync(path.join(policy.workspaceState, "docker")), false);
+  const localCacheMount = policy.mounts.find((mount) => mount.kind === "developer-local-cache");
+  assert.equal(localCacheMount?.hostPath, path.join(home, "local_cache"));
+  assert.equal(localCacheMount?.guestPath, "/root/local_cache");
+  assert.equal(fs.statSync(path.join(home, "local_cache")).isDirectory(), true);
 
   const changed = buildSandboxPolicy({
     scope: makeScope(fs.realpathSync(workspace)),

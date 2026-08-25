@@ -48,8 +48,8 @@ function fakeProcess(run) {
             ok: final.exitCode === 0,
             exitCode: final.exitCode,
             signal: undefined,
-            stdout: "",
-            stderr: "",
+            stdout: final.stdout ?? "",
+            stderr: final.stderr ?? "",
           });
         } catch (error) {
           rejectResult(error);
@@ -78,6 +78,15 @@ function createFakeVmFactory(state) {
         state.closes.push(id);
       },
       exec(argv, options = {}) {
+        state.execs.push({ vmId: id, argv });
+        if (argv[0] === "/usr/bin/docker") {
+          return Promise.resolve({
+            ok: true,
+            exitCode: 0,
+            stdout: argv[1] === "info" ? state.dockerInfo : state.dockerBridge,
+            stderr: "",
+          });
+        }
         return fakeProcess(async (chunk) => {
           state.concurrent += 1;
           state.maxConcurrent = Math.max(state.maxConcurrent, state.concurrent);
@@ -89,6 +98,11 @@ function createFakeVmFactory(state) {
             }
             return {
               exitCode: 0,
+              stdout: argv[0] === "/usr/bin/docker" && argv[1] === "info"
+                ? state.dockerInfo
+                : argv[0] === "/usr/bin/docker" && argv[1] === "network"
+                  ? state.dockerBridge
+                  : "",
               chunks: argv[0] === "/bin/echo" ? [await chunk("stdout", argv.slice(1).join(" "))] : [],
             };
           } finally {
@@ -164,6 +178,10 @@ function makeState(t) {
     vms: [],
     concurrent: 0,
     maxConcurrent: 0,
+    execs: [],
+    clockSyncs: [],
+    dockerInfo: "vfs|/var/lib/docker",
+    dockerBridge: "bridge|bridge\n",
     files: new Map(),
   };
 }
@@ -194,7 +212,8 @@ function makeController(t, options = {}) {
     policyLoader: options.policyLoader,
     imageDir: "/fake-image",
     vmFactory: createFakeVmFactory(state),
-    dockerHealthCheck: false,
+    dockerHealthCheck: options.dockerHealthCheck ?? false,
+    clockSynchronizer: options.clockSynchronizer ?? (async (vm) => { state.clockSyncs.push(vm.id); }),
     cancelGraceMs: 10,
     leaseTtlMs: options.leaseTtlMs ?? 1000,
     onIdle: options.onIdle,
@@ -253,6 +272,65 @@ test("exec calls are serialized and preserve streamed output", async (t) => {
   await Promise.all([first, second]);
   assert.equal(state.maxConcurrent, 1);
   assert.deepEqual(output, [["stdout", "hello"]]);
+});
+
+test("Docker readiness requires vfs storage and the predefined bridge network", async (t) => {
+  const { controller, state } = makeController(t, { dockerHealthCheck: true });
+  await controller.start();
+  assert.deepEqual(
+    state.execs.filter(({ argv }) => argv[0] === "/usr/bin/docker").map(({ argv }) => argv.slice(1, 3)),
+    [["info", "--format"], ["network", "inspect"]],
+  );
+
+  const failed = makeController(t, { dockerHealthCheck: true });
+  failed.state.dockerBridge = "null|null\n";
+  await assert.rejects(() => failed.controller.start(), /bridge readiness check failed/);
+  assert.equal(failed.controller.status().health, "failed");
+});
+
+test("RTC synchronizes at boot and immediately before each requested execution", async (t) => {
+  const sequence = [];
+  const { controller, state } = makeController(t, {
+    clockSynchronizer: async (vm) => {
+      state.clockSyncs.push(vm.id);
+      sequence.push("clock");
+    },
+  });
+  await controller.start();
+  const result = await controller.execute("clock", {
+    argv: ["/bin/echo", "after-clock"],
+    cwd: "/workspace",
+    env: {},
+    timeoutMs: 1000,
+    maxOutputBytes: 1024,
+    policyGeneration: GENERATION_A,
+  }, async () => sequence.push("workload"));
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(state.clockSyncs, [controller.status().vmId, controller.status().vmId]);
+  assert.deepEqual(sequence, ["clock", "clock", "workload"]);
+});
+
+test("RTC synchronization failure fails closed before the requested workload", async (t) => {
+  let calls = 0;
+  const { controller, state } = makeController(t, {
+    clockSynchronizer: async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("RTC unavailable");
+    },
+  });
+  await controller.start();
+  await assert.rejects(
+    () => controller.execute("clock-failure", {
+      argv: ["/bin/echo", "must-not-run"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+      maxOutputBytes: 1024,
+      policyGeneration: GENERATION_A,
+    }),
+    /RTC unavailable/,
+  );
+  assert.equal(state.execs.some(({ argv }) => argv[0] === "/bin/echo"), false);
 });
 
 test("active cancellation restarts the VM before the call completes", async (t) => {

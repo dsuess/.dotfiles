@@ -26,6 +26,7 @@ import {
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const PUBLIC_URL = process.env.PI_GONDOLIN_CANARY_PUBLIC_URL ?? "https://example.com/";
 const ALPINE_IMAGE = "alpine:3.23";
+const NETWORK_PROBE_IMAGE = "alpine:3.20";
 const UV_IMAGE = "ghcr.io/astral-sh/uv:0.9.18";
 const BUILT_IMAGE = "pi-gondolin-canary:local";
 const UV_COPY_IMAGE = "pi-gondolin-uv-copy:local";
@@ -159,19 +160,99 @@ async function proveFilesystemAndNetwork(vm, fixture) {
   }
 }
 
-async function proveToolchainAndDocker(vm, fixture) {
+async function proveDevelopmentImage(vm, fixture) {
   const versions = await runOk(
     vm,
-    "set -eu; bash --version | head -n1; git --version; rg --version | head -n1; fd --version; node --version; npm --version; python3 --version; uv --version; rtk --version; docker --version; docker buildx version; docker compose version",
+    [
+      "set -eu",
+      "test \"$(. /etc/os-release; printf %s \"$ID\")\" = debian",
+      "ldd --version | head -n1",
+      "bash --version | head -n1; git --version; rg --version | head -n1; fd --version",
+      "node --version; npm --version; python3 --version; uv --version; rtk --version",
+      "gcloud version | head -n1; direnv version; chromium --version",
+      "printf '#include <Python.h>\\n#include <linux/limits.h>\\nint main(void) { return PY_MAJOR_VERSION < 3; }\\n' | gcc -x c - $(python3-config --includes) -o /tmp/serena-header-canary",
+      "/tmp/serena-header-canary",
+    ].join("; "),
   );
-  assert.match(versions.stdout, /rtk/i, "RTK did not execute inside Alpine");
+  assert.match(versions.stdout, /GLIBC 2\.4[1-9]/, "Debian glibc is too old for RTK");
+  assert.match(versions.stdout, /rtk 0\.44\.0/, "RTK did not execute directly on glibc");
+  assert.match(versions.stdout, /Google Cloud SDK/, "gcloud is unavailable");
+  assert.match(versions.stdout, /Chromium/, "system Chromium is unavailable");
+
+  const page = path.join(fixture.workspace, "browser-canary.html");
+  fs.writeFileSync(page, "<!doctype html><title>browser-canary</title><p style='font-family: DejaVu Sans'>rendered</p>");
+  const localBrowser = await runOk(
+    vm,
+    `chromium --headless --no-sandbox --disable-gpu --dump-dom file://${shQuote(page)}`,
+  );
+  assert.match(localBrowser.stdout, /browser-canary.*rendered/s, "Chromium did not render the local page");
+  await runOk(vm, "fc-match 'DejaVu Sans' | grep -qi dejavu");
+  const publicBrowser = await runOk(
+    vm,
+    `chromium --headless --no-sandbox --disable-gpu --dump-dom ${shQuote(PUBLIC_URL)}`,
+  );
+  assert.match(publicBrowser.stdout, /Example Domain|example/i, "Chromium HTTPS failed");
+
+  const playwrightDir = path.join(fixture.workspace, "playwright-canary");
+  fs.mkdirSync(playwrightDir);
+  await runOk(
+    vm,
+    [
+      `cd ${shQuote(playwrightDir)}`,
+      "npm init -y >/dev/null",
+      "npm install --no-save playwright@1.55.0 >/dev/null",
+      "npx playwright install chromium",
+      "node -e \"const { chromium } = require('playwright'); (async () => { const b = await chromium.launch({ headless: true }); const p = await b.newPage(); await p.setContent('<main>playwright-ok</main>'); if ((await p.textContent('main')) !== 'playwright-ok') process.exit(1); await b.close(); })().catch(e => { console.error(e); process.exit(1); })\"",
+    ].join("; "),
+    { timeoutMs: 10 * 60 * 1000 },
+  );
+
+  await runOk(
+    vm,
+    [
+      "set -eu",
+      "before=$(date +%s)",
+      "hwclock --hctosys --utc",
+      "after=$(date +%s)",
+      "test $after -ge $before",
+      `curl -fsS --max-time 30 ${shQuote(PUBLIC_URL)} >/dev/null`,
+      "curl -fsS --max-time 30 https://deb.debian.org/debian/dists/trixie/InRelease >/dev/null",
+    ].join("; "),
+  );
+}
+
+async function proveRuntimeKernel(vm) {
+  const kernel = await runOk(
+    vm,
+    [
+      "set -eu",
+      "release=$(uname -r); printf '%s\\n' \"$release\"",
+      "test -d /lib/modules/$release",
+      "for module in bridge veth br_netfilter; do modprobe $module || test -d /sys/module/$module; done",
+      "test -e /proc/sys/net/bridge/bridge-nf-call-iptables || test -d /sys/module/br_netfilter",
+    ].join("; "),
+  );
+  assert.match(kernel.stdout, /^[A-Za-z0-9.+_-]+$/m, "uname did not report a Debian kernel release");
+}
+
+async function proveToolchainAndDocker(vm, fixture) {
+  await proveRuntimeKernel(vm);
+  await proveDevelopmentImage(vm, fixture);
 
   const dockerInfo = await runOk(
     vm,
     "docker info --format '{{.Driver}}|{{.OperatingSystem}}|{{.DockerRootDir}}|{{.Name}}'",
   );
-  assert.match(dockerInfo.stdout, /^vfs\|Alpine Linux .*\|\/var\/lib\/docker\|/m);
+  assert.match(dockerInfo.stdout, /^vfs\|Debian GNU\/Linux .*\|\/var\/lib\/docker\|/m);
   await runOk(vm, "! grep -E '[[:space:]]/var/lib/docker[[:space:]]+fuse\\.sandboxfs' /proc/mounts");
+
+  await runOk(vm, "docker network inspect bridge");
+  await runOk(vm, "docker network create --driver bridge pi-gondolin-network-probe");
+  await runOk(vm, "docker network rm pi-gondolin-network-probe");
+  await runOk(
+    vm,
+    `docker run --rm ${NETWORK_PROBE_IMAGE} sh -c 'getent hosts registry.npmjs.org && wget -qO- https://registry.npmjs.org/ >/dev/null'`,
+  );
 
   await runOk(vm, `docker pull ${ALPINE_IMAGE}`);
   const runResult = await runOk(vm, `docker run --rm ${ALPINE_IMAGE} printf docker-run-ok`);
@@ -182,12 +263,19 @@ async function proveToolchainAndDocker(vm, fixture) {
     `docker run --rm ${ALPINE_IMAGE} wget -qO- ${shQuote(PUBLIC_URL)}`,
   );
   assert.match(nestedHttps.stdout, /Example Domain|example/i);
+  for (const blocked of ["http://127.0.0.1/", "http://10.255.255.1/", "http://192.168.0.1/", "http://169.254.169.254/latest/meta-data/"]) {
+    await runOk(
+      vm,
+      `docker run --rm ${ALPINE_IMAGE} sh -c ${shQuote(`if wget -q --timeout=5 -O- ${blocked}; then exit 97; fi; exit 0`)}`,
+    );
+  }
 
   const contextDir = path.join(fixture.workspace, "docker-build");
   fs.mkdirSync(contextDir);
+  await runOk(vm, `cp /run/gondolin/ca-certificates.crt ${shQuote(path.join(contextDir, "gondolin-ca.crt"))}`);
   fs.writeFileSync(
     path.join(contextDir, "Dockerfile"),
-    `FROM ${ALPINE_IMAGE}\nRUN printf buildkit-ok > /buildkit-proof\nCMD [\"cat\", \"/buildkit-proof\"]\n`,
+    `FROM ${ALPINE_IMAGE}\nCOPY gondolin-ca.crt /usr/local/share/ca-certificates/gondolin-ca.crt\nRUN cat /usr/local/share/ca-certificates/gondolin-ca.crt >> /etc/ssl/cert.pem && apk add --no-cache ca-certificates wget && update-ca-certificates && wget -qO- https://registry.npmjs.org/ >/dev/null && printf buildkit-ok > /buildkit-proof\nCMD [\"cat\", \"/buildkit-proof\"]\n`,
   );
   await runOk(
     vm,
@@ -229,6 +317,7 @@ async function proveToolchainAndDocker(vm, fixture) {
     vm,
     `docker compose -p pi-gondolin-canary -f ${shQuote(composePath)} up --abort-on-container-exit --exit-code-from canary`,
   );
+  await runOk(vm, "docker network inspect --format '{{.Driver}}|{{.Name}}' pi-gondolin-canary_default | grep -Fx 'bridge|pi-gondolin-canary_default'");
   const volumeResult = await runOk(
     vm,
     `docker run --rm -v ${PERSISTENT_VOLUME}:/state ${ALPINE_IMAGE} cat /state/result`,
@@ -351,7 +440,7 @@ test("production signing-public-key provider boots as a one-file read-only direc
   }
 });
 
-test("pinned Gondolin image contains files, network, xattr-compatible, ephemeral nested Docker", async (t) => {
+test("pinned Debian/glibc Gondolin image contains files, browsers, network, xattr-compatible, ephemeral nested Docker", async (t) => {
   const image = await ensureGondolinImage({ verbose: false });
   verifyImageDirectory(image.imageDir);
   t.diagnostic(`image=${image.imageDir}`);

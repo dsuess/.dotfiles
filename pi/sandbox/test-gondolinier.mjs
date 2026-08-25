@@ -70,6 +70,27 @@ test("gondolinier vm list shows only connectable sessions and maps Pi workspaces
   assert.match(formatVmInventory(inventory), /pi-vm  12   2h   pi:abc    \/work\/project/);
 });
 
+test("gondolinier image build forces reusable image assembly without starting a VM", async () => {
+  const stdout = output();
+  const calls = [];
+  assert.equal(
+    await runGondolinier(["image", "build"], {
+      stdout,
+      async buildImage(options) {
+        calls.push(options);
+        return { imageDir: "/cache/image", spec: { digest: "a".repeat(64) } };
+      },
+    }),
+    0,
+  );
+  assert.deepEqual(calls, [{ force: true, verbose: true }]);
+  assert.match(stdout.value(), /Image rebuilt and verified: \/cache\/image \(a{64}\)/);
+
+  const help = output();
+  assert.equal(await runGondolinier(["image", "--help"], { stdout: help, stderr: output() }), 0);
+  assert.equal(help.value(), "Usage: gondolinier image build\n");
+});
+
 test("gondolinier vm list reports an empty inventory and command help", async () => {
   const stdout = output();
   const stderr = output();

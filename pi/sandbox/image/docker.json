@@ -5,54 +5,20 @@
     "version": "3.23.0",
     "kernelPackage": "linux-virt",
     "kernelImage": "vmlinuz-virt",
-    "rootfsPackages": [
-      "linux-virt",
-      "rng-tools",
-      "bash",
-      "ca-certificates",
-      "curl",
-      "git",
-      "openssh-client-default",
-      "ripgrep",
-      "fd",
-      "nodejs",
-      "npm",
-      "python3",
-      "uv",
-      "gcompat",
-      "docker",
-      "docker-cli",
-      "docker-cli-buildx",
-      "docker-cli-compose",
-      "containerd",
-      "runc",
-      "iptables",
-      "e2fsprogs",
-      "e2fsprogs-extra"
-    ],
+    "rootfsPackages": [],
     "initramfsPackages": []
   },
+  "oci": {
+    "image": "pi-gondolin-rootfs:build",
+    "runtime": "docker",
+    "pullPolicy": "never"
+  },
   "rootfs": {
-    "label": "pi-gondolin-root"
+    "label": "pi-gondolin-root",
+    "sizeMb": 4096
   },
   "init": {
     "rootfsInitExtra": "docker-init-extra.sh"
-  },
-  "postBuild": {
-    "copy": [
-      {
-        "src": "rtk",
-        "dest": "/usr/local/libexec/rtk"
-      },
-      {
-        "src": "rtk-compat.so",
-        "dest": "/usr/local/lib/rtk-compat.so"
-      },
-      {
-        "src": "rtk-wrapper.sh",
-        "dest": "/usr/local/bin/rtk"
-      }
-    ]
   },
   "runtimeDefaults": {
     "rootfsMode": "memory"

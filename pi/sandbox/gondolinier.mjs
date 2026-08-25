@@ -10,13 +10,16 @@ import {
   getClientRuntimeRoot,
   readControllerManifest,
 } from "./client.mjs";
+import { ensureGondolinImage } from "./build-gondolin-image.mjs";
 
 const USAGE = `Usage:
+  gondolinier image build
   gondolinier vm list
   gondolinier storage list
   gondolinier storage purge
 
 Commands:
+  image build   Force-build and verify the Debian/glibc Gondolin image.
   vm list       List connectable Gondolin VMs.
   storage list  Show reclaimable Docker storage in active Pi VMs.
   storage purge Preview and remove reclaimable Docker storage in active Pi VMs.`;
@@ -138,6 +141,12 @@ async function confirmPurge(input, output) {
   }
 }
 
+async function runImageBuild(options) {
+  const buildImage = options.buildImage ?? ensureGondolinImage;
+  const image = await buildImage({ force: true, verbose: options.verbose ?? true });
+  write(options.stdout ?? process.stdout, `Image rebuilt and verified: ${image.imageDir} (${image.spec.digest})`);
+}
+
 async function runStorageList(options) {
   const storage = await inspectPiStorage(options);
   try {
@@ -253,12 +262,20 @@ export async function runGondolinier(argv, options = {}) {
     write(output, USAGE);
     return 0;
   }
+  if (help && args[0] === "image" && (args.length === 1 || (args.length === 2 && args[1] === "build"))) {
+    write(output, "Usage: gondolinier image build");
+    return 0;
+  }
   if (help && args[0] === "vm" && (args.length === 1 || (args.length === 2 && args[1] === "list"))) {
     write(output, "Usage: gondolinier vm list");
     return 0;
   }
   if (help && args[0] === "storage" && (args.length === 1 || (args.length === 2 && ["list", "purge"].includes(args[1])))) {
     write(output, `Usage: gondolinier storage ${args[1] ?? "list|purge"}`);
+    return 0;
+  }
+  if (args.length === 2 && args[0] === "image" && args[1] === "build") {
+    await runImageBuild({ ...options, stdout: output });
     return 0;
   }
   if (args.length === 2 && args[0] === "vm" && args[1] === "list") {

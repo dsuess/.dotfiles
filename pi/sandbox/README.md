@@ -120,7 +120,7 @@ Staged execution uses the same controller. Every subagent and discussion child s
 }
 ```
 
-The controller mounts the canonical workspace root as read-write. A verified bare common directory is also read-write for linked worktrees.
+The controller mounts the canonical workspace root as read-write. A verified bare common directory is also read-write for linked worktrees. It also mounts the developer's `~/local_cache` at `/root/local_cache`, so guest-root Docker Compose expansion of `~/local_cache` reaches the required bind-mount source without exposing the rest of the developer home.
 
 Ordinary external mounts expose their canonical host directories directly at the same guest paths and can use `ro` or `rw` access. The signing public key at `~/.ssh/git/id_ed25519_signing.pub` is the sole file-setting exception and must be read-only. Its guest mount point is the canonical parent directory, not the `.pub` file path. When the VM starts, the controller captures the public-key content in a one-file read-only virtual directory; it contains only `id_ed25519_signing.pub`, not the private-key sibling or other host entries. Restart the VM after key rotation to capture the new public key.
 
@@ -139,6 +139,7 @@ Private workspace data uses these guest paths:
 | `/root/.cache` | Linux tool cache |
 | `/root/.npm` | npm cache |
 | `/root/.cargo` | Cargo cache |
+| `/root/local_cache` | Developer `~/local_cache` Docker bind-mount source |
 | `/var/lib/docker` | Ephemeral guest-native Docker state |
 
 The private host root is `~/.cache/pi-gondolin/workspaces/<workspace-key>/`. Docker is deliberately not stored there or mounted from the host.
@@ -147,7 +148,7 @@ The workspace provider blocks writes to Git hooks, Git settings, shell startup f
 
 The provider checks both paths for rename and link operations. It also blocks writes through protected symlinks and pre-existing hard links.
 
-Pi state, Ketch state, private credentials, and the host Docker socket are not guest mounts.
+Pi state, Ketch state, host private-credential directories, and the host Docker socket are not guest mounts. A project-local `.gcloud/adc.json` remains available through the workspace mount after project authentication; the launcher forwards `GOOGLE_APPLICATION_CREDENTIALS` only when it names that workspace-contained file.
 
 ## Network settings
 
@@ -176,11 +177,11 @@ Mapped TCP does not use HTTP request checks. Add only the minimum required targe
 
 ## Guest image and Docker
 
-The exact Gondolin version is `0.12.0`. The image uses Alpine Linux and QEMU.
+The exact Gondolin version is `0.12.0`. The rootfs Dockerfile installs the architecture-matched Debian Trixie kernel metapackage (`linux-image-arm64` or `linux-image-amd64`) into the digest-pinned Node 24 Debian OCI image. Image assembly extracts that kernel only after it finds one `/boot/vmlinuz-*` and its matching `/lib/modules/<release>` tree, then replaces Gondolin's temporary Alpine `linux-virt` kernel asset before publication. Alpine remains only the Gondolin initramfs/bootstrap layer; QEMU and the running tool plane use the matching Debian kernel, modules, and glibc userspace.
 
-The image contains Bash, certificates, Git, OpenSSH client, ripgrep, fd, Node.js, npm, Python, UV, RTK, Docker, Compose, and BuildKit.
+The image contains Bash, certificates, Git/OpenSSH, ripgrep/fd, Node/npm, Python, UV, direct RTK, GCC plus glibc/Python/Linux development headers, Docker/Buildx/Compose, iptables, e2fsprogs, `gcloud`, and `direnv`. It also contains system Chromium and DejaVu/Liberation fonts. System Chromium is a baseline; repositories can still install their Playwright release's matching Chromium into the persistent guest cache.
 
-The image input digest covers the architecture, image settings, init script, Gondolin version, and pinned RTK assets.
+The image input digest covers the architecture, Gondolin settings and init script, the reviewed rootfs Dockerfile (including its base-image digest and standalone-tool checksums), and Gondolin version.
 
 Built images use this path:
 
@@ -188,9 +189,11 @@ Built images use this path:
 ~/.cache/pi-gondolin/images/<input-digest>/
 ```
 
-A cold controller verifies the Gondolin manifest, all asset checksums, and Pi image metadata before it publishes a healthy manifest. A launcher that joins that healthy controller validates its generation and lease instead of repeating the hash pass.
+A cold controller verifies the Gondolin manifest, all asset checksums, and Pi image metadata before it publishes a healthy manifest. The metadata records and verifies the Debian package, architecture, release, and kernel checksum; the manifest build ID is recomputed from the replaced asset checksums. A launcher that joins that healthy controller validates its generation and lease instead of repeating the hash pass.
 
-The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`.
+The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`, with Docker's normal bridge, iptables/nftables, IP-forwarding, and masquerading defaults. A supported VM kernel must provide the default `bridge` network and user-defined bridge networks for Docker builds, Compose, DNS, and outbound HTTPS. This remains inside the VM and its network policy; it never exposes the host network namespace, Docker socket, or Docker settings.
+
+At boot the guest reads QEMU's RTC, then rechecks it every 30 seconds. Before every controller execution, the controller synchronizes the RTC again and fails the requested workload closed if synchronization fails. This repairs post-sleep certificate-validity drift without NTP egress.
 
 ### Docker storage lifecycle
 
@@ -232,10 +235,13 @@ The footer shows a compact VM health marker. Detailed state remains in `/sandbox
 `gondolinier` is installed through Stow with `./install.sh config`. It never starts a controller or VM.
 
 ```bash
+gondolinier image build
 gondolinier vm list
 gondolinier storage list
 gondolinier storage purge
 ```
+
+`gondolinier image build` force-builds the local Docker OCI rootfs, imports it into Gondolin, verifies the checksum-addressed result, and removes the temporary Docker tag. It never starts a controller or VM.
 
 `gondolinier vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
 
@@ -275,6 +281,8 @@ Run the settings installer:
 
 The installer uses Stow. It does not create manual target links.
 
+A running host Docker daemon is required only when the rootfs/image cache is missing or its reviewed inputs changed. A verified unchanged cache does not require Docker. The Docker socket is a host build-time dependency only and is never mounted into the guest.
+
 The installer runs this dependency command:
 
 ```bash
@@ -293,7 +301,13 @@ Verify the current image:
 node pi/sandbox/build-gondolin-image.mjs --verify --print-path
 ```
 
-Rebuild the current image:
+Force-rebuild the current image:
+
+```bash
+gondolinier image build
+```
+
+The lower-level command remains useful for cache-aware installation and verification:
 
 ```bash
 node pi/sandbox/build-gondolin-image.mjs --force
@@ -339,7 +353,7 @@ PI_PACKAGE_ROOT=/path/to/pi-coding-agent node --test pi/agent/extensions/subagen
 npm --prefix pi/agent/packages/ask-user-question test
 ```
 
-The native canary verifies public HTTPS and blocked internal destinations. It also verifies Docker pull, BuildKit xattrs, Compose, host isolation, and ephemeral Docker state across VM replacement.
+The native canary verifies Debian/glibc identity, direct RTK, system and Playwright Chromium, fonts, Python/Linux header compilation, `gcloud`, `direnv`, RTC recovery and HTTPS, public HTTPS and blocked internal destinations. It also verifies Docker's default bridge and a user-defined bridge network, DNS/HTTPS from a default-network container, normal-network BuildKit and Compose, host isolation, and ephemeral Docker state across VM replacement.
 
 The inventory test starts real normal and planning children. It checks replacement sources, host adapters, unknown tools, and handshake failure.
 

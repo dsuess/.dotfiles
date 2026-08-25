@@ -198,6 +198,7 @@ printf 'real=%s\\n' "\$0"
 printf 'cwd=%s\\n' "\$PWD"
 printf 'args='; printf '<%s>' "\$@"; printf '\\n'
 printf 'secret=%s\\n' "\${SECRET_SHOULD_NOT_LEAK-unset}"
+printf 'project_adc=%s\\n' "\${GOOGLE_APPLICATION_CREDENTIALS-unset}"
 printf 'node_options=%s\\n' "\${NODE_OPTIONS-unset}"
 printf 'tmpdir=%s\\n' "\${TMPDIR-unset}"
 printf 'path=%s\\n' "\$PATH"
@@ -232,7 +233,8 @@ printf 'second-safe\n'
 EOF
 chmod +x "$FIRST_SAFE_BIN/git" "$SECOND_SAFE_BIN/git"
 
-mkdir -p "$SHIM_BIN/relative-bin"
+mkdir -p "$SHIM_BIN/relative-bin" "$SHIM_BIN/.gcloud"
+printf '{}\\n' >"$SHIM_BIN/.gcloud/adc.json"
 cat >"$SHIM_BIN/node" <<'EOF'
 #!/bin/sh
 echo "workspace node ran before sandbox initialization" >&2
@@ -261,6 +263,7 @@ run_wrapper() {
         PATH="$path_value" \
         HERDR_ENV= HERDR_SOCKET_PATH= HERDR_PANE_ID= \
         PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 \
+        GOOGLE_APPLICATION_CREDENTIALS= \
         SECRET_SHOULD_NOT_LEAK=secret \
         NODE_OPTIONS="--require=$TEST_ROOT/evil.cjs" \
         "$WRAPPER" "$@"
@@ -300,6 +303,11 @@ grep -F 'builtins=read,write,edit,bash,grep,find,ls' <<<"$output" >/dev/null
 grep -F 'host_tools=ketch_search,ketch_scrape,ketch_code,ketch_docs,ketch_crawl,ask_user_question,subagent,submit_plan,plan_progress,complete_plan,complete_stage' <<<"$output" >/dev/null
 grep -q '^preflight ' "$CLIENT_LOG"
 ! grep -q '^release ' "$CLIENT_LOG"
+
+# A project-local ADC survives the launcher filter for the mounted workspace;
+# arbitrary ambient credentials remain absent from ordinary launches.
+output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" GOOGLE_APPLICATION_CREDENTIALS="$SHIM_BIN/.gcloud/adc.json" PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER" --flag project-adc)"
+grep -F "project_adc=$RESOLVED_SHIM_BIN/.gcloud/adc.json" <<<"$output" >/dev/null
 
 # Explicit tool selection is removed from Pi argv and split into private,
 # post-handshake replacement and host-adapter capabilities.

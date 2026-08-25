@@ -249,6 +249,7 @@ function defaultInvariantRoots(homeDirectory, cacheRoot, runtimeRoot) {
     path.join(homeDirectory, ".pypirc"),
     path.join(homeDirectory, ".cargo", "credentials"),
     path.join(homeDirectory, ".cargo", "credentials.toml"),
+    path.join(homeDirectory, "local_cache"),
     path.join(homeDirectory, "Library", "Caches"),
     path.join(homeDirectory, "Library", "Containers"),
     "/var/run/docker.sock",
@@ -317,6 +318,15 @@ function ensurePrivateDirectory(directory) {
   return fs.realpathSync(directory);
 }
 
+function ensureDeveloperLocalCache(homeDirectory) {
+  const directory = path.join(homeDirectory, "local_cache");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (!fs.statSync(directory).isDirectory()) {
+    throw new Error(`developer local cache is not a directory: ${directory}`);
+  }
+  return fs.realpathSync(directory);
+}
+
 function existingControlPlanePaths(workspaceRoot) {
   const sandboxSource = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -356,6 +366,7 @@ export function buildSandboxPolicy(options) {
   const workspaceState = ensurePrivateDirectory(
     path.join(cacheRoot, "workspaces", scope.workspaceKey),
   );
+  const developerLocalCache = ensureDeveloperLocalCache(homeDirectory);
   const cacheDirectory = ensurePrivateDirectory(path.join(workspaceState, "cache"));
   const npmDirectory = ensurePrivateDirectory(path.join(workspaceState, "npm"));
   const cargoDirectory = ensurePrivateDirectory(path.join(workspaceState, "cargo"));
@@ -380,6 +391,12 @@ export function buildSandboxPolicy(options) {
       guestPath: scope.canonicalWorkspaceRoot,
       access: "rw",
       protectedHostPaths: workspaceProtected,
+    }),
+    deepFreeze({
+      kind: "developer-local-cache",
+      hostPath: developerLocalCache,
+      guestPath: "/root/local_cache",
+      access: "rw",
     }),
   ];
   if (scope.bareCommonDirectory) {

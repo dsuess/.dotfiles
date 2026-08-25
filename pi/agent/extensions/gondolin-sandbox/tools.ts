@@ -164,6 +164,7 @@ const SAFE_TERMINAL_ENV = new Set([
   "TZ",
   "NO_COLOR",
   "FORCE_COLOR",
+  "GOOGLE_APPLICATION_CREDENTIALS",
 ]);
 
 const FIXED_GUEST_ENV = Object.freeze({
