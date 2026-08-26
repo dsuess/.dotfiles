@@ -88,6 +88,35 @@ test("rejects invalid Parallel Execution assignments and changed fast scope", ()
 	assert.equal(validateFastPlanRevision(PART_PLAN, optimized.replace("| 1 | worker-a | A | A | — | contract boundary |", "| 1 | worker-a | A | B | — | contract boundary |" )).ok, false);
 });
 
+test("reports stable fast-revision diagnostics for schedule and scope drift", () => {
+	const malformedSchedule = PART_PARALLEL_PLAN.replace(
+		"| 1 | worker-b | B | B | — | cache implementation |",
+		"| bad |",
+	);
+	const overlappingOwnership = PART_PARALLEL_PLAN.replace("cache implementation", "cache contract");
+	const fixedSectionDrift = PART_PARALLEL_PLAN.replace("Successful writes leave stale entries", "Successful writes now leave stale entries");
+	const mappedPartDrift = PART_PARALLEL_PLAN.replace("Invalidate matching entries", "Delete matching entries");
+
+	assert.deepEqual(validateFastPlanRevision(PART_PLAN, malformedSchedule).errors[0], {
+		code: "invalid_optimized_invalid_parallel_execution_row",
+		line: 27,
+		message: "Each Parallel Execution row needs six cells",
+	});
+	assert.deepEqual(validateFastPlanRevision(PART_PLAN, overlappingOwnership).errors, [{
+		code: "invalid_optimized_overlapping_parallel_ownership",
+		line: 27,
+		message: "Ownership overlaps Part A",
+	}]);
+	assert.deepEqual(validateFastPlanRevision(PART_PLAN, fixedSectionDrift).errors, [{
+		code: "fast_revision_scope_changed",
+		message: "Fast revision changed context",
+	}]);
+	assert.deepEqual(validateFastPlanRevision(PART_PLAN, mappedPartDrift).errors, [{
+		code: "fast_revision_part_scope_changed",
+		message: "Mapped Parts changed the approved body of source Part B",
+	}]);
+});
+
 test("accepts both optional sections independently or omits them cleanly", () => {
 	for (const markdown of [
 		PART_MINIMAL_PLAN,

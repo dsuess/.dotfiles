@@ -205,6 +205,21 @@ test("completing a validated plan publishes the completed workflow state without
 	} finally { await harness.cleanup(); }
 });
 
+test("ordinary PlanStore errors remain concise when they have no validation rows", async () => {
+	const harness = await createHarness();
+	try {
+		await enterThrough(harness, "command");
+		const rejected = await harness.tools.get("submit_plan").execute("submit", {
+			intent: "Make approval reliable",
+			title: "Wrong title",
+			markdown: PART_PLAN,
+		}, undefined, undefined, harness.ctx);
+		assert.equal(rejected.details.accepted, false);
+		assert.equal(rejected.details.validationErrors, undefined);
+		assert.match(rejected.content[0].text, /^title_mismatch: The title parameter must exactly match the plan H1 title/);
+	} finally { await harness.cleanup(); }
+});
+
 test("fast approval starts an equivalent optimizer revision and queues direct parallel execution", async () => {
 	const harness = await createHarness({
 		actions: ["fast"],
@@ -220,6 +235,9 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		assert.equal(harness.sentUserMessages.length, 1);
 		assert.match(harness.sentUserMessages[0].message, /FAST PLAN OPTIMIZATION ACTIVE/);
 		assert.match(harness.sentUserMessages[0].message, /Do not ask questions/);
+		assert.match(harness.sentUserMessages[0].message, /Prefer unsplit, verbatim source Parts/);
+		assert.match(harness.sentUserMessages[0].message, /valid conservative fallback/);
+		assert.match(harness.sentUserMessages[0].message, /returned validator codes/);
 		const optimized = await submit(harness, PART_PARALLEL_PLAN);
 		assert.equal(optimized.details.accepted, true);
 		assert.equal(optimized.details.fast, true);
@@ -234,6 +252,147 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		assert.equal(contract.workerThinkingLevel, "high");
 		assert.equal(harness.sentMessages.length, 1);
 		assert.match(harness.sentMessages[0].message.content, /one sibling tool batch/i);
+	} finally { await harness.cleanup(); }
+});
+
+test("a rejected fast revision exposes validator diagnostics without replacing its approved source", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		const source = harness.latestState().plan;
+		const sourceMarkdown = await readFile(source.path, "utf8");
+		const invalid = PART_PARALLEL_PLAN.replace(
+			"| 1 | worker-b | B | B | — | cache implementation |",
+			"| 1 | worker-a | B | B | — | cache implementation |",
+		);
+
+		const rejected = await submit(harness, invalid);
+
+		assert.equal(rejected.details.accepted, false);
+		assert.equal(rejected.details.fast, true);
+		assert.equal(rejected.details.attempts, 1);
+		assert.equal(rejected.details.retryLimitReached, false);
+		assert.deepEqual(rejected.details.validationErrors, [{
+			code: "invalid_optimized_duplicate_parallel_worker",
+			line: 27,
+			message: "Worker worker-a owns more than one Part",
+		}]);
+		assert.match(rejected.content[0].text, /\[invalid_optimized_duplicate_parallel_worker\] Line 27: Worker worker-a owns more than one Part/);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.ok(harness.latestState().optimization);
+		assert.equal(harness.latestState().plan.hash, source.hash);
+		assert.equal(await readFile(source.path, "utf8"), sourceMarkdown);
+		assert.equal(harness.sentMessages.length, 0);
+	} finally { await harness.cleanup(); }
+});
+
+test("fast scope-drift rejections identify immutable boundaries without executing", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		const source = harness.latestState().plan;
+		const sourceMarkdown = await readFile(source.path, "utf8");
+		const fixedSection = await submit(harness, PART_PARALLEL_PLAN.replace(
+			"Successful writes leave stale entries",
+			"Successful writes now leave stale entries",
+		));
+		const mappedPart = await submit(harness, PART_PARALLEL_PLAN.replace(
+			"Invalidate matching entries",
+			"Delete matching entries",
+		));
+
+		assert.deepEqual(fixedSection.details.validationErrors, [{
+			code: "fast_revision_scope_changed",
+			message: "Fast revision changed context",
+		}]);
+		assert.match(fixedSection.content[0].text, /\[fast_revision_scope_changed\] Fast revision changed context/);
+		assert.deepEqual(mappedPart.details.validationErrors, [{
+			code: "fast_revision_part_scope_changed",
+			message: "Mapped Parts changed the approved body of source Part B",
+		}]);
+		assert.match(mappedPart.content[0].text, /\[fast_revision_part_scope_changed\] Mapped Parts changed the approved body of source Part B/);
+		assert.equal(harness.latestState().plan.hash, source.hash);
+		assert.equal(await readFile(source.path, "utf8"), sourceMarkdown);
+		assert.equal(harness.sentMessages.length, 0);
+	} finally { await harness.cleanup(); }
+});
+
+test("a corrected fast revision executes once after one invalid submission", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		const invalid = PART_PARALLEL_PLAN.replace(
+			"| 1 | worker-b | B | B | — | cache implementation |",
+			"| 1 | worker-a | B | B | — | cache implementation |",
+		);
+		const rejected = await submit(harness, invalid);
+		const corrected = await submit(harness, PART_PARALLEL_PLAN);
+
+		assert.equal(rejected.details.attempts, 1);
+		assert.equal(corrected.details.accepted, true);
+		assert.equal(corrected.details.fast, true);
+		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.latestState().counters.invalidSubmissions, 0);
+		assert.equal(harness.latestState().execution.strategy, "parallel");
+		assert.equal(harness.sentMessages.length, 1);
+	} finally { await harness.cleanup(); }
+});
+
+test("three invalid fast revisions restore the original approval without execution", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness, PART_PLAN);
+		await harness.emit("agent_settled");
+		const source = harness.latestState().plan;
+		const sourceMarkdown = await readFile(source.path, "utf8");
+		const invalid = PART_PARALLEL_PLAN.replace(
+			"| 1 | worker-b | B | B | — | cache implementation |",
+			"| 1 | worker-a | B | B | — | cache implementation |",
+		);
+		await submit(harness, invalid);
+		await submit(harness, invalid);
+		const exhausted = await submit(harness, invalid);
+
+		assert.equal(exhausted.details.accepted, false);
+		assert.equal(exhausted.details.fast, true);
+		assert.equal(exhausted.details.attempts, 3);
+		assert.equal(exhausted.details.retryLimitReached, true);
+		assert.equal(exhausted.details.restoredApproval, true);
+		assert.deepEqual(exhausted.details.validationErrors, [{
+			code: "invalid_optimized_duplicate_parallel_worker",
+			line: 27,
+			message: "Worker worker-a owns more than one Part",
+		}]);
+		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().optimization, null);
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.latestState().plan.hash, source.hash);
+		assert.equal(harness.latestState().execution, null);
+		assert.equal(await readFile(source.path, "utf8"), sourceMarkdown);
+		assert.equal(harness.sentMessages.length, 0);
 	} finally { await harness.cleanup(); }
 });
 

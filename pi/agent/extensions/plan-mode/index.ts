@@ -71,6 +71,7 @@ import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-rev
 
 const GATED_MODES = new Set(["planning", "approval"]);
 const MAX_INVALID_SUBMISSIONS = 3;
+const MAX_VALIDATION_DETAIL_ROWS = 12;
 const GONDOLIN_VERIFY_TOOLS_EVENT = "gondolin-sandbox:verify-tools";
 const GONDOLIN_BEFORE_USER_BASH_EVENT = "gondolin-sandbox:before-user-bash";
 const GONDOLIN_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
@@ -79,15 +80,35 @@ function isGated(state: PlanModeState): boolean {
 	return GATED_MODES.has(state.mode);
 }
 
+interface ValidationDetailRow {
+	code: string;
+	line?: number;
+	message: string;
+}
+
+function validationDetailRows(error: unknown): ValidationDetailRow[] | undefined {
+	if (!(error instanceof PlanStoreError) || !Array.isArray(error.details)) return undefined;
+	const rows = error.details
+		.filter((item): item is { code?: unknown; line?: unknown; message?: unknown } => typeof item === "object" && item !== null && typeof item.message === "string")
+		.slice(0, MAX_VALIDATION_DETAIL_ROWS)
+		.map((item) => ({
+			code: typeof item.code === "string" && item.code ? item.code : error.code,
+			...(typeof item.line === "number" ? { line: item.line } : {}),
+			message: item.message,
+		}));
+	return rows.length > 0 ? rows : undefined;
+}
+
 function formatStoreError(error: unknown): string {
 	if (!(error instanceof PlanStoreError)) {
 		return error instanceof Error ? error.message : String(error);
 	}
-	if (error.code === "validation_failed" && Array.isArray(error.details)) {
-		const lines = error.details.slice(0, 12).map((item: { line?: number; message?: string }) =>
-			`- ${item.line ? `Line ${item.line}: ` : ""}${item.message ?? "Invalid plan"}`,
+	const details = validationDetailRows(error);
+	if (details) {
+		const lines = details.map((item) =>
+			`- [${item.code}] ${item.line !== undefined ? `Line ${item.line}: ` : ""}${item.message}`,
 		);
-		const remainder = error.details.length - lines.length;
+		const remainder = error.details.length - details.length;
 		if (remainder > 0) lines.push(`- …and ${remainder} more validation error(s)`);
 		return `${error.message}:\n${lines.join("\n")}`;
 	}
@@ -791,6 +812,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				};
 			} catch (error) {
 				const optimizing = state.optimization !== null;
+				const validationErrors = validationDetailRows(error);
 				const transition = recordInvalidSubmission(state) as TransitionResult;
 				if (transition.ok) commitTransition(transition);
 				const attempts = state.counters.invalidSubmissions;
@@ -801,7 +823,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					applyPlanningGate();
 					return {
 						content: [{ type: "text", text: `${formatStoreError(error)}\nFast optimization reached its invalid-submission limit. The original approval was restored without execution.` }],
-						details: { accepted: false, fast: true, attempts, restoredApproval: restored.ok },
+						details: { accepted: false, fast: true, attempts, retryLimitReached: true, restoredApproval: restored.ok, ...(validationErrors ? { validationErrors } : {}) },
 					};
 				}
 				applyPlanningGate();
@@ -810,7 +832,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 						type: "text",
 						text: `${formatStoreError(error)}\nSubmission rejected; planning mode remains active. Attempt ${attempts}/${MAX_INVALID_SUBMISSIONS}.${retryLimitReached ? " Wait for user input before retrying." : " Correct the errors and resubmit the complete plan."}`,
 					}],
-					details: { accepted: false, attempts, retryLimitReached, fast: optimizing },
+					details: { accepted: false, attempts, retryLimitReached, fast: optimizing, ...(validationErrors ? { validationErrors } : {}) },
 				};
 			}
 		},
