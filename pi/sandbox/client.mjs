@@ -577,6 +577,22 @@ export class ControllerClient {
   }
 }
 
+function controllerEnvironment(runtimeRoot, source = process.env) {
+  const env = {
+    HOME: os.homedir(),
+    PATH: source.PATH ?? "/usr/bin:/bin",
+    TMPDIR: source.TMPDIR ?? os.tmpdir(),
+    PI_GONDOLIN_RUNTIME_DIR: runtimeRoot,
+  };
+  for (const name of [
+    "PI_GONDOLIN_ROOTFS_SIZE", "PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS",
+    "PI_GONDOLIN_STARTUP_TRACE_FILE", "NODE_COMPILE_CACHE", "JITI_FS_CACHE",
+  ]) {
+    if (source[name]) env[name] = source[name];
+  }
+  return env;
+}
+
 function spawnController(scope, paths, options) {
   const args = [CONTROLLER_PATH, "--serve", "--launch-dir", scope.physicalLaunchDirectory];
   const append = (flag, value) => {
@@ -587,18 +603,7 @@ function spawnController(scope, paths, options) {
   append("--runtime-root", paths.runtimeRoot);
   append("--image-dir", options.imageDir);
 
-  const env = {
-    HOME: os.homedir(),
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
-    TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
-    PI_GONDOLIN_RUNTIME_DIR: paths.runtimeRoot,
-  };
-  for (const name of [
-    "PI_GONDOLIN_MEMORY", "PI_GONDOLIN_CPUS", "PI_GONDOLIN_STARTUP_TRACE_FILE",
-    "NODE_COMPILE_CACHE", "JITI_FS_CACHE",
-  ]) {
-    if (process.env[name]) env[name] = process.env[name];
-  }
+  const env = controllerEnvironment(paths.runtimeRoot);
   const logFd = fs.openSync(paths.logPath, "a", 0o600);
   const child = spawn(process.execPath, args, {
     detached: true,
@@ -750,6 +755,7 @@ export const clientInternals = Object.freeze({
   connectSocket,
   pidIsAlive,
   configureRuntimeCaches,
+  controllerEnvironment,
   spawnController,
   validateRepositoryScope,
   waitForManifest,

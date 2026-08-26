@@ -113,7 +113,7 @@ import fs from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 const command = args.shift();
-fs.appendFileSync("$CLIENT_LOG", command + " " + args.join(" ") + "\\n");
+fs.appendFileSync("$CLIENT_LOG", command + " " + args.join(" ") + " rootfs_size=" + (process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "unset") + "\\n");
 if (!fs.existsSync("$TEST_ROOT/controller-active")) {
   fs.appendFileSync("$IMAGE_VERIFY_LOG", "verify\\n");
   fs.writeFileSync("$TEST_ROOT/controller-active", "active");
@@ -303,6 +303,12 @@ grep -F 'builtins=read,write,edit,bash,grep,find,ls' <<<"$output" >/dev/null
 grep -F 'host_tools=ketch_search,ketch_scrape,ketch_code,ketch_docs,ketch_crawl,ask_user_question,subagent,submit_plan,plan_progress,complete_plan,complete_stage' <<<"$output" >/dev/null
 grep -q '^preflight ' "$CLIENT_LOG"
 ! grep -q '^release ' "$CLIENT_LOG"
+
+# The controller receives the explicit guest-disk override through both the
+# fail-closed launcher and the client's controller environment allowlist.
+: >"$CLIENT_LOG"
+output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$BASE_PATH" PI_GONDOLIN_ROOTFS_SIZE=96G PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS=3000 "$WRAPPER" --flag rootfs-size)"
+grep -F 'rootfs_size=96G' "$CLIENT_LOG" >/dev/null
 
 # A project-local ADC survives the launcher filter for the mounted workspace;
 # arbitrary ambient credentials remain absent from ordinary launches.

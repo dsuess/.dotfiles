@@ -285,6 +285,7 @@ trusted_controller_node() {
         TMPDIR="${TMPDIR:-/tmp}" \
         LC_ALL=C \
         PI_GONDOLIN_STARTUP_TRACE_FILE="${PI_GONDOLIN_STARTUP_TRACE_FILE-}" \
+        PI_GONDOLIN_ROOTFS_SIZE="${PI_GONDOLIN_ROOTFS_SIZE-}" \
         NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" \
         JITI_FS_CACHE="$JITI_FS_CACHE_DIR" \
         "$HOST_NODE" "$@"

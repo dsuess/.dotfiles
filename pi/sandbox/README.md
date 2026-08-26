@@ -239,6 +239,8 @@ Built images use this path:
 ~/.cache/pi-gondolin/images/<input-digest>/
 ```
 
+This persistent **host VM image cache** contains immutable boot assets. A changed reviewed input creates a new digest; old generations accumulate until an explicit confirmed `gondolinier storage purge` removes stale ones.
+
 A cold controller verifies the Gondolin manifest, all asset checksums, and Pi image metadata before it publishes a healthy manifest. The metadata records and verifies the Debian package, architecture, release, and kernel checksum; the manifest build ID is recomputed from the replaced asset checksums. A launcher that joins that healthy controller validates its generation and lease instead of repeating the hash pass.
 
 The VM starts one guest-local `dockerd`. It uses the `vfs` storage driver and `/var/lib/docker`, with Docker's normal bridge, iptables/nftables, IP-forwarding, and masquerading defaults. A supported VM kernel must provide the default `bridge` network and user-defined bridge networks for Docker builds, Compose, DNS, and outbound HTTPS. This remains inside the VM and its network policy; it never exposes the host network namespace, Docker socket, or Docker settings.
@@ -247,7 +249,7 @@ At boot the guest reads QEMU's RTC, then rechecks it every 30 seconds. Before ev
 
 ### Docker storage lifecycle
 
-Docker uses its guest-native `/var/lib/docker` data root with the `vfs` storage driver. It is not a `fuse.sandboxfs` mount, so it supports extended attributes. The representative pinned build below succeeds, including its external-stage copy and `uvx --version`:
+Docker uses its guest-native `/var/lib/docker` data root with the `vfs` storage driver. The temporary writable VM disk defaults to 64G and can consume host disk as Docker writes. Set `PI_GONDOLIN_ROOTFS_SIZE` before the first Pi launch for a workspace to change its capacity, for example `PI_GONDOLIN_ROOTFS_SIZE=96G pi`; an existing controller keeps its current disk size. It is not a `fuse.sandboxfs` mount, so it supports extended attributes. The representative pinned build below succeeds, including its external-stage copy and `uvx --version`:
 
 ```Dockerfile
 FROM alpine:3.23
@@ -296,9 +298,14 @@ gondolinier storage purge
 
 `gondolinier vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
 
-`gondolinier storage list` shows reclaimable Docker storage from active Pi VMs. It reports Images, Containers, Volumes, Build cache, and a decimal-gigabyte total. Active volumes are called out separately because purge preserves them.
+`gondolinier storage list` shows two storage classes without starting a controller or VM:
 
-`gondolinier storage purge` displays the same preview, then asks for explicit confirmation. A declined or empty preview changes nothing. On confirmation it runs Docker's reclaimable-only system prune: stopped containers, unused images and volumes, and build cache are removed; active containers and volumes remain.
+- **Docker storage** is reclaimable Images, Containers, Volumes, and Build cache inside active ephemeral VMs. It reports a decimal-gigabyte total. Active volumes are called out separately because purge preserves them.
+- **Host VM image cache** is allocated host disk space in immutable boot assets under `<cache-root>/images/<image-generation>`. It reports current and live-controller **protected image generations**, **stale image generations** that are reclaimable, and unrecognized entries that remain preserved.
+
+The current input digest needed for the next launch and every generation named by a validated live controller manifest are protected. A recognized cached generation that is neither is stale. Malformed metadata, symlinks, non-generation names, and other unrecognized entries remain visible but are never reclaimed.
+
+`gondolinier storage purge` displays the same combined preview, then asks for explicit confirmation. A declined or empty preview changes nothing. On confirmation it runs Docker's reclaimable-only system prune: stopped containers, unused images and volumes, and build cache are removed; active containers and volumes remain. It also removes only the stale host VM image generations shown in the preview, after revalidating each target immediately before deletion.
 
 ## Installation
 
@@ -364,7 +371,7 @@ The lower-level command remains useful for cache-aware installation and verifica
 node pi/sandbox/build-gondolin-image.mjs --force
 ```
 
-Use `/sandbox` to replace the shared VM and clear its ephemeral Docker state. Use `gondolinier storage purge` when the VM remains live and you want to reclaim only Docker objects that are safe to remove.
+Use `/sandbox` to replace the shared VM and clear its ephemeral Docker state. Use `gondolinier storage purge` to reclaim safe Docker objects from live VMs and stale persistent host VM image generations; it preserves current, live-controller, and unrecognized image-cache entries.
 
 Do not connect the guest to the host Docker socket.
 

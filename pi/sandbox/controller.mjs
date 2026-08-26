@@ -35,6 +35,11 @@ const DEFAULT_LEASE_TTL_MS = 15_000;
 const DEFAULT_STARTUP_IDLE_MS = 30_000;
 const DEFAULT_CANCEL_GRACE_MS = 500;
 const STREAM_CHUNK_BYTES = 48 * 1024;
+const DEFAULT_ROOTFS_SIZE = "64G";
+
+function getRootfsSize(environment = process.env) {
+  return environment.PI_GONDOLIN_ROOTFS_SIZE || DEFAULT_ROOTFS_SIZE;
+}
 
 export const GUEST_ENVIRONMENT = Object.freeze({
   HOME: "/root",
@@ -128,7 +133,7 @@ async function defaultVmFactory({ policy, imageDir }) {
       imagePath: imageDir,
       netEnabled: network.netEnabled,
     },
-    rootfs: { mode: "memory", size: process.env.PI_GONDOLIN_ROOTFS_SIZE ?? "32G" },
+    rootfs: { mode: "memory", size: getRootfsSize() },
     memory: process.env.PI_GONDOLIN_MEMORY ?? "3G",
     cpus: Number(process.env.PI_GONDOLIN_CPUS ?? 4),
     vfs: {
@@ -984,6 +989,7 @@ if (
 export const controllerInternals = Object.freeze({
   ControllerSocketServer,
   acquireControllerLock,
+  getRootfsSize,
   ensureRuntimeRoot,
   pidIsAlive,
   writeJsonAtomic,

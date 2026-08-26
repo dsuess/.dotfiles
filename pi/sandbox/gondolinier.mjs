@@ -10,7 +10,7 @@ import {
   getClientRuntimeRoot,
   readControllerManifest,
 } from "./client.mjs";
-import { ensureGondolinImage } from "./build-gondolin-image.mjs";
+import { ensureGondolinImage, getCacheRoot, getImageInputs } from "./build-gondolin-image.mjs";
 
 const USAGE = `Usage:
   gondolinier image build
@@ -21,8 +21,8 @@ const USAGE = `Usage:
 Commands:
   image build   Force-build and verify the Debian/glibc Gondolin image.
   vm list       List connectable Gondolin VMs.
-  storage list  Show reclaimable Docker storage in active Pi VMs.
-  storage purge Preview and remove reclaimable Docker storage in active Pi VMs.`;
+  storage list  Show reclaimable Docker storage and stale host VM image cache.
+  storage purge Preview and remove reclaimable Docker storage and stale host VM images.`;
 
 function write(output, text) {
   output.write(`${text}\n`);
@@ -60,6 +60,152 @@ function formatGigabytes(bytes) {
   return `${(bytes / 1e9).toFixed(2)} GB`;
 }
 
+const IMAGE_GENERATION_PATTERN = /^[0-9a-f]{64}$/;
+
+function isMissing(error) {
+  return error?.code === "ENOENT";
+}
+
+function getCurrentImageGeneration(options) {
+  const generation = options.currentImageGeneration ?? (options.getImageInputs ?? getImageInputs)(options.arch).digest;
+  if (!IMAGE_GENERATION_PATTERN.test(generation)) throw new Error("current Gondolin image generation is invalid");
+  return generation;
+}
+
+function getLiveManifests(options) {
+  if (options.getLiveControllerManifests) return options.getLiveControllerManifests();
+  return options.manifests ?? readLiveControllerManifests(options);
+}
+
+function imageEntry(imagesDir, name, currentGeneration, activeGenerations) {
+  if (!IMAGE_GENERATION_PATTERN.test(name)) return null;
+  const entryPath = path.join(imagesDir, name);
+  let stat;
+  try {
+    stat = fs.lstatSync(entryPath);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+  if (!stat.isDirectory()) return null;
+
+  const specPath = path.join(entryPath, "pi-image.json");
+  let specStat;
+  try {
+    specStat = fs.lstatSync(specPath);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+  if (!specStat.isFile()) return null;
+  let spec;
+  try {
+    spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  } catch (error) {
+    if (isMissing(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+  if (!spec || typeof spec !== "object" || spec.digest !== name) return null;
+  return {
+    name,
+    path: entryPath,
+    classification: name === currentGeneration ? "current" : activeGenerations.has(name) ? "active" : "stale",
+  };
+}
+
+function collectAllocationRecords(entryPath, classification, records) {
+  const stat = fs.lstatSync(entryPath);
+  records.push({ stat, classification });
+  if (!stat.isDirectory()) return;
+  for (const name of fs.readdirSync(entryPath)) {
+    collectAllocationRecords(path.join(entryPath, name), classification, records);
+  }
+}
+
+function allocatedBytes(records) {
+  const classifications = new Map();
+  for (const { stat, classification } of records) {
+    const identity = `${stat.dev}:${stat.ino}`;
+    const existing = classifications.get(identity);
+    // A hard link survives if any protected or unrecognized path still names it.
+    const priority = { stale: 0, unrecognized: 1, active: 2, current: 2 };
+    if (!existing || priority[classification] > priority[existing.classification]) {
+      classifications.set(identity, { classification, bytes: stat.blocks * 512 });
+    }
+  }
+  const totals = { current: 0, active: 0, stale: 0, unrecognized: 0 };
+  for (const entry of classifications.values()) totals[entry.classification] += entry.bytes;
+  return totals;
+}
+
+export function inspectHostImageCache(options = {}) {
+  const cacheRoot = path.resolve(options.cacheRoot ?? getCacheRoot(options.env));
+  const imagesDir = path.join(cacheRoot, "images");
+  const currentGeneration = getCurrentImageGeneration(options);
+  const manifests = options.manifests ?? getLiveManifests(options);
+  const activeGenerations = new Set(
+    manifests.map((manifest) => manifest.imageGeneration).filter((generation) => IMAGE_GENERATION_PATTERN.test(generation)),
+  );
+  let names;
+  try {
+    const rootStat = fs.lstatSync(imagesDir);
+    if (!rootStat.isDirectory()) return emptyImageCacheInventory(cacheRoot, imagesDir, currentGeneration, activeGenerations);
+    names = fs.readdirSync(imagesDir);
+  } catch (error) {
+    if (isMissing(error)) return emptyImageCacheInventory(cacheRoot, imagesDir, currentGeneration, activeGenerations);
+    throw error;
+  }
+
+  const entries = [];
+  const records = [];
+  for (const name of names) {
+    const recognized = imageEntry(imagesDir, name, currentGeneration, activeGenerations);
+    const entry = recognized ?? { name, path: path.join(imagesDir, name), classification: "unrecognized" };
+    entries.push(entry);
+    collectAllocationRecords(entry.path, entry.classification, records);
+  }
+  const bytes = allocatedBytes(records);
+  const currentEntries = entries.filter((entry) => entry.classification === "current");
+  const activeEntries = entries.filter((entry) => entry.classification === "active");
+  const staleEntries = entries.filter((entry) => entry.classification === "stale");
+  const unrecognizedEntries = entries.filter((entry) => entry.classification === "unrecognized");
+  return {
+    cacheRoot,
+    imagesDir,
+    currentGeneration,
+    activeGenerations,
+    entries,
+    currentEntries,
+    activeEntries,
+    staleEntries,
+    unrecognizedEntries,
+    currentBytes: bytes.current,
+    activeBytes: bytes.active,
+    protectedBytes: bytes.current + bytes.active,
+    staleBytes: bytes.stale,
+    unrecognizedBytes: bytes.unrecognized,
+  };
+}
+
+function emptyImageCacheInventory(cacheRoot, imagesDir, currentGeneration, activeGenerations) {
+  return {
+    cacheRoot,
+    imagesDir,
+    currentGeneration,
+    activeGenerations,
+    entries: [],
+    currentEntries: [],
+    activeEntries: [],
+    staleEntries: [],
+    unrecognizedEntries: [],
+    currentBytes: 0,
+    activeBytes: 0,
+    protectedBytes: 0,
+    staleBytes: 0,
+    unrecognizedBytes: 0,
+  };
+}
+
 async function collectExecOutput(client, argv) {
   const chunks = [];
   const result = await client.exec(argv, {
@@ -78,7 +224,8 @@ async function releaseControllers(controllers) {
 }
 
 export async function inspectPiStorage(options = {}) {
-  const manifests = options.manifests ?? readLiveControllerManifests(options);
+  const manifests = options.manifests ?? getLiveManifests(options);
+  const hostImageCache = inspectHostImageCache({ ...options, manifests });
   const acquire = options.acquireController ?? ControllerClient.acquire;
   const controllers = [];
   try {
@@ -110,8 +257,16 @@ export async function inspectPiStorage(options = {}) {
       }
     }
     const entries = [...categories].map(([name, reclaimableBytes]) => ({ name, reclaimableBytes }));
-    const totalBytes = entries.reduce((total, entry) => total + entry.reclaimableBytes, 0);
-    return { controllers, entries, totalBytes, activeVolumeCount, activeVolumeBytes };
+    const dockerTotalBytes = entries.reduce((total, entry) => total + entry.reclaimableBytes, 0);
+    return {
+      controllers,
+      entries,
+      dockerTotalBytes,
+      hostImageCache,
+      totalBytes: dockerTotalBytes + hostImageCache.staleBytes,
+      activeVolumeCount,
+      activeVolumeBytes,
+    };
   } catch (error) {
     await releaseControllers(controllers);
     throw error;
@@ -119,22 +274,39 @@ export async function inspectPiStorage(options = {}) {
 }
 
 export function formatStoragePreview(storage) {
-  if (storage.controllers.length === 0) return "No active Pi VMs with Docker storage.";
-  const rows = storage.entries.map((entry) => `${entry.name.padEnd(12)} ${formatGigabytes(entry.reclaimableBytes)}`);
-  rows.push(`${"Total".padEnd(12)} ${formatGigabytes(storage.totalBytes)}`);
+  const dockerRows = storage.controllers.length === 0
+    ? ["No active Pi VMs with Docker storage."]
+    : [
+      ...storage.entries.map((entry) => `${entry.name.padEnd(12)} ${formatGigabytes(entry.reclaimableBytes)}`),
+      `${"Total".padEnd(12)} ${formatGigabytes(storage.dockerTotalBytes)}`,
+    ];
   if (storage.activeVolumeCount > 0) {
-    rows.push(
+    dockerRows.push(
       `WARNING: ${storage.activeVolumeCount} active volume${storage.activeVolumeCount === 1 ? "" : "s"} (${formatGigabytes(storage.activeVolumeBytes)}) will be preserved by purge.`,
     );
   }
-  return ["Reclaimable Docker storage:", ...rows].join("\n");
+  const images = storage.hostImageCache;
+  const imageRows = [
+    `${"Current".padEnd(14)} ${images.currentEntries.length} protected generation${images.currentEntries.length === 1 ? "" : "s"}  ${formatGigabytes(images.currentBytes)}`,
+    `${"Active".padEnd(14)} ${images.activeEntries.length} protected generation${images.activeEntries.length === 1 ? "" : "s"}  ${formatGigabytes(images.activeBytes)}`,
+    `${"Protected".padEnd(14)} ${images.currentEntries.length + images.activeEntries.length} generation${images.currentEntries.length + images.activeEntries.length === 1 ? "" : "s"}  ${formatGigabytes(images.protectedBytes)}`,
+    `${"Stale".padEnd(14)} ${images.staleEntries.length} reclaimable generation${images.staleEntries.length === 1 ? "" : "s"}  ${formatGigabytes(images.staleBytes)}`,
+    `${"Unrecognized".padEnd(14)} ${images.unrecognizedEntries.length} entr${images.unrecognizedEntries.length === 1 ? "y" : "ies"}  ${formatGigabytes(images.unrecognizedBytes)}`,
+  ];
+  return [
+    "Reclaimable Docker storage:",
+    ...dockerRows,
+    "Host VM image cache (allocated):",
+    ...imageRows,
+    `Overall reclaimable ${formatGigabytes(storage.totalBytes)}`,
+  ].join("\n");
 }
 
 async function confirmPurge(input, output) {
   const { createInterface } = await import("node:readline/promises");
   const prompt = createInterface({ input, output });
   try {
-    const answer = await prompt.question("Purge this reclaimable Docker storage? [y/N] ");
+    const answer = await prompt.question("Purge reclaimable Docker storage and stale host VM images? [y/N] ");
     return /^(y|yes)$/i.test(answer.trim());
   } finally {
     prompt.close();
@@ -156,13 +328,42 @@ async function runStorageList(options) {
   }
 }
 
+export function removeStaleImageGenerations(snapshot, options = {}) {
+  const manifests = options.manifests ?? getLiveManifests(options);
+  const refreshed = inspectHostImageCache({ ...options, manifests });
+  const currentGeneration = refreshed.currentGeneration;
+  const activeGenerations = refreshed.activeGenerations;
+  const staleNames = new Set(snapshot.staleEntries.map((entry) => entry.name));
+  const removed = [];
+  const skipped = [];
+  for (const name of staleNames) {
+    const expectedPath = path.join(refreshed.imagesDir, name);
+    if (
+      path.dirname(expectedPath) !== refreshed.imagesDir ||
+      path.resolve(expectedPath) !== expectedPath
+    ) {
+      skipped.push(name);
+      continue;
+    }
+    // Re-read metadata directly before removal; never trust the preview path.
+    const entry = imageEntry(refreshed.imagesDir, name, currentGeneration, activeGenerations);
+    if (!entry || entry.classification !== "stale" || entry.path !== expectedPath) {
+      skipped.push(name);
+      continue;
+    }
+    fs.rmSync(entry.path, { recursive: true, force: false });
+    removed.push(name);
+  }
+  return { removed, skipped };
+}
+
 async function runStoragePurge(options) {
   const storage = await inspectPiStorage(options);
   try {
     const output = options.stdout ?? process.stdout;
     write(output, formatStoragePreview(storage));
     if (storage.totalBytes === 0) {
-      write(output, "No reclaimable Docker storage found.");
+      write(output, "No reclaimable Docker storage or stale host VM images found.");
       return;
     }
     const confirmed = await (options.confirm ?? confirmPurge)(options.stdin ?? process.stdin, output);
@@ -173,7 +374,14 @@ async function runStoragePurge(options) {
     for (const { client } of storage.controllers) {
       await collectExecOutput(client, ["/usr/bin/docker", "system", "prune", "--all", "--volumes", "--force"]);
     }
-    write(output, "Reclaimable Docker storage purged.");
+    const imageResult = removeStaleImageGenerations(storage.hostImageCache, options);
+    if (storage.controllers.length > 0) write(output, "Reclaimable Docker storage purged.");
+    if (imageResult.removed.length > 0) {
+      write(output, `Removed ${imageResult.removed.length} stale host VM image generation${imageResult.removed.length === 1 ? "" : "s"}.`);
+    }
+    for (const name of imageResult.skipped) {
+      write(output, `Skipped host VM image generation ${name}: it is no longer stale.`);
+    }
   } finally {
     await releaseControllers(storage.controllers);
   }

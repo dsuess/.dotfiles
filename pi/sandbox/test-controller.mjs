@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { configureRuntimeCaches, ControllerClient } from "./client.mjs";
+import { clientInternals, configureRuntimeCaches, ControllerClient } from "./client.mjs";
 import {
   controllerInternals,
   GUEST_ENVIRONMENT,
@@ -428,6 +428,25 @@ test("controller publishes ingress status and replaces listeners with its VM", a
   }), /ECONNREFUSED/);
   assert.notEqual(controller.status().vmId, "ingress-vm-1");
   assert.ok(second.actualPort > 0);
+});
+
+test("guest rootfs defaults to 64G and accepts a configured override", () => {
+  assert.equal(controllerInternals.getRootfsSize({}), "64G");
+  assert.equal(controllerInternals.getRootfsSize({ PI_GONDOLIN_ROOTFS_SIZE: "96G" }), "96G");
+});
+
+test("controller startup forwards the configured rootfs size only through its allowlist", () => {
+  const env = clientInternals.controllerEnvironment("/runtime", {
+    PATH: "/trusted/bin",
+    TMPDIR: "/temporary",
+    PI_GONDOLIN_ROOTFS_SIZE: "64G",
+    PI_GONDOLIN_MEMORY: "4G",
+    UNRELATED_SECRET: "must-not-leak",
+  });
+  assert.equal(env.PI_GONDOLIN_ROOTFS_SIZE, "64G");
+  assert.equal(env.PI_GONDOLIN_MEMORY, "4G");
+  assert.equal(env.UNRELATED_SECRET, undefined);
+  assert.equal(env.PI_GONDOLIN_RUNTIME_DIR, "/runtime");
 });
 
 test("host code caches are private and use fixed private paths", (t) => {
