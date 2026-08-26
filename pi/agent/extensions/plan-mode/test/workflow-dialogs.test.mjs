@@ -235,8 +235,11 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		assert.equal(harness.sentUserMessages.length, 1);
 		assert.match(harness.sentUserMessages[0].message, /FAST PLAN OPTIMIZATION ACTIVE/);
 		assert.match(harness.sentUserMessages[0].message, /Do not ask questions/);
-		assert.match(harness.sentUserMessages[0].message, /Prefer unsplit, verbatim source Parts/);
-		assert.match(harness.sentUserMessages[0].message, /valid conservative fallback/);
+		assert.match(harness.sentUserMessages[0].message, /do not confuse source preservation with sequential execution/);
+		assert.match(harness.sentUserMessages[0].message, /minimize the critical-path wave count/);
+		assert.match(harness.sentUserMessages[0].message, /earliest wave permitted by hard dependencies/);
+		assert.match(harness.sentUserMessages[0].message, /general caution are not by themselves dependencies/);
+		assert.match(harness.sentUserMessages[0].message, /audit every dependency and every single-worker wave/);
 		assert.match(harness.sentUserMessages[0].message, /returned validator codes/);
 		const optimized = await submit(harness, PART_PARALLEL_PLAN);
 		assert.equal(optimized.details.accepted, true);
