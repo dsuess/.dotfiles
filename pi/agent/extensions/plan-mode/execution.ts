@@ -39,18 +39,7 @@ export {
 	restoreExecutionContract,
 };
 
-export interface LegacyExecutionContract {
-	version: 1;
-	approvedMarkdown: string;
-	planPath: string;
-	planHash: string;
-	executionMode: "all" | "staged";
-	originalActiveTools: string[];
-	parentSessionPath: string | null;
-}
-
-export interface InPlaceExecutionContract {
-	version: 2;
+export interface ExecutionContract {
 	handoff: "in_place";
 	runId: string;
 	approvedMarkdown: string;
@@ -65,7 +54,7 @@ export interface InPlaceExecutionContract {
 	boundaryHash: string;
 }
 
-export type ExecutionContract = LegacyExecutionContract | InPlaceExecutionContract;
+export type InPlaceExecutionContract = ExecutionContract;
 
 interface ExecutionRuntime {
 	getState(): PlanModeState;
@@ -82,7 +71,7 @@ export function registerExecutionTools(pi: ExtensionAPI, runtime: ExecutionRunti
 		description: "Update exactly one approved plan item through a legal status transition and atomically persist its ledger evidence.",
 		promptSnippet: "Update one approved plan-item status and evidence",
 		parameters: Type.Object({
-			itemId: Type.String({ description: "Stable Part or legacy work-item ID, such as A or 2.1" }),
+			itemId: Type.String({ description: "Stable Part ID, such as A or AA" }),
 			status: StringEnum(["in_progress", "completed", "blocked"] as const),
 			note: Type.Optional(Type.String()),
 			evidence: Type.Optional(Type.String()),

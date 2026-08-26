@@ -40,7 +40,7 @@ ${retryGuidance}`;
 export function buildFastOptimizationPrompt(state: PlanModeState, sourceMarkdown: string): string {
 	const optimization = state.optimization;
 	return `[PI FAST PLAN OPTIMIZATION ACTIVE]
-You are optimizing an already approved version-4 Part plan for safe parallel execution. Do not ask questions, implement, edit files, change configuration, or request user approval. Repository inspection is allowed only to identify dependencies and exclusive mutation boundaries.
+You are optimizing an already approved canonical plan for safe parallel execution. Do not ask questions, implement, edit files, change configuration, or request user approval. Repository inspection is allowed only to identify dependencies and exclusive mutation boundaries.
 
 You may only split existing source Parts into ordered optimized Parts and add the required Parallel Execution schedule. Do not combine source Parts. Do not add, remove, reorder, or rewrite approved requirements. Keep the title, Context, answered Questions & Answers, Approach preamble, Critical Files, and Verification unchanged. For each source Part, concatenate the bodies of its mapped optimized Parts in source order so that the normalized text is exactly the source body. Prefer unsplit, verbatim source Parts unless repository evidence establishes a coherent safe split. The valid conservative fallback is to copy every source Part unchanged and add only the schedule. If submit_plan rejects a candidate, use its returned validator codes and line/message details to correct the schedule or mapping; do not rewrite approved content to work around an error.
 

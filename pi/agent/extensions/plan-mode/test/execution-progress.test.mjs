@@ -6,14 +6,14 @@ import test from "node:test";
 
 import { splitManagedProgressReport } from "../plan-document.js";
 import { persistPlan } from "../plan-store.js";
-import { buildStepProgressRows, getDocumentProgressTasks } from "../progress-widget.js";
+import { buildProgressRows, getDocumentProgressTasks } from "../progress-widget.js";
 import {
 	approveExecution,
 	createInitialState,
 	enterPlanning,
 	submitPlan,
 } from "../state.js";
-import { PART_MINIMAL_PLAN, SMALL_PLAN } from "./fixtures.mjs";
+import { PART_MINIMAL_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -26,7 +26,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 const { registerExecutionTools } = await jiti.import(new URL("../execution.ts", import.meta.url).pathname);
 
 function expectedRows(state) {
-	return buildStepProgressRows(state);
+	return buildProgressRows(state);
 }
 
 async function fileRows(planPath) {
@@ -57,13 +57,15 @@ test("Part IDs drive plan_progress while status remains managed metadata", async
 		}).state;
 		state = approveExecution(state, "approval", "all").state;
 		const contract = {
-			version: 1,
+			handoff: "in_place",
+			runId: "run",
 			approvedMarkdown: stored.markdown,
 			planPath: stored.path,
 			planHash: stored.hash,
 			executionMode: "all",
 			originalActiveTools: ["read"],
-			parentSessionPath: null,
+			sessionPath: null,
+			boundaryHash: "boundary",
 		};
 		const tools = new Map();
 		registerExecutionTools({ registerTool(definition) { tools.set(definition.name, definition); } }, {
@@ -89,14 +91,14 @@ test("Part IDs drive plan_progress while status remains managed metadata", async
 	}
 });
 
-test("accepted progress transitions atomically synchronize widget and saved Step rows", async () => {
+test("accepted progress transitions atomically synchronize widget and saved Part rows", async () => {
 	const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-progress-"));
 	try {
 		const stored = await persistPlan({
 			cwd: project,
 			intent: "Clarify cache documentation",
 			title: "Clarify Cache Documentation",
-			markdown: SMALL_PLAN,
+			markdown: PART_MINIMAL_PLAN,
 		});
 		let state = enterPlanning(createInitialState(), ["read"]).state;
 		const tasks = getDocumentProgressTasks(stored.document);
@@ -115,13 +117,15 @@ test("accepted progress transitions atomically synchronize widget and saved Step
 		state = approveExecution(state, "approval", "all").state;
 
 		const contract = {
-			version: 1,
+			handoff: "in_place",
+			runId: "run",
 			approvedMarkdown: stored.markdown,
 			planPath: stored.path,
 			planHash: stored.hash,
 			executionMode: "all",
 			originalActiveTools: ["read"],
-			parentSessionPath: null,
+			sessionPath: null,
+			boundaryHash: "boundary",
 		};
 		const tools = new Map();
 		registerExecutionTools({
@@ -138,10 +142,10 @@ test("accepted progress transitions atomically synchronize widget and saved Step
 		const ctx = {};
 
 		for (const update of [
-			{ taskId: "1", status: "in_progress" },
-			{ taskId: "1", status: "completed", evidence: "docs test passed" },
-			{ taskId: "1", status: "in_progress", reopenReason: "user requested clarification" },
-			{ taskId: "1", status: "blocked", note: "waiting on policy", evidence: "owner unavailable" },
+			{ itemId: "A", status: "in_progress" },
+			{ itemId: "A", status: "completed", evidence: "docs test passed" },
+			{ itemId: "A", status: "in_progress", reopenReason: "user requested clarification" },
+			{ itemId: "A", status: "blocked", note: "waiting on policy", evidence: "owner unavailable" },
 		]) {
 			await progress.execute("progress", update, undefined, undefined, ctx);
 			assert.deepEqual(await fileRows(stored.path), expectedRows(state));
@@ -150,37 +154,37 @@ test("accepted progress transitions atomically synchronize widget and saved Step
 		const beforeFailedWrite = await readFile(stored.path, "utf8");
 		await assert.rejects(
 			progress.execute("oversized", {
-				taskId: "1", status: "in_progress", note: "x".repeat(300_000),
+				itemId: "A", status: "in_progress", note: "x".repeat(300_000),
 			}, undefined, undefined, ctx),
 			/exceeds the 262144-byte limit/,
 		);
-		assert.equal(state.ledger["1"].status, "blocked");
+		assert.equal(state.ledger.A.status, "blocked");
 		assert.equal(await readFile(stored.path, "utf8"), beforeFailedWrite);
 
 		const plansDir = path.dirname(stored.path);
 		await chmod(plansDir, 0o500);
 		try {
 			await assert.rejects(
-				progress.execute("failed-write", { taskId: "1", status: "in_progress" }, undefined, undefined, ctx),
+				progress.execute("failed-write", { itemId: "A", status: "in_progress" }, undefined, undefined, ctx),
 			);
 		} finally {
 			await chmod(plansDir, 0o700);
 		}
-		assert.equal(state.ledger["1"].status, "blocked", "runtime state must not commit after a failed file write");
+		assert.equal(state.ledger.A.status, "blocked", "runtime state must not commit after a failed file write");
 		assert.equal(await readFile(stored.path, "utf8"), beforeFailedWrite);
 
 		await rm(stored.path);
-		await progress.execute("recover", { taskId: "1", status: "in_progress" }, undefined, undefined, ctx);
-		assert.equal(state.ledger["1"].status, "in_progress");
+		await progress.execute("recover", { itemId: "A", status: "in_progress" }, undefined, undefined, ctx);
+		assert.equal(state.ledger.A.status, "in_progress");
 		assert.deepEqual(await fileRows(stored.path), expectedRows(state));
 
 		const malformed = `${await readFile(stored.path, "utf8")}\n<!-- pi-plan-mode:progress:start -->\n`;
 		await writeFile(stored.path, malformed);
 		await assert.rejects(
-			progress.execute("malformed", { taskId: "1", status: "completed", evidence: "would pass" }, undefined, undefined, ctx),
+			progress.execute("malformed", { itemId: "A", status: "completed", evidence: "would pass" }, undefined, undefined, ctx),
 			/managed progress report/,
 		);
-		assert.equal(state.ledger["1"].status, "in_progress");
+		assert.equal(state.ledger.A.status, "in_progress");
 		assert.equal(await readFile(stored.path, "utf8"), malformed);
 	} finally {
 		await rm(project, { recursive: true, force: true });

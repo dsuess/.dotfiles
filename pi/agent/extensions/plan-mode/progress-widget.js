@@ -6,10 +6,7 @@ export const STATUS_ICON = Object.freeze({
 });
 
 export function getDocumentProgressTasks(document) {
-	const tasks = Array.isArray(document?.steps)
-		? document.steps
-		: (document?.stages ?? []).flatMap((stage) => stage.tasks ?? []);
-	return tasks.map((task) => ({ id: task.id, title: task.title, status: task.status }));
+	return (document?.parts ?? []).map((part) => ({ id: part.id, title: part.title, status: part.status }));
 }
 
 export function buildProgressRows(source) {
@@ -26,7 +23,3 @@ export function buildDocumentProgressRows(document) {
 	const tasks = getDocumentProgressTasks(document);
 	return buildProgressRows({ tasks });
 }
-
-// Compatibility aliases for extensions and active sessions using the version 3 names.
-export const buildStepProgressRows = buildProgressRows;
-export const buildDocumentStepProgressRows = buildDocumentProgressRows;

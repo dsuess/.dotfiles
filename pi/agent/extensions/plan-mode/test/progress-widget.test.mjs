@@ -1,60 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-	buildDocumentStepProgressRows,
-	buildStepProgressRows,
-	getDocumentProgressTasks,
-} from "../progress-widget.js";
+import { buildDocumentProgressRows, buildProgressRows, getDocumentProgressTasks } from "../progress-widget.js";
 import { parsePlanDocument } from "../plan-document.js";
-import { SMALL_PLAN, VALID_PLAN } from "./fixtures.mjs";
+import { PART_PLAN, PART_PLAN_WITH_QUESTIONS } from "./fixtures.mjs";
 
 const tasks = [
-	{ id: "1", title: "Not started" },
-	{ id: "2", title: "Work underway" },
-	{ id: "3", title: "Verified" },
-	{ id: "4", title: "Waiting on access" },
+	{ id: "A", title: "Not started" },
+	{ id: "B", title: "Work underway" },
+	{ id: "C", title: "Verified" },
+	{ id: "D", title: "Waiting on access" },
 ];
-
 const ledger = {
-	1: { status: "pending" },
-	2: { status: "in_progress" },
-	3: { status: "completed" },
-	4: { status: "blocked" },
+	A: { status: "pending" }, B: { status: "in_progress" }, C: { status: "completed" }, D: { status: "blocked" },
 };
 
-test("shows every step in plan order with title-only labels and all status icons", () => {
-	assert.deepEqual(buildStepProgressRows({ plan: { tasks }, ledger }), [
-		"☐ Not started",
-		"▶ Work underway",
-		"☑ Verified",
-		"⛔ Waiting on access",
-	]);
+test("shows every Part in plan order with title-only labels and status icons", () => {
+	assert.deepEqual(buildProgressRows({ plan: { tasks }, ledger }), ["☐ Not started", "▶ Work underway", "☑ Verified", "⛔ Waiting on access"]);
 });
 
-test("step rows are independent of explicit or implicit execution-stage grouping", () => {
-	const explicit = parsePlanDocument(VALID_PLAN);
-	const implicit = parsePlanDocument(SMALL_PLAN);
-	assert.equal(explicit.ok, true);
-	assert.equal(implicit.ok, true);
-	assert.deepEqual(buildDocumentStepProgressRows(explicit.document), [
-		"☐ Define the cache behavior",
-		"▶ Add reliable invalidation",
-		"⛔ Cover boundary conditions",
-	]);
-	assert.deepEqual(buildDocumentStepProgressRows(implicit.document), [
-		"☐ Clarify the cache lifecycle",
-	]);
-	assert.deepEqual(getDocumentProgressTasks(explicit.document).map((task) => task.id), ["1", "2", "3"]);
-});
-
-test("each row changes independently when its ledger entry transitions or reopens", () => {
-	const state = { plan: { tasks }, ledger: structuredClone(ledger) };
-	state.ledger[1].status = "in_progress";
-	state.ledger[3].status = "in_progress";
-	assert.deepEqual(buildStepProgressRows(state), [
-		"▶ Not started",
-		"▶ Work underway",
-		"▶ Verified",
-		"⛔ Waiting on access",
-	]);
+test("projects canonical Parts independently of optional question sections", () => {
+	const full = parsePlanDocument(PART_PLAN);
+	const answered = parsePlanDocument(PART_PLAN_WITH_QUESTIONS);
+	assert.equal(full.ok, true); assert.equal(answered.ok, true);
+	assert.deepEqual(buildDocumentProgressRows(full.document), ["☐ Define cache consistency", "☐ Implement reliable invalidation", "☐ Cover boundary behavior"]);
+	assert.deepEqual(getDocumentProgressTasks(answered.document).map((part) => part.id), ["A", "B"]);
 });

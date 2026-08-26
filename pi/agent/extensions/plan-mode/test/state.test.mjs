@@ -96,7 +96,6 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 
 test("alphabetic Part IDs pause at one derived execution stage per Part", () => {
 	const partSubmission = {
-		sequentialStages: true,
 		stages: [
 			{ id: "A", description: "Define behavior", taskIds: ["A"] },
 			{ id: "B", description: "Implement behavior", taskIds: ["B"] },
@@ -126,7 +125,6 @@ test("alphabetic Part IDs pause at one derived execution stage per Part", () => 
 test("parallel execution allows siblings and blocks future waves until their predecessors are terminal", () => {
 	const schedule = (wave, dependencies = []) => ({ wave, workerId: `worker-${wave}-${dependencies.length}`, sourcePartId: "A", dependencies, ownership: `${wave}-${dependencies.length} boundary` });
 	const approved = approvalState({
-		sequentialStages: false,
 		executionStrategy: "parallel",
 		stages: [
 			{ id: "A", description: "First sibling", taskIds: ["A"], parallelExecution: schedule(1) },
@@ -151,7 +149,6 @@ test("parallel execution allows siblings and blocks future waves until their pre
 
 test("fast optimization retains a recoverable approval and hands off directly to parallel execution", () => {
 	const source = approvalState({
-		sequentialStages: true,
 		stages: [{ id: "A", description: "Source Part", taskIds: ["A"] }],
 		tasks: [{ id: "A", title: "Source Part", status: "pending" }],
 	});
@@ -181,7 +178,7 @@ test("fast optimization retains a recoverable approval and hands off directly to
 	assert.equal(accepted.state.optimization, null);
 	assert.equal(accepted.state.execution.strategy, "parallel");
 	assert.equal(accepted.state.plan.executionStrategy, "parallel");
-	assert.equal(accepted.state.plan.sequentialStages, false);
+	assert.equal(accepted.state.plan.executionStrategy, "parallel");
 });
 
 test("rejects duplicate, stale, and out-of-order actions deterministically", () => {
@@ -337,23 +334,7 @@ test("restore uses only the latest valid state on the supplied active branch", (
 	assert.equal(restoreLatestState(abandonedBranch).mode, "completed");
 });
 
-test("restore migrates stage metadata for legacy persisted plans", () => {
-	const legacy = approvalState({
-		stages: [{ id: "1" }, { id: "2" }],
-		tasks: [
-			{ id: "1.1", title: "First legacy task", status: "pending" },
-			{ id: "2.1", title: "Second legacy task", status: "pending" },
-		],
-	});
-	delete legacy.plan.stages;
-	delete legacy.plan.tasks;
-	const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: legacy }]);
-	assert.deepEqual(restored.plan.stages, [
-		{ id: "1", description: "Stage 1", taskIds: ["1.1"] },
-		{ id: "2", description: "Stage 2", taskIds: ["2.1"] },
-	]);
-	assert.deepEqual(restored.plan.tasks, []);
-});
+
 
 test("restore blocks stale fast optimization records instead of reusing their approval nonce", () => {
 	const optimizing = beginFastOptimization(approvalState(), "nonce-1", ["A", "B"]).state;

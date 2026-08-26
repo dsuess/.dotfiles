@@ -41,7 +41,7 @@ Validated plans are saved under:
 
 `YYYYMMDD` is the local calendar date when a new target is first allocated; revisions retain their recorded path. The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
 
-Newly authored Markdown uses document version 4:
+Every plan uses this canonical Markdown contract:
 
 1. One concise, action-oriented H1 title.
 2. Required `## Context` explains current behavior, motivation, architectural fit, relevant research, terminology conflicts, assumptions, confirmed decisions, and accepted risks when they matter.
@@ -54,7 +54,7 @@ Newly authored Markdown uses document version 4:
    ```
 
    Add one non-empty row for each answered clarification. Record the question and answer so they preserve the decision. Do not add unresolved questions. Do not invent entries or add a placeholder when no questions were asked.
-4. Required `## Approach` explains the solution before one or more ordered `### Part A — Action-oriented title` work items. IDs continue alphabetically without gaps; headings never contain an author-written status.
+4. Required `## Approach` explains the solution before one or more ordered `### Part A — Action-oriented title` Parts. IDs continue alphabetically without gaps; headings never contain an author-written status.
 5. Optional `## Parallel Execution` follows `Approach` and precedes `Critical Files`. Normal plans omit this section. A fast revision contains one strict table:
 
    ```markdown
@@ -71,7 +71,7 @@ Each Part describes one coherent behavior boundary: dependencies, scope, edge ca
 
 Concrete anchors such as paths, symbols, flags, external interfaces, and data shapes are welcome when research established a constraint or they materially reduce ambiguity. They should be selective and rationale-driven. `Critical Files` is not an exhaustive inventory, and plans still reject mandatory target/tool metadata, exhaustive file lists, and tool-call recipes.
 
-New Parts initialize `pending`. Runtime statuses are `pending`, `in_progress`, `completed`, and `blocked`, persisted only in extension-managed `Ledger` metadata. A delimited `Part Progress` report is generated from that metadata without changing approved Part headings or authored content. Document versions 1–3—including status-bearing Step headings, explicit stage mappings, and `Step Progress` reports—remain readable, renderable, recoverable, and executable without destructive migration.
+Parts initialize `pending`. Runtime statuses are `pending`, `in_progress`, `completed`, and `blocked`, persisted only in extension-managed `Ledger` metadata. A trailing `Part Progress` report is generated from that metadata without changing approved Part headings or authored content. Other Markdown shapes are rejected; saved historical plan files remain untouched but cannot be resumed or executed.
 
 Representative behavior-changing plan:
 
@@ -118,13 +118,13 @@ The complete saved plan is rendered as a durable transcript block, then the acti
 
 - **Implement plan** — execute all stages without ordinary stage pauses.
 - **Implement (fast)** — create a source-equivalent parallel revision, then start it without another approval dialog.
-- **Implement in stages** — hard pause after every derived stage (one Part per stage for version 4).
+- **Implement in stages** — hard pause after every derived stage (one Part per stage).
 - **Change** — send exact free-form revision feedback while remaining gated.
 - **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
 **Implement plan** remains first and is the default action. Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
 
-The fast action reads and hash-checks the approved source before it starts. It requires a version-4 Part plan and `subagent` in the original tool snapshot. The optimizer uses the planning profile and cannot ask questions. It can inspect the repository, split a source Part, and add the schedule. It cannot change approved scope or combine source Parts.
+The fast action reads and hash-checks the approved source before it starts. It requires a canonical plan and `subagent` in the original tool snapshot. The optimizer uses the planning profile and cannot ask questions. It can inspect the repository, split a source Part, and add the schedule. It cannot change approved scope or combine source Parts.
 
 Before the extension writes a fast revision, it compares the title, Context, answers, Approach preamble, Critical Files, and Verification. For each source Part, mapped Part bodies must join to the same normalized text. The source Part order stays unchanged. A rejected fast submission returns bounded, machine-readable validator rows and model-visible stable codes with available line and message context, so the optimizer can correct the schedule or mapping on its next attempt. The conservative fallback is valid: keep every source Part verbatim and add only a schedule when repository evidence does not establish a coherent safe split. If the optimizer stops, fails validation three times, or reaches its retry limit, the extension restores the original unconsumed approval. It never executes the source plan on this failure path.
 
@@ -134,9 +134,9 @@ Saved review-, file-, line-, and range-level comments are returned as one struct
 
 ## Execution and ledger
 
-Run actions continue in the current visible session; they do not create a child session or parent-session link. The extension persists a versioned, run-scoped execution contract and inserts one hidden execution-boundary message containing the complete approved plan and execution rules. The visible transcript keeps the planning discussion for reference, while model context starts at the matching boundary, so implementation receives normal project instructions plus only the approved contract and messages sent afterward.
+Run actions continue in the current visible session. The extension persists one run-scoped in-place contract identified by its run ID, plan path, plan hash, and boundary hash, then inserts one hidden execution-boundary message with the approved plan and execution rules. The visible transcript keeps planning for reference, while model context starts at the matching boundary.
 
-If an in-place execution state is restored without its matching boundary marker, context fails closed to a boundary reconstructed from the persisted approved contract rather than exposing the planning conversation. After compaction, the extension excludes the mixed compaction summary and retains every message after the newest summary, so the reconstructed boundary is followed by the retained execution tail. Without a matching boundary or compaction summary, it keeps only the reconstructed boundary. Run IDs distinguish the active execution from older contracts on the same session branch. Version 1 contracts from already-running fresh child sessions remain readable and retain their original context behavior.
+If a current execution is restored without its boundary marker, the extension reconstructs the boundary from the persisted contract without exposing planning context. After compaction it retains the execution tail after the newest summary. An executing workflow without a matching canonical in-place contract stops safely and does not continue implicitly.
 
 To recover an affected existing session, first stop the loop. Deploy the extension, then use `/reload` or restart Pi. The extension restores the persisted workflow state and continues without editing or deleting the session JSONL file.
 
@@ -146,7 +146,7 @@ The original active tools are restored by registered-name intersection, with exe
 - `complete_plan` — terminal whole-plan validation.
 - `complete_stage` — current-stage validation and mandatory checkpoint.
 
-Ledger writes are serialized through Pi's file mutation queue. For version 4 they atomically update only a Part's managed `Ledger` line and the trailing generated report. The approved Part heading and authored body remain immutable. Legacy plans retain their status-bearing heading behavior. Any other plan-content drift stops the update. The live widget and saved report list every plan item in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent. The parent is the only ledger writer.
+Ledger writes are serialized through Pi's file mutation queue. They atomically update only a Part's managed `Ledger` line and the trailing generated report. The approved Part heading and authored body remain immutable. Any other plan-content drift stops the update. The live widget and saved report list Parts in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent. The parent is the only ledger writer.
 
 A fast run stays in `executing_all`. Its schedule controls the derived stages. The parent starts every ready Part in a wave. Then it sends one sibling `subagent` call for each Part. Each worker receives its Part, ownership boundary, approved context, acceptance outcomes, and predecessor evidence. Workers use the persisted inference model at high thinking. The parent waits for every worker, records terminal evidence, checks integration, and then starts the next wave. A later wave cannot start before every earlier-wave Part and declared dependency is terminal.
 
@@ -154,13 +154,13 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 
 ## Lifecycle and host behavior
 
-- Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; older child-session executions continue in their existing session files. Every refresh emits `plan-mode:workflow-state` with the persisted mode and `feedbackPending`, including restored completed sessions and the `complete_plan` transition.
+- Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; unsupported execution records stop safely. Every refresh emits `plan-mode:workflow-state` with the persisted mode and `feedbackPending`, including restored completed sessions and the `complete_plan` transition.
 - After an agent turn settles—or immediately after restoring an idle branch—any unconsumed approval or mandatory checkpoint whose persisted `presented` flag is false opens through the current TUI or RPC context, regardless of whether planning began by command, flag, shortcut, or palette.
 - A decision is marked presented before the extension awaits input, preventing duplicate dialogs. Escape leaves it pending, and `/plan-actions` or `/plan-stage-actions` reopens it manually.
 - TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
 - RPC uses host select/editor primitives and omits the TUI-only tuicr Review action.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
-- Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the version-appropriate Part or Step report from the durable approved plan and ledger.
+- Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the Part report from the durable approved plan and ledger.
 - Plan files are durable and are never deleted on shutdown.
 - `.pi/plans/` is not automatically ignored or committed; each project owns that policy.
 

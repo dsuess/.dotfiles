@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PART_PARALLEL_PLAN, PART_PLAN, VALID_PLAN } from "./fixtures.mjs";
+import { PART_PARALLEL_PLAN, PART_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -138,7 +138,7 @@ async function enterThrough(harness, entry) {
 	else if (entry === "palette") harness.events.emit("plan-mode:direct-toggle", undefined);
 }
 
-async function submit(harness, markdown = VALID_PLAN) {
+async function submit(harness, markdown = PART_PLAN) {
 	return harness.tools.get("submit_plan").execute("submit", {
 		intent: "Make approval reliable", title: "Add Reliable Cache Invalidation", markdown,
 	}, undefined, undefined, harness.ctx);
@@ -429,7 +429,7 @@ test("requested changes can be resubmitted and receive one fresh approval", asyn
 	try {
 		await enterThrough(harness, "keyboard"); await submit(harness); await harness.emit("agent_settled");
 		assert.equal(harness.latestState().mode, "planning");
-		const revised = VALID_PLAN.replace("Exercise successful and failed writes", "Exercise and document successful and failed writes");
+		const revised = PART_PLAN.replace("Exercise successful and failed writes", "Exercise and document successful and failed writes");
 		await submit(harness, revised); await harness.emit("agent_settled");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 		assert.equal(harness.latestState().plan.revision, 2);
@@ -474,7 +474,7 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.match(prompt, /submit_plan exactly once/i);
 		assert.doesNotMatch(prompt, /genuinely unresolved decision|resolve every \?|cleaned edited draft|direct edits present/i);
 		assert.equal(harness.notifications.some(({ message, level }) => level === "info" && /approval remains pending/.test(message)), true);
-		const revised = VALID_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");
+		const revised = PART_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");
 		const resubmitted = await submit(harness, revised);
 		assert.equal(resubmitted.details.accepted, true);
 		assert.equal(harness.latestState().mode, "approval");
@@ -506,8 +506,8 @@ test("review confirmation beyond ten rounds leaves approval pending until explic
 	try {
 		const planPath = path.join(harness.cwd, ".pi/plans/late.md");
 		await mkdir(path.dirname(planPath), { recursive: true });
-		await writeFile(planPath, VALID_PLAN, "utf8");
-		const hash = createHash("sha256").update(VALID_PLAN).digest("hex");
+		await writeFile(planPath, PART_PLAN, "utf8");
+		const hash = createHash("sha256").update(PART_PLAN).digest("hex");
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
 		const approval = stateModule.submitPlan(planning, {
 			path: planPath, slug: "late", hash, title: "Late", intent: "Late", approvalNonce: "approval",
@@ -651,7 +651,6 @@ for (const [action, entry, expectedMode, completionTool] of [
 			assert.equal(harness.latestState().execution.parentSessionPath, null);
 			assert.ok(harness.latestState().execution.runId);
 			const contract = harness.entries.findLast((entry) => entry.type === "custom" && entry.customType === "plan-mode-execution").data;
-			assert.equal(contract.version, 2);
 			assert.equal(contract.handoff, "in_place");
 			assert.equal(contract.runId, harness.latestState().execution.runId);
 			assert.equal(harness.getActiveTools().includes("plan_progress"), true);

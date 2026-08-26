@@ -227,7 +227,6 @@ export function submitPlan(state, submission) {
 		next.mode = "approval";
 		next.plan = {
 			path: submission.path,
-			sequentialStages: submission.sequentialStages === true,
 			slug: submission.slug,
 			hash: submission.hash,
 			title: submission.title,
@@ -300,7 +299,7 @@ export function acceptFastOptimization(state, submission) {
 	if (!optimization || !state.plan || state.plan.hash !== optimization.sourceHash || state.plan.revision !== optimization.sourceRevision) {
 		return rejection(state, "stale_fast_optimization", "Fast optimization no longer matches its approved source plan");
 	}
-	const submitted = submitPlan(state, { ...submission, executionStrategy: "parallel", sequentialStages: false });
+	const submitted = submitPlan(state, { ...submission, executionStrategy: "parallel" });
 	if (!submitted.ok) return submitted;
 	const approved = approveExecution(submitted.state, submission.approvalNonce, "all");
 	if (!approved.ok) return approved;
@@ -308,7 +307,6 @@ export function acceptFastOptimization(state, submission) {
 		next.approval = null;
 		next.optimization = null;
 		next.plan.executionStrategy = "parallel";
-		next.plan.sequentialStages = false;
 		next.execution.strategy = "parallel";
 	});
 }
@@ -366,7 +364,7 @@ export function recordTaskProgress(state, update) {
 	if (state.mode === "executing_staged" && !getStageTaskIds(state, state.currentStageId).includes(itemId)) {
 		return rejection(state, "future_stage", `Plan item ${itemId} is outside current execution stage ${state.currentStageId}`);
 	}
-	if (state.mode === "executing_all" && state.plan?.sequentialStages) {
+	if (state.mode === "executing_all" && state.plan?.executionStrategy === "standard") {
 		const itemStageIndex = state.plan.stages.findIndex((stage) => stage.taskIds.includes(itemId));
 		const unfinishedPrior = state.plan.stages
 			.slice(0, Math.max(itemStageIndex, 0))
@@ -532,8 +530,7 @@ export function migrateState(value) {
 		}));
 	}
 	if (migrated.plan && !Array.isArray(migrated.plan.tasks)) migrated.plan.tasks = [];
-	if (migrated.plan && typeof migrated.plan.sequentialStages !== "boolean") migrated.plan.sequentialStages = false;
-	if (migrated.plan && !["standard", "parallel"].includes(migrated.plan.executionStrategy)) migrated.plan.executionStrategy = "standard";
+		if (migrated.plan && !["standard", "parallel"].includes(migrated.plan.executionStrategy)) migrated.plan.executionStrategy = "standard";
 	if (migrated.execution && !["standard", "parallel"].includes(migrated.execution.strategy)) migrated.execution.strategy = migrated.plan?.executionStrategy ?? "standard";
 	if (!migrated.optimization) migrated.optimization = null;
 	if (migrated.optimization) {

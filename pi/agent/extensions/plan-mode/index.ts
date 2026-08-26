@@ -430,7 +430,6 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 		const workerProfile = modelRouting?.inference ?? captureModelProfile(ctx.model, pi.getThinkingLevel());
 		const contract: InPlaceExecutionContract = {
-			version: 2,
 			handoff: "in_place",
 			runId,
 			approvedMarkdown,
@@ -495,8 +494,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			return;
 		}
 		const parsed = parsePlanDocument(sourceMarkdown);
-		if (!parsed.ok || parsed.document.version !== 4) {
-			if (ctx.hasUI) ctx.ui.notify("Implement (fast) requires a current version-4 Part plan. The approval remains pending.", "error");
+		if (!parsed.ok) {
+			if (ctx.hasUI) ctx.ui.notify("Implement (fast) requires a valid canonical plan. The approval remains pending.", "error");
 			return;
 		}
 		const transition = beginFastOptimization(state, nonce, parsed.document.parts.map((part) => part.id)) as TransitionResult;
@@ -768,7 +767,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					title: stored.document.title,
 					intent: params.intent.trim(),
 					approvalNonce: nonce,
-					sequentialStages: stored.document.version === 4,
+					executionStrategy: optimizing ? "parallel" : "standard",
 					stages,
 					tasks,
 				};
@@ -982,9 +981,10 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		if (state.mode === "planning") return;
 		const messages = event.messages.filter((message) =>
 			!(message.role === "custom" && "customType" in message && message.customType === PLAN_MODE_CONTEXT_TYPE));
-		if (executionContract?.version === 2 && state.execution?.runId === executionContract.runId) {
+		if (executionContract && state.execution?.runId === executionContract.runId) {
 			return { messages: isolateExecutionMessages(messages, executionContract, state) };
 		}
+		if (rejectedExecutionRestore) return { messages: [] };
 		return { messages };
 	});
 
@@ -1048,6 +1048,17 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		);
 		state = restoreLatestState(branch) as PlanModeState;
 		executionContract = restoreExecutionContract(branch, state);
+		rejectedExecutionRestore = (state.mode === "executing_all" || state.mode === "executing_staged") && executionContract === null;
+		if (rejectedExecutionRestore) {
+			const next = structuredClone(state);
+			next.mode = "blocked";
+			next.execution = null;
+			next.blockedReason = "Execution restoration stopped: the active run has no matching canonical in-place execution contract.";
+			next.lastAction = "unsupported_execution_contract";
+			state = next;
+			commitState(next);
+			if (ctx.hasUI) ctx.ui.notify(next.blockedReason, "error");
+		}
 		modelRouting = restoreLatestModelRouting(branch);
 		approvedPlanMarkdown = null;
 		if (state.plan) {

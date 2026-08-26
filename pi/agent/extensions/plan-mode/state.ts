@@ -33,7 +33,6 @@ export interface PlanTaskV1 {
 
 export interface PlanReferenceV1 {
 	path: string;
-	sequentialStages: boolean;
 	slug: string;
 	hash: string;
 	title: string;
@@ -137,7 +136,6 @@ export interface PlanSubmission {
 	title: string;
 	intent: string;
 	approvalNonce: string;
-	sequentialStages?: boolean;
 	executionStrategy?: ExecutionStrategy;
 	stages: Array<{ id: string; description: string; taskIds: string[]; parallelExecution?: ParallelExecutionStageV1 }>;
 	tasks: Array<{ id: string; title: string; status: TaskStatus }>;

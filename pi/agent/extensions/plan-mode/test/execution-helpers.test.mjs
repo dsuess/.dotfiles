@@ -21,17 +21,7 @@ const state = {
 	execution: { mode: "staged", runId: "run-2" },
 	plan: { path: "/project/.pi/plans/approved.md", hash: "plan-hash" },
 };
-const legacyContract = {
-	version: 1,
-	approvedMarkdown: "# Legacy approved\n",
-	planPath: "/legacy.md",
-	planHash: "legacy-hash",
-	executionMode: "all",
-	originalActiveTools: ["read"],
-	parentSessionPath: "/sessions/planning.jsonl",
-};
 const contract = {
-	version: 2,
 	handoff: "in_place",
 	runId: "run-2",
 	approvedMarkdown: "# Approved\n",
@@ -55,26 +45,18 @@ function boundaryEntry(activeContract = contract, activeState = state) {
 	};
 }
 
-test("restores the contract matching the active in-place run, not simply the newest historical run", () => {
+test("restores the contract matching the active in-place run, not simply the newest run", () => {
 	const older = { ...contract, runId: "run-1", planHash: "old-hash", planPath: "/old.md" };
 	assert.equal(restoreExecutionContract([
-		{ type: "custom", customType: EXECUTION_ENTRY, data: legacyContract },
 		{ type: "custom", customType: EXECUTION_ENTRY, data: contract },
 		{ type: "custom", customType: EXECUTION_ENTRY, data: older },
 	], state).runId, contract.runId);
 });
 
-test("keeps legacy fresh-session contracts readable without treating them as in-place runs", () => {
-	const legacyState = { ...state, execution: { mode: "all" }, plan: { path: legacyContract.planPath, hash: legacyContract.planHash } };
+test("rejects an unsupported execution record instead of restoring it", () => {
 	assert.equal(restoreExecutionContract([
-		{ type: "custom", customType: EXECUTION_ENTRY, data: contract },
-		{ type: "custom", customType: EXECUTION_ENTRY, data: legacyContract },
-	], legacyState), legacyContract);
-	const messages = [{ role: "user", content: "legacy kickoff", timestamp: 1 }];
-	assert.strictEqual(isolateExecutionMessages(messages, legacyContract, legacyState), messages);
-	assert.equal(restoreExecutionContract([
-		{ type: "custom", customType: EXECUTION_ENTRY, data: legacyContract },
-	], { ...legacyState, mode: "approval", execution: null }), null, "an old child contract is not attached to a newer non-executing workflow state");
+		{ type: "custom", customType: EXECUTION_ENTRY, data: { runId: "run-2", planPath: state.plan.path, planHash: state.plan.hash, approvedMarkdown: "# Unsupported" } },
+	], state), null);
 });
 
 test("restores exact original tools plus mode-specific workflow tools", () => {
@@ -90,9 +72,8 @@ test("in-place kickoff is self-contained and staged instructions enforce a hard 
 	assert.match(kickoff, /current visible session/);
 	assert.match(kickoff, /earlier planning messages are excluded/i);
 	assert.match(kickoff, /Execute only execution stage 2/);
-	assert.match(kickoff, /every execution stage corresponds to exactly one Part/);
+	assert.match(kickoff, /Every execution stage corresponds to exactly one Part/);
 	assert.match(kickoff, /# Approved/);
-	assert.match(buildExecutionKickoff(legacyContract, { ...state, mode: "executing_all" }), /fresh implementation session/);
 	assert.match(buildStageInstruction(state), /only execution stage 2/);
 	assert.match(buildStageInstruction(state), /Do not begin a later stage/);
 	assert.match(buildStageInstruction({ ...state, parallelWorkers: [{ workerId: "worker-1", runId: "run-1" }] }), /Resume an existing worker/);
@@ -201,14 +182,14 @@ test("missing execution boundaries after compaction reconstruct the contract and
 	};
 	const progressCall = {
 		role: "assistant",
-		content: [{ type: "toolCall", id: "progress-2", name: "plan_progress", arguments: { taskId: "2", status: "in_progress" } }],
+		content: [{ type: "toolCall", id: "progress-B", name: "plan_progress", arguments: { itemId: "B", status: "in_progress" } }],
 		timestamp: 13,
 	};
 	const progressFailure = {
 		role: "toolResult",
-		toolCallId: "progress-2",
+		toolCallId: "progress-B",
 		toolName: "plan_progress",
-		content: [{ type: "text", text: "Task 2 is already in_progress." }],
+		content: [{ type: "text", text: "Part B is already in_progress." }],
 		isError: true,
 		timestamp: 14,
 	};

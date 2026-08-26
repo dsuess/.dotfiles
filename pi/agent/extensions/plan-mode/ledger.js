@@ -28,12 +28,7 @@ export function stripLedgerMutations(markdown) {
 	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
 	const outside = outsideFenceLines(lines);
 	return lines
-		.flatMap((line, index) => {
-			if (outside[index] && /^- \*\*Ledger:\*\*/.test(line)) return [];
-			return [outside[index]
-				? line.replace(/^(### Step \d+|#### \d+\.\d+) \[[^\]]+\]/, "$1 [status]")
-				: line];
-		})
+		.flatMap((line, index) => outside[index] && /^- \*\*Ledger:\*\*/.test(line) ? [] : [line])
 		.join("\n")
 		.trimEnd();
 }
@@ -42,63 +37,42 @@ export function immutablePlanHash(markdown) {
 	return createHash("sha256").update(stripLedgerMutations(markdown), "utf8").digest("hex");
 }
 
-function escapeRegExp(value) {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, ledgerItem) {
+export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, partId, ledgerItem) {
 	if (immutablePlanHash(currentMarkdown) !== immutablePlanHash(approvedMarkdown)) {
 		throw new Error("Plan content drifted outside ledger fields; status update refused");
 	}
 	const currentCore = splitManagedProgressReport(currentMarkdown).coreMarkdown;
 	const parsed = parsePlanDocument(currentCore);
 	if (!parsed.ok) throw new Error("Current plan is no longer valid canonical Markdown");
-	if (!parsed.document.stages.flatMap((stage) => stage.tasks).some((task) => task.id === taskId)) {
-		throw new Error(`Unknown plan-item ID ${taskId}`);
+	if (!parsed.document.parts.some((part) => part.id === partId)) {
+		throw new Error(`Unknown Part ID ${partId}`);
 	}
 
-	const partBased = parsed.document.version === 4;
-	const escapedId = escapeRegExp(taskId);
-	const headingPatterns = partBased
-		? [new RegExp(`^### Part ${escapedId} — (.+)$`)]
-		: [
-			new RegExp(`^(### Step ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
-			new RegExp(`^(#### ${escapedId}) \\[([^\\]]+)\\] (.+)$`),
-		];
-	const { coreMarkdown } = splitManagedProgressReport(currentMarkdown);
-	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+	const headingPattern = new RegExp(`^### Part ${partId} — (.+)$`);
+	const lines = currentCore.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
 	let outside = outsideFenceLines(lines);
-	const headingIndex = lines.findIndex((line, index) => outside[index] && headingPatterns.some((pattern) => pattern.test(line)));
-	if (headingIndex < 0) throw new Error(`Plan-item heading not found for ${taskId}`);
-	if (!partBased) {
-		const headingPattern = headingPatterns.find((pattern) => pattern.test(lines[headingIndex]));
-		lines[headingIndex] = lines[headingIndex].replace(headingPattern, `$1 [${ledgerItem.status}] $3`);
-	}
+	const headingIndex = lines.findIndex((line, index) => outside[index] && headingPattern.test(line));
+	if (headingIndex < 0) throw new Error(`Part heading not found for ${partId}`);
 
-	let taskEnd = lines.length;
+	let partEnd = lines.length;
 	for (let index = headingIndex + 1; index < lines.length; index += 1) {
-		if (outside[index] && (/^### Part [A-Z]+ — /.test(lines[index]) || /^### Step \d+ \[/.test(lines[index]) || /^#### \d+\.\d+ \[/.test(lines[index]) || /^### Stage /.test(lines[index]) || /^## /.test(lines[index]))) {
-			taskEnd = index;
+		if (outside[index] && (/^### Part [A-Z]+ — /.test(lines[index]) || /^## /.test(lines[index]))) {
+			partEnd = index;
 			break;
 		}
 	}
-	for (let index = taskEnd - 1; index > headingIndex; index -= 1) {
-		if (outside[index] && /^- \*\*Ledger:\*\*/.test(lines[index])) {
-			lines.splice(index, 1);
-			taskEnd -= 1;
-		}
+	for (let index = partEnd - 1; index > headingIndex; index -= 1) {
+		if (outside[index] && /^- \*\*Ledger:\*\*/.test(lines[index])) lines.splice(index, 1);
 	}
 	outside = outsideFenceLines(lines);
-	const toolsIndex = lines.findIndex((line, index) => outside[index] && index > headingIndex && index < taskEnd && /^- \*\*Tools \/ APIs:\*\*/.test(line));
 	const ledger = JSON.stringify({
 		status: ledgerItem.status,
 		note: ledgerItem.note ?? null,
 		evidence: ledgerItem.evidence ?? null,
 	});
-	// Versions 1/2 keep the ledger beside their metadata. Metadata-free
-	// versions 3/4 place it directly below the stable work-item heading so
-	// stripping the ledger restores the approved Markdown byte-for-byte.
-	lines.splice(toolsIndex >= 0 ? toolsIndex + 1 : headingIndex + 1, 0, `- **Ledger:** ${ledger}`);
+	// The extension-owned row follows the stable Part heading so stripping it
+	// restores the approved Markdown byte-for-byte.
+	lines.splice(headingIndex + 1, 0, `- **Ledger:** ${ledger}`);
 	const updatedCore = lines.join("\n");
 	const updated = parsePlanDocument(updatedCore);
 	if (!updated.ok) {
@@ -109,8 +83,8 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, taskId, 
 
 export function synchronizeLedgerMarkdown(currentMarkdown, approvedMarkdown, ledger) {
 	let next = currentMarkdown;
-	for (const [taskId, ledgerItem] of Object.entries(ledger)) {
-		next = updateLedgerMarkdown(next, approvedMarkdown, taskId, ledgerItem);
+	for (const [partId, ledgerItem] of Object.entries(ledger)) {
+		next = updateLedgerMarkdown(next, approvedMarkdown, partId, ledgerItem);
 	}
 	return next;
 }

@@ -12,7 +12,7 @@ import {
 	enterPlanning,
 	submitPlan,
 } from "../state.js";
-import { VALID_PLAN } from "./fixtures.mjs";
+import { PART_PLAN } from "./fixtures.mjs";
 
 const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
 const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
@@ -24,14 +24,14 @@ const jiti = createJiti(import.meta.url, { alias: {
 } });
 const extension = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 
-test("restored older execution reconstructs Step titles and backfills its missing report", async () => {
+test("restored current execution reconstructs Part titles and backfills its missing report", async () => {
 	const project = await mkdtemp(path.join(os.tmpdir(), "pi-plan-restore-"));
 	try {
 		const plansDir = path.join(project, ".pi", "plans");
 		await mkdir(plansDir, { recursive: true });
-		const planPath = path.join(plansDir, "older.md");
-		await writeFile(planPath, VALID_PLAN);
-		const hash = createHash("sha256").update(VALID_PLAN, "utf8").digest("hex");
+		const planPath = path.join(plansDir, "current.md");
+		await writeFile(planPath, PART_PLAN);
+		const hash = createHash("sha256").update(PART_PLAN, "utf8").digest("hex");
 
 		let state = enterPlanning(createInitialState(), ["read", "bash"]).state;
 		state = submitPlan(state, {
@@ -42,13 +42,14 @@ test("restored older execution reconstructs Step titles and backfills its missin
 			intent: "older execution",
 			approvalNonce: "approval",
 			stages: [
-				{ id: "1", description: "Establish expected behavior before implementation.", taskIds: ["1"] },
-				{ id: "2", description: "Implement and verify.", taskIds: ["2", "3"] },
+				{ id: "A", description: "Define cache consistency", taskIds: ["A"] },
+				{ id: "B", description: "Implement reliable invalidation", taskIds: ["B"] },
+				{ id: "C", description: "Cover boundary behavior", taskIds: ["C"] },
 			],
 			tasks: [
-				{ id: "1", title: "Define the cache behavior", status: "pending" },
-				{ id: "2", title: "Add reliable invalidation", status: "in_progress" },
-				{ id: "3", title: "Cover boundary conditions", status: "blocked" },
+				{ id: "A", title: "Define cache consistency", status: "pending" },
+				{ id: "B", title: "Implement reliable invalidation", status: "in_progress" },
+				{ id: "C", title: "Cover boundary behavior", status: "blocked" },
 			],
 		}).state;
 		state = approveExecution(state, "approval", "all").state;
@@ -59,13 +60,15 @@ test("restored older execution reconstructs Step titles and backfills its missin
 				type: "custom",
 				customType: "plan-mode-execution",
 				data: {
-					version: 1,
-					approvedMarkdown: VALID_PLAN,
+					handoff: "in_place",
+					runId: "run",
+					approvedMarkdown: PART_PLAN,
 					planPath,
 					planHash: hash,
 					executionMode: "all",
 					originalActiveTools: ["read", "bash"],
-					parentSessionPath: null,
+					sessionPath: null,
+					boundaryHash: "boundary",
 				},
 			},
 			{ type: "custom", customType: "plan-mode-state", data: state },
@@ -102,14 +105,14 @@ test("restored older execution reconstructs Step titles and backfills its missin
 		for (const handler of handlers.get("session_start")) await handler({ reason: "resume" }, ctx);
 
 		assert.deepEqual(widget, [
-			"☐ Define the cache behavior",
-			"▶ Add reliable invalidation",
-			"⛔ Cover boundary conditions",
+			"☐ Define cache consistency",
+			"▶ Implement reliable invalidation",
+			"⛔ Cover boundary behavior",
 		]);
 		assert.deepEqual(branch.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.plan.tasks, [
-			{ id: "1", title: "Define the cache behavior" },
-			{ id: "2", title: "Add reliable invalidation" },
-			{ id: "3", title: "Cover boundary conditions" },
+			{ id: "A", title: "Define cache consistency" },
+			{ id: "B", title: "Implement reliable invalidation" },
+			{ id: "C", title: "Cover boundary behavior" },
 		]);
 		assert.deepEqual(splitManagedProgressReport(await readFile(planPath, "utf8")).report.rows, widget);
 	} finally {

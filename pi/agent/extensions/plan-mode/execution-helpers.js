@@ -5,33 +5,20 @@ export const EXECUTION_ENTRY = "plan-mode-execution";
 export const EXECUTION_BOUNDARY_MESSAGE = "plan-mode-execution-boundary";
 
 export function isInPlaceExecutionContract(value) {
-	return value?.version === 2 && value.handoff === "in_place" &&
-		typeof value.runId === "string" && value.runId.length > 0;
-}
-
-function isLegacyExecutionContract(value) {
-	return value?.version === 1 && typeof value.approvedMarkdown === "string" && typeof value.planPath === "string";
+	return value?.handoff === "in_place" && typeof value.runId === "string" && value.runId.length > 0 &&
+		typeof value.planPath === "string" && typeof value.planHash === "string" &&
+		typeof value.boundaryHash === "string" && value.boundaryHash.length > 0;
 }
 
 export function restoreExecutionContract(branch, state) {
 	const activeRunId = state?.execution?.runId;
-	const restoringLegacyExecution = state !== undefined && state.execution !== null && !activeRunId;
+	if (!activeRunId) return null;
 	for (let index = branch.length - 1; index >= 0; index -= 1) {
 		const entry = branch[index];
 		if (entry?.type !== "custom" || entry.customType !== EXECUTION_ENTRY) continue;
 		const contract = entry.data;
-		if (activeRunId) {
-			if (
-				isInPlaceExecutionContract(contract) && typeof contract.boundaryHash === "string" && contract.boundaryHash.length > 0 &&
-				contract.runId === activeRunId && contract.planPath === state?.plan?.path && contract.planHash === state?.plan?.hash
-			) return contract;
-			continue;
-		}
-		if (
-			isLegacyExecutionContract(contract) &&
-			(state === undefined || (restoringLegacyExecution && contract.planPath === state?.plan?.path && contract.planHash === state?.plan?.hash))
-		) return contract;
-		if (state === undefined && isInPlaceExecutionContract(contract) && typeof contract.boundaryHash === "string" && contract.boundaryHash.length > 0) return contract;
+		if (isInPlaceExecutionContract(contract) && contract.runId === activeRunId &&
+			contract.planPath === state?.plan?.path && contract.planHash === state?.plan?.hash) return contract;
 	}
 	return null;
 }
@@ -108,14 +95,12 @@ ${wave.map((stage) => buildParallelWorkerPrompt(contract, state, stage)).join("\
 export function buildExecutionKickoff(contract, state) {
 	const staged = contract.executionMode === "staged";
 	const parallel = contract.executionStrategy === "parallel" || state?.execution?.strategy === "parallel";
-	const handoffDescription = isInPlaceExecutionContract(contract)
-		? "Implementation continues in the current visible session. Earlier planning messages are excluded from model context but remain visible to the user. The complete approved plan below is the execution contract."
-		: "This is a fresh implementation session. No planning conversation was copied here. The complete approved plan is below and is the execution contract.";
+	const handoffDescription = "Implementation continues in the current visible session. Earlier planning messages are excluded from model context but remain visible to the user. The complete approved plan below is the execution contract.";
 	return `[APPROVED PLAN EXECUTION]
 ${handoffDescription}
 
 Execution rules:
-- Read the saved plan before acting and execute its Parts or legacy work items in the derived execution order, except that an active parallel schedule controls dependency-wave order.
+- Read the saved plan before acting and execute its Parts in the derived execution order, except that an active parallel schedule controls dependency-wave order.
 - Before work on each plan item, call plan_progress with its stable ID to move it pending → in_progress.
 - After work, call plan_progress with completed evidence, or blocked with a reason and evidence.
 - The parent implementation agent is the only plan-ledger writer. Parallel workers report results; they never edit the plan ledger.
@@ -124,7 +109,7 @@ Execution rules:
 ${parallel
 	? `- ${buildParallelCoordinatorInstructions(contract, state)}`
 	: staged
-		? `- Execute only execution stage ${state.currentStageId}. In Part-based plans, every execution stage corresponds to exactly one Part. Call complete_stage when its plan item is completed or blocked, then stop for the mandatory user checkpoint.`
+		? `- Execute only execution stage ${state.currentStageId}. Every execution stage corresponds to exactly one Part. Call complete_stage when its plan item is completed or blocked, then stop for the mandatory user checkpoint.`
 		: "- Continue across ordinary stage boundaries. Call complete_plan only when every plan item is terminal and any applicable verification has evidence."}
 
 Saved plan: ${contract.planPath}
@@ -144,8 +129,6 @@ export function buildExecutionBoundaryMessage(contract, state) {
 		content,
 		display: false,
 		details: {
-			version: 1,
-			contractVersion: contract.version,
 			runId: contract.runId,
 			planHash: contract.planHash,
 			boundaryHash: contract.boundaryHash,
@@ -157,7 +140,7 @@ export function buildExecutionBoundaryMessage(contract, state) {
 function isMatchingBoundary(message, contract) {
 	if (
 		message?.role !== "custom" || message.customType !== EXECUTION_BOUNDARY_MESSAGE ||
-		message.details?.contractVersion !== 2 || message.details?.runId !== contract.runId ||
+		message.details?.runId !== contract.runId ||
 		message.details?.planHash !== contract.planHash || message.details?.boundaryHash !== contract.boundaryHash ||
 		typeof message.content !== "string"
 	) return false;
@@ -165,7 +148,6 @@ function isMatchingBoundary(message, contract) {
 }
 
 export function isolateExecutionMessages(messages, contract, state) {
-	if (!isInPlaceExecutionContract(contract)) return messages;
 	const boundaryIndex = messages.findIndex((message) => isMatchingBoundary(message, contract));
 	if (boundaryIndex >= 0) return messages.slice(boundaryIndex);
 	const compactionSummaryIndex = messages.findLastIndex((message) => message?.role === "compactionSummary");
@@ -178,5 +160,5 @@ export function buildStageInstruction(state) {
 		`${worker.workerId}${worker.runId ? ` run=${worker.runId}` : ""}${worker.sessionId ? ` session=${worker.sessionId}` : ""}`,
 	).join(", ");
 	return `[STAGED EXECUTION CONTINUE]
-Execute only execution stage ${state.currentStageId}; in Part-based plans, every execution stage corresponds to exactly one Part. Re-read the saved plan and current ledger. Update every plan item through plan_progress, run the stage checks, then call complete_stage. Do not begin a later stage before the user checkpoint.${workers ? `\nReusable parallel workers: ${workers}. Resume an existing worker for dependent follow-up; create a fresh worker only for explicitly independent work.` : ""}`;
+Execute only execution stage ${state.currentStageId}; every execution stage corresponds to exactly one Part. Re-read the saved plan and current ledger. Update every plan item through plan_progress, run the stage checks, then call complete_stage. Do not begin a later stage before the user checkpoint.${workers ? `\nReusable parallel workers: ${workers}. Resume an existing worker for dependent follow-up; create a fresh worker only for explicitly independent work.` : ""}`;
 }
