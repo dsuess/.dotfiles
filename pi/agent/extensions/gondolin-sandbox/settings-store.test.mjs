@@ -20,6 +20,7 @@ function baseSettings(overrides = {}) {
       externalMounts: [],
     },
     network: { mode: "public-http", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
+    ingress: { workspaceProfiles: [] },
     ...overrides,
   };
 }
@@ -48,6 +49,27 @@ test("validates the complete versioned filesystem settings schema", (t) => {
   fs.symlinkSync(item.dotfiles, path.join(item.home, "dotfiles-alias"));
   assert.throws(() => validateSandboxSettings(baseSettings({ filesystem: { ...baseSettings().filesystem, workspaceOverrides: [
     { root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] }, { root: "~/dotfiles-alias", access: "rw", writeProtectedPaths: [] },
+  ] } }), item.home), /duplicate canonical roots/);
+});
+
+test("normalizes portable ingress profiles and preserves siblings during saves", async (t) => {
+  const item = fixture(t);
+  const sibling = path.join(item.home, "src", "other"); fs.mkdirSync(sibling, { recursive: true });
+  const ingress = {
+    workspaceProfiles: [
+      { root: "~/.dotfiles", allowWebSockets: true, listeners: [{ name: "manager", hostPort: 28080, guestPort: 28080 }] },
+      { root: "~/src/other", allowWebSockets: false, listeners: [{ name: "api", hostPort: 0, guestPort: 8080 }] },
+    ],
+  };
+  const omitted = baseSettings(); delete omitted.ingress;
+  assert.deepEqual(validateSandboxSettings(omitted, item.home).ingress, { workspaceProfiles: [] });
+  const normalized = canonicalizeSandboxSettings(baseSettings({ ingress }), item.status, item.home);
+  assert.deepEqual(normalized.ingress, ingress);
+  const store = new SandboxSettingsStore(item.target, item.home);
+  await store.save(normalized, item.status);
+  assert.deepEqual(JSON.parse(fs.readFileSync(item.source, "utf8")).ingress, ingress);
+  assert.throws(() => validateSandboxSettings(baseSettings({ ingress: { workspaceProfiles: [
+    ingress.workspaceProfiles[0], { ...ingress.workspaceProfiles[0], root: item.dotfiles },
   ] } }), item.home), /duplicate canonical roots/);
 });
 

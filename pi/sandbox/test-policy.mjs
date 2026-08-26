@@ -41,6 +41,7 @@ function validSettings(overrides = {}) {
     version: 1,
     filesystem: filesystem(),
     network: { mode: "public-http", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
+    ingress: { workspaceProfiles: [] },
     ...overrides,
   };
 }
@@ -96,6 +97,44 @@ test("settings parser enforces the versioned filesystem schema", (t) => {
     { root: "~/.dotfiles", access: "rw", writeProtectedPaths: [] },
     { root: "~/dotfiles-alias", access: "rw", writeProtectedPaths: [] },
   ] }) }), { homeDirectory: home }), /duplicate canonical roots/);
+});
+
+test("ingress profiles are canonical, bounded, exact, and independent from egress", (t) => {
+  const root = makeRoot(t);
+  const home = path.join(root, "home");
+  const visonic = path.join(home, "src", "visonic", "dev");
+  const unrelated = path.join(root, "unrelated");
+  fs.mkdirSync(visonic, { recursive: true }); fs.mkdirSync(unrelated);
+  fs.symlinkSync(visonic, path.join(home, "visonic-alias"));
+  const profile = {
+    root: "~/src/visonic/dev",
+    allowWebSockets: true,
+    listeners: [
+      { name: "manager", hostPort: 28080, guestPort: 28080 },
+      { name: "ephemeral", hostPort: 0, guestPort: 8080 },
+    ],
+  };
+  const omitted = validSettings(); delete omitted.ingress;
+  assert.deepEqual(parseSandboxSettings(omitted, { homeDirectory: home }).ingress, { workspaceProfiles: [] });
+  const settings = parseSandboxSettings(validSettings({
+    network: { mode: "offline", allowedHosts: [], allowWebSockets: false, tcpMappings: [] },
+    ingress: { workspaceProfiles: [profile] },
+  }), { homeDirectory: home });
+  const selected = build(makeScope(fs.realpathSync(visonic)), settings, home, root);
+  assert.equal(selected.ingress.root, "~/src/visonic/dev");
+  assert.equal(selected.ingress.canonicalRoot, fs.realpathSync(visonic));
+  assert.equal(selected.ingress.listeners[1].hostPort, 0);
+  assert.equal(build(makeScope(unrelated), settings, home, root).ingress, null);
+  const changed = parseSandboxSettings(validSettings({ ingress: { workspaceProfiles: [{ ...profile, listeners: [{ name: "manager", hostPort: 28081, guestPort: 28080 }] }] } }), { homeDirectory: home });
+  assert.notEqual(build(makeScope(fs.realpathSync(visonic)), changed, home, root).policyGeneration, selected.policyGeneration);
+  for (const badProfile of [
+    { ...profile, listeners: Array.from({ length: 17 }, (_, index) => ({ name: `service-${index}`, hostPort: index + 1, guestPort: 8080 })) },
+    { ...profile, listeners: [{ name: "same", hostPort: 1, guestPort: 8080 }, { name: "SAME", hostPort: 2, guestPort: 8081 }] },
+    { ...profile, listeners: [{ name: "one", hostPort: 28080, guestPort: 8080 }, { name: "two", hostPort: 28080, guestPort: 8081 }] },
+  ]) {
+    assert.throws(() => parseSandboxSettings(validSettings({ ingress: { workspaceProfiles: [badProfile] } }), { homeDirectory: home }), /at most|duplicate/);
+  }
+  assert.throws(() => parseSandboxSettings(validSettings({ ingress: { workspaceProfiles: [profile, { ...profile, root: "~/visonic-alias" }] } }), { homeDirectory: home }), /duplicate canonical roots/);
 });
 
 test("external mounts retain their boundaries and signing-key exception", (t) => {

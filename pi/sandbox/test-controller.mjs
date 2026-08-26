@@ -11,6 +11,7 @@ import {
   GUEST_ENVIRONMENT,
   WorkspaceController,
 } from "./controller.mjs";
+import { IngressManager } from "./ingress.mjs";
 
 const GENERATION_A = "a".repeat(64);
 const GENERATION_B = "b".repeat(64);
@@ -228,6 +229,206 @@ function makeController(t, options = {}) {
   t.after(() => controller.close());
   return { controller, state };
 }
+
+async function listen(server, port = 0) {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port }, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return server.address().port;
+}
+
+async function closeServer(server) {
+  await new Promise((resolve) => server.close(() => resolve()));
+}
+
+function socketRequest(port, chunks, end = true) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port });
+    const received = [];
+    socket.on("connect", async () => {
+      for (const chunk of chunks) {
+        socket.write(chunk);
+        await sleep(1);
+      }
+      if (end) socket.end();
+    });
+    socket.on("data", (chunk) => received.push(chunk));
+    socket.on("end", () => resolve(Buffer.concat(received)));
+    socket.on("error", reject);
+  });
+}
+
+function fakeIngressVm(t, onRequest) {
+  let server = null;
+  return {
+    routes: null,
+    setIngressRoutes(routes) { this.routes = routes; },
+    async enableIngress(options) {
+      assert.equal(options.listenHost, "127.0.0.1");
+      server = net.createServer((socket) => onRequest(socket));
+      const port = await listen(server);
+      return { host: "127.0.0.1", port, url: `http://127.0.0.1:${port}`, close: () => closeServer(server) };
+    },
+    async close() { await closeServer(server); },
+  };
+}
+
+test("ingress adapters rewrite only the HTTP request target and stream bytes", async (t) => {
+  let rawRequest = Buffer.alloc(0);
+  const requestDone = new Promise((resolve) => {
+    const vm = fakeIngressVm(t, (socket) => {
+      socket.on("data", (chunk) => {
+        rawRequest = Buffer.concat([rawRequest, chunk]);
+        if (rawRequest.toString().endsWith("test")) {
+          socket.end("HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\nok");
+          resolve();
+        }
+      });
+    });
+    t.vm = vm;
+  });
+  const manager = new IngressManager({
+    root: "/workspace", allowWebSockets: true,
+    listeners: [{ name: "api", hostPort: 0, guestPort: 8080 }],
+  });
+  const vm = t.vm;
+  await manager.start(vm);
+  t.after(() => manager.close());
+  const status = manager.status();
+  assert.equal(status.health, "healthy");
+  assert.equal(status.listeners[0].preferredPort, 0);
+  assert.equal(status.listeners[0].fallback, false);
+  const response = await socketRequest(status.listeners[0].actualPort, [
+    "POST /items?q=one HTTP/", "1.1\r\nHost: preserved.test\r\nContent-Length: 4\r\n\r\nte", "st",
+  ], false);
+  await requestDone;
+  assert.match(response.toString(), /^HTTP\/1\.1 201 Created/);
+  assert.match(rawRequest.toString(), /^POST \/__pi_ingress_[a-f0-9]+\/0\/items\?q=one HTTP\/1\.1\r\nHost: preserved\.test\r\n/);
+  assert.match(rawRequest.toString(), /\r\n\r\ntest$/);
+  assert.equal(vm.routes[0].port, 8080);
+});
+
+test("ingress adapters tunnel WebSocket upgrade bytes when the profile permits them", async (t) => {
+  let ingressOptions = null;
+  const vm = fakeIngressVm(t, (socket) => {
+    let initial = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      initial = Buffer.concat([initial, chunk]);
+      if (!initial.includes(Buffer.from("\r\n\r\n"))) return;
+      socket.removeAllListeners("data");
+      socket.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+      socket.once("data", (message) => socket.end(Buffer.concat([Buffer.from("pong:"), message])));
+    });
+  });
+  const enableIngress = vm.enableIngress.bind(vm);
+  vm.enableIngress = async (options) => { ingressOptions = options; return enableIngress(options); };
+  const manager = new IngressManager({ root: "/workspace", allowWebSockets: true, listeners: [{ name: "socket", hostPort: 0, guestPort: 8080 }] });
+  await manager.start(vm);
+  t.after(() => manager.close());
+  const response = await new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: manager.status().listeners[0].actualPort });
+    let received = Buffer.alloc(0);
+    let sentMessage = false;
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error("WebSocket adapter timed out")); }, 2_000);
+    socket.on("connect", () => socket.write("GET /socket HTTP/1.1\r\nHost: socket.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"));
+    socket.on("data", (chunk) => {
+      received = Buffer.concat([received, chunk]);
+      if (!sentMessage && received.includes(Buffer.from("\r\n\r\n"))) {
+        sentMessage = true;
+        socket.write("ping");
+      }
+      if (received.includes(Buffer.from("pong:ping"))) {
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(received);
+      }
+    });
+    socket.on("error", (error) => { clearTimeout(timeout); reject(error); });
+  });
+  assert.match(response.toString(), /^HTTP\/1\.1 101 Switching Protocols/);
+  assert.equal(ingressOptions.allowWebSockets, true);
+});
+
+test("ingress listener falls back only from an occupied preferred port and cleans up", async (t) => {
+  const occupied = net.createServer();
+  const preferredPort = await listen(occupied);
+  t.after(() => closeServer(occupied));
+  const vm = fakeIngressVm(t, (socket) => socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"));
+  const manager = new IngressManager({
+    root: "/workspace", allowWebSockets: false,
+    listeners: [{ name: "api", hostPort: preferredPort, guestPort: 8080 }],
+  });
+  await manager.start(vm);
+  const listener = manager.status().listeners[0];
+  assert.equal(listener.preferredPort, preferredPort);
+  assert.notEqual(listener.actualPort, preferredPort);
+  assert.equal(listener.fallback, true);
+  await manager.close();
+  await assert.rejects(() => new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: listener.actualPort });
+    socket.once("connect", () => { socket.destroy(); resolve(); });
+    socket.once("error", reject);
+  }), /ECONNREFUSED/);
+});
+
+test("ingress adapters reject raw and absolute-form request lines", async (t) => {
+  const vm = fakeIngressVm(t, () => assert.fail("raw input must not reach the private gateway"));
+  const manager = new IngressManager({ root: "/workspace", allowWebSockets: false, listeners: [{ name: "api", hostPort: 0, guestPort: 8080 }] });
+  await manager.start(vm);
+  t.after(() => manager.close());
+  for (const input of ["debugpy\0raw", "GET http://example.test/ HTTP/1.1\r\n"]) {
+    const result = await socketRequest(manager.status().listeners[0].actualPort, [input]);
+    assert.match(result.toString(), /^HTTP\/1\.1 400 Bad Request/);
+  }
+});
+
+test("controller publishes ingress status and replaces listeners with its VM", async (t) => {
+  const privateServers = [];
+  let vmNumber = 0;
+  const vmFactory = async () => {
+    const id = `ingress-vm-${++vmNumber}`;
+    let server = null;
+    return {
+      id,
+      async start() {},
+      async close() { if (server) await closeServer(server); },
+      setIngressRoutes(routes) { assert.equal(routes.length, 1); },
+      async enableIngress() {
+        server = net.createServer((socket) => socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"));
+        privateServers.push(server);
+        const port = await listen(server);
+        return { port, close: () => closeServer(server) };
+      },
+    };
+  };
+  const ingressPolicy = { ...policy(), ingress: {
+    root: "/workspace", allowWebSockets: false,
+    listeners: [{ name: "api", hostPort: 0, guestPort: 8080 }],
+  } };
+  const controller = new WorkspaceController({
+    policy: ingressPolicy, imageDir: "/fake-image", vmFactory, dockerHealthCheck: false,
+    clockSynchronizer: async () => {},
+  });
+  t.after(() => controller.close());
+  await controller.start();
+  const first = controller.status().ingress.listeners[0];
+  assert.deepEqual(Object.keys(first).sort(), ["actualPort", "fallback", "guestPort", "name", "preferredPort", "url"]);
+  assert.equal(first.guestPort, 8080);
+  await controller.restart(ingressPolicy.policyGeneration);
+  const second = controller.status().ingress.listeners[0];
+  assert.equal(controller.status().ingress.health, "healthy");
+  await assert.rejects(() => new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: first.actualPort });
+    socket.once("connect", () => { socket.destroy(); resolve(); });
+    socket.once("error", reject);
+  }), /ECONNREFUSED/);
+  assert.notEqual(controller.status().vmId, "ingress-vm-1");
+  assert.ok(second.actualPort > 0);
+});
 
 test("host code caches are private and use fixed private paths", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-code-cache-"));

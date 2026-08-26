@@ -173,6 +173,7 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
     let lastContext: ExtensionContext | null = null;
     let readiness: Promise<void> | null = null;
     let acquisitionAbort: AbortController | null = null;
+    let fallbackNoticeVmId: string | null = null;
     let rootStartup: any = null;
     let ownsRootLease = false;
     let released = false;
@@ -213,6 +214,16 @@ export function createGondolinSandboxExtension(dependencies: ExtensionDependenci
     const publishStatus = (status: any, ctx = lastContext): void => {
       connectedStatus = status;
       emitLifecycle(lifecycleFromStatus(status), ctx);
+      if (ctx?.hasUI && typeof status?.vmId === "string" && status.vmId !== fallbackNoticeVmId) {
+        fallbackNoticeVmId = status.vmId;
+        const fallbacks = (status?.ingress?.listeners ?? []).filter((listener: any) => listener?.fallback === true);
+        if (fallbacks.length > 0) {
+          ctx.ui.notify(
+            `Ingress port fallback: ${fallbacks.map((listener: any) => `${listener.name} → ${listener.url} (preferred ${listener.preferredPort})`).join(", ")}`,
+            "warning",
+          );
+        }
+      }
     };
 
     const failClosed = (ctx: ExtensionContext | undefined, reason: string): void => {

@@ -14,6 +14,8 @@ import {
   type SandboxLifecycleEvent,
 } from "./events.ts";
 import {
+  type IngressListenerSetting,
+  type IngressWorkspaceProfileSetting,
   type SandboxSettings,
   SandboxSettingsStore,
   type TcpMappingSetting,
@@ -33,6 +35,54 @@ interface SettingsAction {
 
 function formatTcp(mapping: TcpMappingSetting): string {
   return `${mapping.guestHost}:${mapping.guestPort}=${mapping.connectHost}:${mapping.connectPort}`;
+}
+
+function formatIngressListeners(status: any): string {
+  const listeners = status.ingress?.listeners ?? [];
+  if (listeners.length === 0) return "(none)";
+  return listeners.map((listener: any) =>
+    `${listener.name}: ${listener.url} → guest ${listener.guestPort}${listener.fallback ? ` (preferred ${listener.preferredPort} unavailable)` : ""}`,
+  ).join(" · ");
+}
+
+function formatIngressInput(listeners: IngressListenerSetting[]): string {
+  return listeners.map((listener) => `${listener.name}:${listener.hostPort}=${listener.guestPort}`).join(", ");
+}
+
+function parseIngressListeners(value: string): IngressListenerSetting[] {
+  if (!value.trim()) return [];
+  return value.split(",").map((raw, index) => {
+    const entry = raw.trim();
+    const [left, guestPort, extra] = entry.split("=");
+    const colon = left?.lastIndexOf(":") ?? -1;
+    if (!left || !guestPort || extra !== undefined || colon < 1) {
+      throw new Error(`Host listener ${index + 1} must be name:hostPort=guestPort`);
+    }
+    return {
+      name: left.slice(0, colon),
+      hostPort: Number(left.slice(colon + 1)),
+      guestPort: Number(guestPort),
+    };
+  });
+}
+
+function activeIngressProfile(settings: SandboxSettings, status: any): { index: number; profile: IngressWorkspaceProfileSetting | null } {
+  const root = status.ingress?.profileRoot;
+  if (typeof root !== "string") return { index: -1, profile: null };
+  const index = settings.ingress.workspaceProfiles.findIndex((profile) => profile.root === root);
+  return { index, profile: index >= 0 ? settings.ingress.workspaceProfiles[index] : null };
+}
+
+export function formatIngressSummary(status: any): string {
+  const profileRoot = status.ingress?.profileRoot;
+  if (!profileRoot) return "Ingress profile: (none)\nHost listeners: (none)";
+  const listeners = status.ingress?.listeners ?? [];
+  return [
+    `Ingress profile: ${profileRoot} · WebSockets ${status.ingress?.allowWebSockets ? "on" : "off"}`,
+    `Host listeners: ${listeners.length === 0 ? "(none)" : listeners.map((listener: any) =>
+      `${listener.name} ${listener.url} → guest ${listener.guestPort}${listener.fallback ? ` (fallback; preferred ${listener.preferredPort})` : ""}`,
+    ).join("; ")}`,
+  ].join("\n");
 }
 
 function parseTcpMappings(value: string): TcpMappingSetting[] {
@@ -105,11 +155,32 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
     },
     {
       id: "tcp",
-      label: "TCP mappings",
+      label: "TCP mappings (egress)",
       currentValue: settings.network.tcpMappings.map(formatTcp).join(", ") || "(none)",
       values: [settings.network.tcpMappings.map(formatTcp).join(", ") || "(none)", "edit…"],
     },
   ];
+  const activeProfile = activeIngressProfile(settings, status).profile;
+  items.push(
+    {
+      id: "ingress-profile",
+      label: "Ingress workspace profile",
+      currentValue: status.ingress?.profileRoot ?? "(none)",
+      values: [status.ingress?.profileRoot ?? "(none)", "edit…"],
+    },
+    {
+      id: "ingress-listeners",
+      label: "Host listeners (HTTP)",
+      currentValue: formatIngressListeners(status),
+      values: [formatIngressListeners(status), "edit…"],
+    },
+    {
+      id: "ingress-websockets",
+      label: "Ingress WebSockets",
+      currentValue: activeProfile?.allowWebSockets ? "on" : "off",
+      values: ["off", "on"],
+    },
+  );
 
   for (const [index, mount] of settings.filesystem.externalMounts.entries()) {
     items.push({
@@ -163,7 +234,7 @@ export async function showSandboxSettings(
   if (ctx.mode !== "tui") {
     const status = await client.status();
     ctx.ui.notify(
-      `Gondolin ${status.health}; VM ${status.vmId ?? "none"}; Docker ${status.dockerHealthy ? "healthy" : "failed"}; policy ${status.policyGeneration}`,
+      [`Gondolin ${status.health}; VM ${status.vmId ?? "none"}; Docker ${status.dockerHealthy ? "healthy" : "failed"}; policy ${status.policyGeneration}`, formatIngressSummary(status)].join("\n"),
       status.health === "healthy" ? "info" : "error",
     );
     return;
@@ -222,6 +293,34 @@ export async function showSandboxSettings(
         );
         if (mappings === undefined) continue;
         next.network.tcpMappings = parseTcpMappings(mappings);
+      } else if (action.id === "ingress-profile" && action.value === "edit…") {
+        ctx.ui.notify("This editor changes only the current workspace profile. Host listeners are HTTP/1.1 endpoints, not TCP mappings.", "info");
+        continue;
+      } else if (action.id === "ingress-listeners" && action.value === "edit…") {
+        const active = activeIngressProfile(next, status);
+        const listeners = await ctx.ui.input(
+          "Host listeners (name:hostPort=guestPort)",
+          formatIngressInput(active.profile?.listeners ?? []),
+        );
+        if (listeners === undefined) continue;
+        const profile = active.profile ?? {
+          root: status.workspaceRoot,
+          allowWebSockets: false,
+          listeners: [],
+        };
+        profile.listeners = parseIngressListeners(listeners);
+        if (active.index >= 0) next.ingress.workspaceProfiles[active.index] = profile;
+        else next.ingress.workspaceProfiles.push(profile);
+      } else if (action.id === "ingress-websockets") {
+        const active = activeIngressProfile(next, status);
+        const profile = active.profile ?? {
+          root: status.workspaceRoot,
+          allowWebSockets: false,
+          listeners: [],
+        };
+        profile.allowWebSockets = action.value === "on";
+        if (active.index >= 0) next.ingress.workspaceProfiles[active.index] = profile;
+        else next.ingress.workspaceProfiles.push(profile);
       } else if (action.id === "mount-add" && action.value === "add…") {
         const mountPath = await ctx.ui.input("External path", "~/src/shared");
         if (!mountPath?.trim()) continue;

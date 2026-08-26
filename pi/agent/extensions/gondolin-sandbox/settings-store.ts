@@ -27,6 +27,18 @@ export interface TcpMappingSetting {
   connectPort: number;
 }
 
+export interface IngressListenerSetting {
+  name: string;
+  hostPort: number;
+  guestPort: number;
+}
+
+export interface IngressWorkspaceProfileSetting {
+  root: string;
+  allowWebSockets: boolean;
+  listeners: IngressListenerSetting[];
+}
+
 export interface SandboxSettings {
   version: 1;
   filesystem: {
@@ -41,6 +53,9 @@ export interface SandboxSettings {
     allowWebSockets: boolean;
     tcpMappings: TcpMappingSetting[];
   };
+  ingress: {
+    workspaceProfiles: IngressWorkspaceProfileSetting[];
+  };
 }
 
 export interface SandboxStatusForSettings {
@@ -50,6 +65,8 @@ export interface SandboxStatusForSettings {
 
 const writeQueues = new Map<string, Promise<void>>();
 const maxProtectedPaths = 128;
+const maxIngressProfiles = 32;
+const maxIngressListeners = 16;
 
 function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid < 1) return false;
@@ -162,6 +179,21 @@ function port(value: unknown, label: string): number {
   return Number(value);
 }
 
+function hostPort(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 65535) {
+    throw new Error(`${label} must be an integer from 0 to 65535`);
+  }
+  return Number(value);
+}
+
+function ingressListenerName(value: unknown, label: string): string {
+  const name = nonemptyString(value, label, 64);
+  if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(name)) {
+    throw new Error(`${label} must use letters, numbers, dots, underscores, or hyphens`);
+  }
+  return name;
+}
+
 function expandHome(input: string, home: string): string {
   if (input === "~") return home;
   if (input.startsWith("~/")) return path.join(home, input.slice(2));
@@ -183,7 +215,7 @@ function canonicalWorkspaceOverrideRoot(value: unknown, label: string, home: str
 
 export function validateSandboxSettings(value: unknown, homeDirectory = os.homedir()): SandboxSettings {
   const root = plainObject(value, "settings");
-  exactKeys(root, ["version", "filesystem", "network"], "settings");
+  exactKeys(root, ["version", "filesystem", "network", "ingress"], "settings");
   if (root.version !== 1) throw new Error("settings.version must be 1");
   const home = fs.realpathSync(homeDirectory);
   const filesystem = plainObject(root.filesystem, "settings.filesystem");
@@ -273,10 +305,52 @@ export function validateSandboxSettings(value: unknown, homeDirectory = os.homed
     throw new Error("offline mode cannot enable hosts, WebSockets, or TCP mappings");
   }
 
+  const ingress = root.ingress === undefined ? { workspaceProfiles: [] } : plainObject(root.ingress, "settings.ingress");
+  exactKeys(ingress, ["workspaceProfiles"], "settings.ingress");
+  if (!Array.isArray(ingress.workspaceProfiles) || ingress.workspaceProfiles.length > maxIngressProfiles) {
+    throw new Error(`settings.ingress.workspaceProfiles must be an array with at most ${maxIngressProfiles} entries`);
+  }
+  const ingressRoots = new Set<string>();
+  const workspaceProfiles = ingress.workspaceProfiles.map((entry, index) => {
+    const label = `settings.ingress.workspaceProfiles[${index}]`;
+    const profile = plainObject(entry, label);
+    exactKeys(profile, ["root", "allowWebSockets", "listeners"], label);
+    const { root: configuredRoot, canonicalRoot } = canonicalWorkspaceOverrideRoot(profile.root, `${label}.root`, home);
+    if (ingressRoots.has(canonicalRoot)) {
+      throw new Error("settings.ingress.workspaceProfiles contains duplicate canonical roots");
+    }
+    ingressRoots.add(canonicalRoot);
+    if (typeof profile.allowWebSockets !== "boolean") {
+      throw new Error(`${label}.allowWebSockets must be boolean`);
+    }
+    if (!Array.isArray(profile.listeners) || profile.listeners.length > maxIngressListeners) {
+      throw new Error(`${label}.listeners must be an array with at most ${maxIngressListeners} entries`);
+    }
+    const names = new Set<string>();
+    const preferredPorts = new Set<number>();
+    const listeners = profile.listeners.map((listenerEntry, listenerIndex) => {
+      const listenerLabel = `${label}.listeners[${listenerIndex}]`;
+      const listener = plainObject(listenerEntry, listenerLabel);
+      exactKeys(listener, ["name", "hostPort", "guestPort"], listenerLabel);
+      const name = ingressListenerName(listener.name, `${listenerLabel}.name`);
+      const nameKey = name.toLowerCase();
+      if (names.has(nameKey)) throw new Error(`${label}.listeners contains duplicate names`);
+      names.add(nameKey);
+      const preferredHostPort = hostPort(listener.hostPort, `${listenerLabel}.hostPort`);
+      if (preferredHostPort !== 0) {
+        if (preferredPorts.has(preferredHostPort)) throw new Error(`${label}.listeners contains duplicate preferred host ports`);
+        preferredPorts.add(preferredHostPort);
+      }
+      return { name, hostPort: preferredHostPort, guestPort: port(listener.guestPort, `${listenerLabel}.guestPort`) };
+    });
+    return { root: configuredRoot, allowWebSockets: profile.allowWebSockets, listeners };
+  });
+
   return {
     version: 1,
     filesystem: { workspace, workspaceOverrides, bareCommon, externalMounts },
     network: { mode, allowedHosts, allowWebSockets: network.allowWebSockets, tcpMappings },
+    ingress: { workspaceProfiles },
   };
 }
 
@@ -377,17 +451,19 @@ export function canonicalizeSandboxSettings(
 
 export class SandboxSettingsStore {
   readonly settingsPath: string;
+  readonly homeDirectory: string;
 
-  constructor(settingsPath = path.join(os.homedir(), ".pi", "sandbox", "settings.json")) {
+  constructor(settingsPath = path.join(os.homedir(), ".pi", "sandbox", "settings.json"), homeDirectory = os.homedir()) {
     this.settingsPath = settingsPath;
+    this.homeDirectory = homeDirectory;
   }
 
   load(): SandboxSettings {
-    return validateSandboxSettings(JSON.parse(fs.readFileSync(this.settingsPath, "utf8")));
+    return validateSandboxSettings(JSON.parse(fs.readFileSync(this.settingsPath, "utf8")), this.homeDirectory);
   }
 
   async save(value: unknown, status: SandboxStatusForSettings): Promise<SandboxSettings> {
-    const normalized = canonicalizeSandboxSettings(value, status);
+    const normalized = canonicalizeSandboxSettings(value, status, this.homeDirectory);
     const queueKey = fs.realpathSync(this.settingsPath);
     const previous = writeQueues.get(queueKey) ?? Promise.resolve();
     let saved!: SandboxSettings;

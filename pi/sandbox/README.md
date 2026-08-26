@@ -133,6 +133,18 @@ Staged execution uses the same controller. Every subagent and discussion child s
     "allowedHosts": [],
     "allowWebSockets": false,
     "tcpMappings": []
+  },
+  "ingress": {
+    "workspaceProfiles": [
+      {
+        "root": "~/src/example",
+        "allowWebSockets": true,
+        "listeners": [
+          { "name": "app", "hostPort": 3000, "guestPort": 3000 },
+          { "name": "api", "hostPort": 0, "guestPort": 8080 }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -197,6 +209,22 @@ A TCP mapping is an explicit exception:
 
 Mapped TCP does not use HTTP request checks. Add only the minimum required target.
 
+## HTTP ingress workspace profiles
+
+`ingress.workspaceProfiles` exposes declared **guest-loopback HTTP services** to the host. It is independent of `network`: an explicit host listener can work while guest egress is `offline`.
+
+A profile applies only when its existing absolute or `~/` `root` resolves to the controller's exact canonical workspace root. Symlink aliases resolve to the same root and duplicate roots are rejected. The profile's configured portable root is retained when `/sandbox` saves the Stow source. At most 32 profiles and 16 listeners per profile are accepted. Listener names and nonzero preferred host ports must be unique within a profile.
+
+Each host listener binds only `127.0.0.1`. `hostPort: 0` directly requests an ephemeral port. A nonzero `hostPort` is preferred; if and only if it is already in use, the controller selects an ephemeral port and marks the reported listener as a fallback. Permission errors and every other bind error fail startup. A fallback can break application code that hard-codes the preferred URL; the sandbox reports it but does not rewrite application configuration.
+
+The controller creates one private Gondolin HTTP/1.1 gateway per VM, with unguessable internal path routes to the declared guest ports, then creates the localhost host listeners. Adapters accept only bounded HTTP/1.1 origin-form request lines, preserve the original method, path, query, Host header, request/response streaming, SSE, status, and upgrade bytes, and reject absolute-form, malformed, and raw-protocol input. `allowWebSockets` controls WebSocket upgrades for the whole profile.
+
+A host listener is not a `network.tcpMappings` egress mapping, a Docker port publication, or a general TCP tunnel. It cannot expose debugpy, databases, SSH, or another raw debugger/database protocol. Docker may publish a container port *inside the guest*; a declared HTTP host listener can then reach that guest port through the supported gateway.
+
+Listeners are VM lifecycle state. They are created after each VM start and closed before VM replacement, reset, reload, or final lease release. A listener being bound means ingress infrastructure is healthy, not that its backend application is ready: a service that has not started can correctly return `502`.
+
+The checked-in Visonic profile declares Manager (`28080`), UI (`25173`), Storybook (`26006`), Conductor (`28083`), ProcessorCPU (`28081`), and optional ProcessorGPU (`28082`), with WebSockets enabled. It deliberately excludes raw debugger ports.
+
 ## Guest image and Docker
 
 The exact Gondolin version is `0.12.0`. The rootfs Dockerfile installs the architecture-matched Debian Trixie kernel metapackage (`linux-image-arm64` or `linux-image-amd64`) into the digest-pinned Node 24 Debian OCI image. Image assembly extracts that kernel only after it finds one `/boot/vmlinuz-*` and its matching `/lib/modules/<release>` tree, then replaces Gondolin's temporary Alpine `linux-virt` kernel asset before publication. Alpine remains only the Gondolin initramfs/bootstrap layer; QEMU and the running tool plane use the matching Debian kernel, modules, and glibc userspace.
@@ -235,18 +263,19 @@ The host Docker socket and host Docker settings are not mounted. Privileged gues
 
 Run `/sandbox` in the Pi TUI to inspect or change the sandbox.
 
-The view shows controller health, VM ID, Docker health, canonical workspace and bare-common mount access, external mounts, network settings, and generation IDs.
+The view shows controller health, VM ID, Docker health, canonical workspace and bare-common mount access, external mounts, egress network settings, the active ingress workspace profile, every named host listener URL, and generation IDs.
 
 You can do these actions:
 
 - Add or remove an external mount.
 - Change mount access.
 - Change the network mode and allowed hosts.
-- Change WebSocket and TCP settings.
+- Change egress WebSocket and TCP settings.
+- Edit listeners for the current workspace only with `name:hostPort=guestPort` (for example, `api:3000=8080`); toggle its ingress WebSocket setting.
 - Restart the VM.
 - Replace the shared VM and clear its ephemeral Docker state.
 
-Each accepted settings change preserves the complete `filesystem` policy, replaces the Stow source atomically, then drains active work and restarts once. `/sandbox` currently edits external mounts and network settings; it does not create or remove workspace overrides.
+Each accepted settings change preserves all sibling ingress profiles and the complete `filesystem` policy, replaces the Stow source atomically, then drains active work and restarts once. `/sandbox` edits only the active workspace's ingress profile; it does not create or remove profiles for another workspace or workspace overrides. Fixed listeners appear in `/sandbox`; a fallback URL is also announced at session start and after VM restart because its preferred URL is invalid.
 
 Docker reset requires confirmation. It replaces the shared VM, deleting that VM's guest-native images, containers, volumes, and build cache.
 

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { MemoryProvider, ReadonlyProvider, VM } from "@earendil-works/gondolin";
 
 import { ensureGondolinImage, verifyImageDirectory } from "./build-gondolin-image.mjs";
+import { IngressManager } from "./ingress.mjs";
 import {
   buildSandboxPolicy,
   createNetworkOptions,
@@ -161,6 +162,7 @@ export class WorkspaceController {
     this.onIdle = options.onIdle ?? (() => {});
     this.onStateChange = options.onStateChange ?? (() => {});
     this.vm = null;
+    this.ingress = new IngressManager(this.policy.ingress);
     this.health = "starting";
     this.dockerHealthy = false;
     this.failure = null;
@@ -195,6 +197,7 @@ export class WorkspaceController {
     this.health = this.pendingRestart ? "restarting" : "starting";
     this.failure = null;
     let vm = null;
+    let ingress = null;
     try {
       traceStartup("vm_create_start");
       vm = await this.vmFactory({ policy: this.policy, imageDir: this.imageDir });
@@ -202,6 +205,8 @@ export class WorkspaceController {
       traceStartup("vm_start_start");
       await vm.start();
       traceStartup("vm_start_complete");
+      ingress = new IngressManager(this.policy.ingress);
+      await ingress.start(vm);
       await this.clockSynchronizer(vm);
       if (this.dockerHealthCheck) {
         traceStartup("docker_health_start");
@@ -228,6 +233,7 @@ export class WorkspaceController {
         traceStartup("docker_health_complete");
       }
       this.vm = vm;
+      this.ingress = ingress;
       this.dockerHealthy = true;
       this.health = "healthy";
       this.onStateChange(this.status());
@@ -236,6 +242,7 @@ export class WorkspaceController {
       this.dockerHealthy = false;
       this.failure = error instanceof Error ? error.message : String(error);
       this.onStateChange(this.status());
+      await ingress?.close().catch(() => {});
       await vm?.close().catch(() => {});
       throw error;
     }
@@ -243,8 +250,11 @@ export class WorkspaceController {
 
   async stopVm() {
     const vm = this.vm;
+    const ingress = this.ingress;
     this.vm = null;
+    this.ingress = new IngressManager(this.policy.ingress);
     this.dockerHealthy = false;
+    await ingress?.close();
     if (vm) await vm.close();
   }
 
@@ -341,6 +351,7 @@ export class WorkspaceController {
         access: mount.access,
       })),
       network: this.policy.network,
+      ingress: this.ingress.status(),
     };
   }
 

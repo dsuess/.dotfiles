@@ -16,7 +16,7 @@ import {
 export const SETTINGS_VERSION = 1;
 export const SETTINGS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "settings.json");
 
-const SETTINGS_ROOT_KEYS = new Set(["version", "filesystem", "network"]);
+const SETTINGS_ROOT_KEYS = new Set(["version", "filesystem", "network", "ingress"]);
 const FILESYSTEM_KEYS = new Set(["workspace", "workspaceOverrides", "bareCommon", "externalMounts"]);
 const ACCESS_POLICY_KEYS = new Set(["access", "writeProtectedPaths"]);
 const WORKSPACE_OVERRIDE_KEYS = new Set(["root", "access", "writeProtectedPaths"]);
@@ -28,12 +28,17 @@ const NETWORK_KEYS = new Set([
   "tcpMappings",
 ]);
 const TCP_KEYS = new Set(["guestHost", "guestPort", "connectHost", "connectPort"]);
+const INGRESS_KEYS = new Set(["workspaceProfiles"]);
+const INGRESS_PROFILE_KEYS = new Set(["root", "allowWebSockets", "listeners"]);
+const INGRESS_LISTENER_KEYS = new Set(["name", "hostPort", "guestPort"]);
 const NETWORK_MODES = new Set(["public-http", "public-tcp", "allowlist", "offline"]);
 const ACCESS_MODES = new Set(["ro", "rw"]);
 const MAX_MOUNTS = 64;
 const MAX_PROTECTED_PATHS = 128;
 const MAX_HOSTS = 128;
 const MAX_TCP_MAPPINGS = 32;
+const MAX_INGRESS_PROFILES = 32;
+const MAX_INGRESS_LISTENERS = 16;
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -60,6 +65,21 @@ function assertPort(value, label) {
     throw new Error(`${label} must be an integer from 1 to 65535`);
   }
   return value;
+}
+
+function assertHostPort(value, label) {
+  if (!Number.isInteger(value) || value < 0 || value > 65535) {
+    throw new Error(`${label} must be an integer from 0 to 65535`);
+  }
+  return value;
+}
+
+function assertIngressListenerName(value, label) {
+  const name = assertString(value, label, 64);
+  if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(name)) {
+    throw new Error(`${label} must use letters, numbers, dots, underscores, or hyphens`);
+  }
+  return name;
 }
 
 function assertHostname(value, label, { wildcard = false } = {}) {
@@ -221,6 +241,47 @@ export function parseSandboxSettings(value, options = {}) {
     throw new Error("offline mode cannot enable hosts, WebSockets, or TCP mappings");
   }
 
+  const rawIngress = root.ingress === undefined ? { workspaceProfiles: [] } : assertPlainObject(root.ingress, "settings.ingress");
+  rejectUnknownKeys(rawIngress, INGRESS_KEYS, "settings.ingress");
+  if (!Array.isArray(rawIngress.workspaceProfiles) || rawIngress.workspaceProfiles.length > MAX_INGRESS_PROFILES) {
+    throw new Error(`settings.ingress.workspaceProfiles must be an array with at most ${MAX_INGRESS_PROFILES} entries`);
+  }
+  const canonicalIngressRoots = new Set();
+  const workspaceProfiles = rawIngress.workspaceProfiles.map((raw, index) => {
+    const label = `settings.ingress.workspaceProfiles[${index}]`;
+    const profile = assertPlainObject(raw, label);
+    rejectUnknownKeys(profile, INGRESS_PROFILE_KEYS, label);
+    const { configuredRoot, canonicalRoot } = canonicalWorkspaceOverrideRoot(profile.root, `${label}.root`, homeDirectory);
+    if (canonicalIngressRoots.has(canonicalRoot)) {
+      throw new Error("settings.ingress.workspaceProfiles contains duplicate canonical roots");
+    }
+    canonicalIngressRoots.add(canonicalRoot);
+    if (typeof profile.allowWebSockets !== "boolean") {
+      throw new Error(`${label}.allowWebSockets must be boolean`);
+    }
+    if (!Array.isArray(profile.listeners) || profile.listeners.length > MAX_INGRESS_LISTENERS) {
+      throw new Error(`${label}.listeners must be an array with at most ${MAX_INGRESS_LISTENERS} entries`);
+    }
+    const listenerNames = new Set();
+    const preferredHostPorts = new Set();
+    const listeners = profile.listeners.map((rawListener, listenerIndex) => {
+      const listenerLabel = `${label}.listeners[${listenerIndex}]`;
+      const listener = assertPlainObject(rawListener, listenerLabel);
+      rejectUnknownKeys(listener, INGRESS_LISTENER_KEYS, listenerLabel);
+      const name = assertIngressListenerName(listener.name, `${listenerLabel}.name`);
+      const nameKey = name.toLowerCase();
+      if (listenerNames.has(nameKey)) throw new Error(`${label}.listeners contains duplicate names`);
+      listenerNames.add(nameKey);
+      const hostPort = assertHostPort(listener.hostPort, `${listenerLabel}.hostPort`);
+      if (hostPort !== 0) {
+        if (preferredHostPorts.has(hostPort)) throw new Error(`${label}.listeners contains duplicate preferred host ports`);
+        preferredHostPorts.add(hostPort);
+      }
+      return { name, hostPort, guestPort: assertPort(listener.guestPort, `${listenerLabel}.guestPort`) };
+    });
+    return { root: configuredRoot, allowWebSockets: profile.allowWebSockets, listeners };
+  });
+
   return deepFreeze({
     version: SETTINGS_VERSION,
     filesystem: { workspace, workspaceOverrides, bareCommon, externalMounts },
@@ -230,6 +291,7 @@ export function parseSandboxSettings(value, options = {}) {
       allowWebSockets: rawNetwork.allowWebSockets,
       tcpMappings,
     },
+    ingress: { workspaceProfiles },
   });
 }
 
@@ -393,6 +455,19 @@ function selectWorkspacePolicy(filesystem, workspaceRoot, homeDirectory) {
   return { ...filesystem.workspace, canonicalRoot: null };
 }
 
+function selectIngressProfile(ingress, workspaceRoot, homeDirectory) {
+  const canonicalWorkspaceRoot = fs.realpathSync(workspaceRoot);
+  for (const profile of ingress.workspaceProfiles) {
+    const { canonicalRoot } = canonicalWorkspaceOverrideRoot(
+      profile.root,
+      "settings.ingress.workspaceProfiles.root",
+      homeDirectory,
+    );
+    if (canonicalRoot === canonicalWorkspaceRoot) return { ...profile, canonicalRoot };
+  }
+  return null;
+}
+
 function computeGeneration(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -427,6 +502,11 @@ export function buildSandboxPolicy(options) {
   });
   const workspacePolicy = selectWorkspacePolicy(
     options.settings.filesystem,
+    scope.canonicalWorkspaceRoot,
+    homeDirectory,
+  );
+  const ingress = selectIngressProfile(
+    options.settings.ingress,
     scope.canonicalWorkspaceRoot,
     homeDirectory,
   );
@@ -484,6 +564,7 @@ export function buildSandboxPolicy(options) {
       ...(protectedPaths ? { protectedHostPaths: protectedPaths } : {}),
     })),
     network: options.settings.network,
+    ingress,
   };
 
   return deepFreeze({
@@ -496,6 +577,7 @@ export function buildSandboxPolicy(options) {
     workspaceState,
     mounts,
     network: options.settings.network,
+    ingress,
   });
 }
 
