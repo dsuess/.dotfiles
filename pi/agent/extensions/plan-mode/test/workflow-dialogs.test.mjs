@@ -5,15 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { PART_PARALLEL_PLAN, PART_PLAN } from "./fixtures.mjs";
+import { createPiJiti } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, { alias: {
-	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-	"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-	"@earendil-works/pi-ai": `${root}/node_modules/@earendil-works/pi-ai/dist/index.js`,
-	"typebox": `${root}/node_modules/typebox/build/index.mjs`,
-} });
+const jiti = await createPiJiti(import.meta.url);
 const extension = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const stateModule = await import(new URL("../state.js", import.meta.url));
 
@@ -174,6 +168,59 @@ test("Escape keeps approval pending and manual reopening remains available", asy
 		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "restoration retains the durable approval wait");
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
+	} finally { await harness.cleanup(); }
+});
+
+test("ordinary startup restores the off state without exposing workflow tools", async () => {
+	const harness = await createHarness();
+	try {
+		assert.equal(harness.latestState(), undefined);
+		assert.equal(harness.getActiveTools().includes("submit_plan"), false);
+		assert.equal(harness.getActiveTools().includes("plan_progress"), false);
+	} finally { await harness.cleanup(); }
+});
+
+test("canonical in-place execution restores its isolated context", async () => {
+	const harness = await createHarness({ actions: ["run"] });
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness);
+		await harness.emit("agent_settled");
+		await harness.emit("session_tree");
+		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.getActiveTools().includes("plan_progress"), true);
+		const boundary = { role: "custom", ...harness.sentMessages[0].message, timestamp: 2 };
+		const context = await harness.handlers.get("context")[0]({ messages: [
+			{ role: "user", content: "planning", timestamp: 1 },
+			boundary,
+			{ role: "assistant", content: [{ type: "text", text: "implementation" }], timestamp: 3 },
+		] }, harness.ctx);
+		assert.equal(context.messages[0].customType, "plan-mode-execution-boundary");
+		assert.equal(context.messages.length, 2);
+	} finally { await harness.cleanup(); }
+});
+
+test("unsupported execution restoration blocks and removes planning context", async () => {
+	const harness = await createHarness();
+	try {
+		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
+		const approval = stateModule.submitPlan(planning, {
+			path: path.join(harness.cwd, ".pi/plans/unsupported.md"), slug: "unsupported", hash: "hash", title: "Unsupported", intent: "Unsupported", approvalNonce: "approval",
+			stages: [{ id: "A", description: "Only", taskIds: ["A"] }],
+			tasks: [{ id: "A", title: "Only task", status: "pending" }],
+		}).state;
+		harness.entries.push({
+			type: "custom",
+			customType: "plan-mode-state",
+			data: stateModule.approveExecution(approval, "approval", "all").state,
+		});
+		await harness.emit("session_tree");
+		assert.equal(harness.latestState().mode, "blocked");
+		assert.match(harness.latestState().blockedReason, /no matching canonical in-place execution contract/);
+		const context = await harness.handlers.get("context")[0]({
+			messages: [{ role: "user", content: "planning context", timestamp: 1 }],
+		}, harness.ctx);
+		assert.deepEqual(context.messages, []);
 	} finally { await harness.cleanup(); }
 });
 
@@ -594,6 +641,16 @@ test("mandatory staged checkpoints open from state without synthetic commands", 
 		execution = stateModule.recordTaskProgress(execution, { taskId: "1", status: "in_progress" }).state;
 		execution = stateModule.recordTaskProgress(execution, { taskId: "1", status: "completed", evidence: "test" }).state;
 		execution = stateModule.recordStageCheckpoint(execution, { stageId: "1", nonce: "checkpoint", summary: "done", changedFiles: [], tests: ["npm test"], blockers: [] }).state;
+		execution.execution.runId = "staged-run";
+		harness.entries.push({
+			type: "custom",
+			customType: "plan-mode-execution",
+			data: {
+				version: 2, handoff: "in_place", runId: "staged-run", approvedMarkdown: PART_PLAN,
+				planPath: execution.plan.path, planHash: execution.plan.hash, executionMode: "staged",
+				originalActiveTools: execution.originalActiveTools, sessionPath: null, boundaryHash: "boundary",
+			},
+		});
 		harness.entries.push({ type: "custom", customType: "plan-mode-state", data: execution });
 		await harness.emit("session_tree"); await Promise.resolve();
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);

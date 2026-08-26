@@ -4,12 +4,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createPiJiti } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, { alias: {
-	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-} });
+const jiti = await createPiJiti(import.meta.url);
 const { normalizeTuicrComments, runTuicrPlanReview } = await jiti.import(new URL("../tuicr-plan-review.ts", import.meta.url).pathname);
 
 const PLAN = "# Review plan\n\n## Context\n\nExact validated revision.\n";

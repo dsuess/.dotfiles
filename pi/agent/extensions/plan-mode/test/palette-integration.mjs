@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
+import { createPiJiti, piPackageRoot } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const tuiPackage = await import(`${root}/node_modules/@earendil-works/pi-tui/dist/index.js`);
-const jiti = createJiti(import.meta.url, { alias: {
-	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-	"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-	"@earendil-works/pi-ai": `${root}/node_modules/@earendil-works/pi-ai/dist/index.js`,
-	"typebox": `${root}/node_modules/typebox/build/index.mjs`,
-} });
+const tuiPackage = await import(`${piPackageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`);
+const jiti = await createPiJiti(import.meta.url);
 const planMode = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const stateModule = await jiti.import(new URL("../state.ts", import.meta.url).pathname);
 const commandPalette = await jiti.import(new URL("../../command-palette.ts", import.meta.url).pathname);
@@ -206,6 +200,16 @@ assert.deepEqual(activeTools, originalActiveTools, "exiting approval restores th
 assertNormalFooter("approval exit");
 
 const executionState = stateModule.approveExecution(approvalState, "nonce", "all").state;
+executionState.execution.runId = "palette-run";
+appended.push({
+	type: "custom",
+	customType: "plan-mode-execution",
+	data: {
+		version: 2, handoff: "in_place", runId: "palette-run", approvedMarkdown: "# Approval\n",
+		planPath: executionState.plan.path, planHash: executionState.plan.hash, executionMode: "all",
+		originalActiveTools: executionState.originalActiveTools, sessionPath: null, boundaryHash: "boundary",
+	},
+});
 appended.push({ type: "custom", customType: "plan-mode-state", data: executionState });
 for (const handler of lifecycleHandlers.get("session_tree") ?? []) {
 	await handler({ reason: "tree" }, ctx);

@@ -1,0 +1,9 @@
+{
+  "name": "dotfiles-pi-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:deterministic": "node test-gate.mjs deterministic",
+    "check": "node test-gate.mjs all"
+  }
+}

@@ -16,6 +16,10 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 
 Always commit a plan document in the same commit as the changes that implement it.
 
+## Correction lessons
+
+- When a controller setting is read from an environment variable, add it to `spawnController()`'s explicit environment allowlist and test that forwarding.
+
 ## Installation
 
 ```bash

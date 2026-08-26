@@ -40,6 +40,7 @@ export {
 };
 
 export interface ExecutionContract {
+	version: 2;
 	handoff: "in_place";
 	runId: string;
 	approvedMarkdown: string;

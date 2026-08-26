@@ -1,16 +1,10 @@
 import assert from "node:assert/strict";
+import { createPiJiti, piPackageRoot } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const core = await import(`${root}/dist/index.js`);
-const tuiPackage = await import(`${root}/node_modules/@earendil-works/pi-tui/dist/index.js`);
+const core = await import(`${piPackageRoot}/dist/index.js`);
+const tuiPackage = await import(`${piPackageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`);
 await core.initTheme("dark", false);
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, {
-	alias: {
-		"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-		"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-	},
-});
+const jiti = await createPiJiti(import.meta.url);
 const rendererModule = await jiti.import(new URL("../plan-renderer.ts", import.meta.url).pathname);
 const actionModule = await jiti.import(new URL("../action-dialog.ts", import.meta.url).pathname);
 const stageModule = await jiti.import(new URL("../stage-dialog.ts", import.meta.url).pathname);

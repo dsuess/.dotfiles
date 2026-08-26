@@ -133,6 +133,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	const explicitCliModel = hasExplicitCliModel();
 	let lastContext: ExtensionContext | undefined;
 	let approvedPlanMarkdown: string | null = null;
+	let rejectedExecutionRestore = false;
 	let presentingApproval = false;
 	let presentingCheckpoint = false;
 	registerPlanRenderer(pi);
@@ -430,6 +431,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 		const workerProfile = modelRouting?.inference ?? captureModelProfile(ctx.model, pi.getThinkingLevel());
 		const contract: InPlaceExecutionContract = {
+			version: 2,
 			handoff: "in_place",
 			runId,
 			approvedMarkdown,

@@ -5,7 +5,7 @@ export const EXECUTION_ENTRY = "plan-mode-execution";
 export const EXECUTION_BOUNDARY_MESSAGE = "plan-mode-execution-boundary";
 
 export function isInPlaceExecutionContract(value) {
-	return value?.handoff === "in_place" && typeof value.runId === "string" && value.runId.length > 0 &&
+	return value?.version === 2 && value.handoff === "in_place" && typeof value.runId === "string" && value.runId.length > 0 &&
 		typeof value.planPath === "string" && typeof value.planHash === "string" &&
 		typeof value.boundaryHash === "string" && value.boundaryHash.length > 0;
 }

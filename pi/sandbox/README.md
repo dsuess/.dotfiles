@@ -391,27 +391,23 @@ The command prints a warning. Host tools and credentials are then available to m
 
 ## Verification
 
-Run unit and wrapper tests:
+For every Pi change, run the complete gate from an ordinary terminal or a `pi --yolo` session:
 
 ```bash
-npm --prefix pi/sandbox test
+npm --prefix pi run check
 ```
 
-Run native QEMU, Docker, network, tool, child, and Ketch tests:
+It runs maintained extension and package checks, deterministic Gondolin unit/wrapper tests, then native QEMU, Docker, routed-tool, production-inventory, Ketch, and live-network canaries. It stops at the first failed suite. It resolves the installed Pi package through `PI_PACKAGE_ROOT` or Homebrew's stable `opt` path; non-Homebrew environments must set `PI_PACKAGE_ROOT`.
+
+Use the deterministic-only phase during development:
 
 ```bash
-npm --prefix pi/sandbox run test:native
+npm --prefix pi run check:deterministic
 ```
+
+A Gondolin-routed Bash process cannot validate the host sandbox from inside itself. In that session, run only the deterministic phase and report native checks as unverified; run the full command on the host before completion.
 
 Measure startup separately with `npm --prefix pi/sandbox run benchmark:startup -- --samples 10`. Performance varies with QEMU and host load, so the benchmark is an acceptance observation rather than a unit-test threshold.
-
-Run extension regressions:
-
-```bash
-PI_PACKAGE_ROOT=/path/to/pi-coding-agent npm --prefix pi/agent/extensions/plan-mode test
-PI_PACKAGE_ROOT=/path/to/pi-coding-agent node --test pi/agent/extensions/subagent/test/*.test.mjs
-npm --prefix pi/agent/packages/ask-user-question test
-```
 
 The native canary verifies Debian/glibc identity, direct RTK, system and Playwright Chromium, fonts, Python/Linux header compilation, `gcloud`, `direnv`, RTC recovery and HTTPS, public HTTPS and blocked internal destinations. It also verifies Docker's default bridge and a user-defined bridge network, DNS/HTTPS from a default-network container, normal-network BuildKit and Compose, host isolation, and ephemeral Docker state across VM replacement.
 

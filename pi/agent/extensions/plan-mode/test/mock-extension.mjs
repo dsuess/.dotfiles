@@ -3,15 +3,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PART_PLAN_WITH_QUESTIONS } from "./fixtures.mjs";
+import { createPiJiti } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, { alias: {
-	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-	"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-	"@earendil-works/pi-ai": `${root}/node_modules/@earendil-works/pi-ai/dist/index.js`,
-	"typebox": `${root}/node_modules/typebox/build/index.mjs`,
-} });
+const jiti = await createPiJiti(import.meta.url);
 const extension = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 
 const handlers = new Map();

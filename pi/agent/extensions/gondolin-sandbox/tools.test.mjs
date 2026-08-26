@@ -1,15 +1,9 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { createPiJiti } from "../../../test-helpers.mjs";
 
-const piRoot = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.84.2/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${piRoot}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, { alias: {
-  "@earendil-works/pi-coding-agent": `${piRoot}/dist/index.js`,
-  "@earendil-works/pi-tui": `${piRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-  "@earendil-works/pi-ai": `${piRoot}/node_modules/@earendil-works/pi-ai/dist/index.js`,
-  typebox: `${piRoot}/node_modules/typebox/build/index.mjs`,
-} });
+const jiti = await createPiJiti(import.meta.url);
 const {
   createSandboxBashOperations,
   registerSandboxTools,

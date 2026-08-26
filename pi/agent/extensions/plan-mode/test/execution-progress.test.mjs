@@ -14,15 +14,9 @@ import {
 	submitPlan,
 } from "../state.js";
 import { PART_MINIMAL_PLAN } from "./fixtures.mjs";
+import { createPiJiti } from "../../../../test-helpers.mjs";
 
-const root = process.env.PI_PACKAGE_ROOT || "/opt/homebrew/Cellar/pi-coding-agent/0.82.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = await import(`${root}/node_modules/jiti/lib/jiti.mjs`);
-const jiti = createJiti(import.meta.url, { alias: {
-	"@earendil-works/pi-coding-agent": `${root}/dist/index.js`,
-	"@earendil-works/pi-tui": `${root}/node_modules/@earendil-works/pi-tui/dist/index.js`,
-	"@earendil-works/pi-ai": `${root}/node_modules/@earendil-works/pi-ai/dist/index.js`,
-	"typebox": `${root}/node_modules/typebox/build/index.mjs`,
-} });
+const jiti = await createPiJiti(import.meta.url);
 const { registerExecutionTools } = await jiti.import(new URL("../execution.ts", import.meta.url).pathname);
 
 function expectedRows(state) {

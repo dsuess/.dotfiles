@@ -22,6 +22,7 @@ const state = {
 	plan: { path: "/project/.pi/plans/approved.md", hash: "plan-hash" },
 };
 const contract = {
+	version: 2,
 	handoff: "in_place",
 	runId: "run-2",
 	approvedMarkdown: "# Approved\n",

@@ -47,7 +47,7 @@ const BUILTIN_SCHEMA_HASHES: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const ADAPTER_SCHEMAS: Readonly<Record<string, string>> = Object.freeze({
-  plan_progress: "f8a173633682df6961211b10f7e49d8d88170cdda31f277066b4d3346087b25d",
+  plan_progress: "608694d7534b76fed9fe8b50a527e9ac3d1dff7009b8aab0af769ff727955c76",
   complete_plan: "3fdcf886c0c54154083a34b95c6fc8ad4ae6b026796ed5ce78a079f3105c0471",
   complete_stage: "0c07cc92d9c81f5a986561f8d636dce9a443c977e2556250c95508c05a703790",
   submit_plan: "6831cf97d50e813d677713dc06f0b930f4c60d75b9988e7d88af3f5822dacc6f",

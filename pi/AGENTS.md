@@ -42,6 +42,7 @@ This file contains repository-specific instructions for changes to Pi configurat
 ## Verification
 
 - Run the narrowest package script relevant to an extension change during development; several local extensions provide `npm run check`.
-- As a final review, run tests for all tests and sandboxing once at the end
-- Sandbox checks are defined in `sandbox/package.json` as `npm run test:*`. Run `test:native` from a `--yolo` session or an ordinary terminal.
+- Before completing any Pi change, run `npm --prefix pi run check` once. It runs all maintained extension/package checks, deterministic Gondolin unit and wrapper tests, then QEMU, Docker, tool-routing, production inventory, Ketch, and live-network canaries.
+- Run that complete command only from an ordinary terminal or a `pi --yolo` session. A Gondolin-routed Bash process can run `npm --prefix pi run check:deterministic`, but cannot verify its own host sandbox; report native checks as unverified in that case.
+- Sandbox checks are defined in `sandbox/package.json` as `npm run test:*`.
 - Verify a live Herdr integration with `herdr agent get <pane>` and `herdr agent explain <pane>`.

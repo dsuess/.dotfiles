@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { createJiti } from "/opt/homebrew/Cellar/pi-coding-agent/0.84.2/libexec/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
+import { createPiJiti } from "../../../../test-helpers.mjs";
 
-const jiti = createJiti(import.meta.url, {
-  alias: {
-    "@earendil-works/pi-coding-agent": "/opt/homebrew/Cellar/pi-coding-agent/0.84.2/libexec/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
-    "@earendil-works/pi-tui": "/opt/homebrew/Cellar/pi-coding-agent/0.84.2/libexec/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/index.js",
-  },
-});
+const jiti = await createPiJiti(import.meta.url);
 const extension = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 
 const ctrlT = "\x14";
