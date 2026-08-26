@@ -14,7 +14,7 @@ A custom Pi extension still runs on the host. Gondolin does not isolate extensio
 
 A normal launch uses this sequence:
 
-1. The launcher finds trusted QEMU and the real Pi binary from one canonical safe PATH.
+1. The launcher finds trusted QEMU and the real Pi binary from one canonical safe PATH. Its filtered child-facing PATH puts the installed Pi directory first, so nested Pi processes do not re-enter the wrapper.
 2. One trusted Node preflight discovers and validates the repository scope.
 3. The preflight begins or joins one controller and starts the read-only preferred-model cache probe. Its startup descriptor contains only expected workspace identity and private paths; it contains no controller token, lease, generation, or VM identity.
 4. The launcher creates a private handshake directory, disables native Pi built-ins, and starts one normal host Pi process while a cold controller verifies the complete pinned image, creates the policy, starts the VM, and checks guest Docker.
@@ -384,6 +384,8 @@ pi --yolo [args...]
 ```
 
 The launcher removes `--yolo` and starts the real Pi binary directly. It skips controller, image, settings, and environment checks.
+
+Yolo preserves the unfiltered host environment and every host PATH entry, but prepends the installed Pi directory to PATH. A child Pi process, including a subagent that launches the command name `pi`, therefore reaches the installed binary directly instead of re-entering the sandbox wrapper.
 
 The command prints a warning. Host tools and credentials are then available to model-directed operations.
 

@@ -169,6 +169,10 @@ if [[ "\$*" == *"--list-models"* && "\$*" == *"--no-extensions"* ]]; then
     fi
     exit 0
 fi
+if [[ "\$*" == *"--nested-pi-probe"* ]]; then
+    printf 'nested_pi_resolution=%s\n' "\$(command -v pi || printf absent)"
+    exec pi --nested-pi-child
+fi
 printf 'session\n' >>"$REAL_PI_LOG"
 if [[ "\$*" == *"--list-models"* ]]; then
     printf 'list_args='; printf '<%s>' "\$@"; printf '\\n'
@@ -496,7 +500,9 @@ grep -F 'cannot find the installed Pi binary' "$TEST_ROOT/no-pi.out" >/dev/null
 # the controller.
 rm -f "$MODEL_SCOPE_CACHE"
 : >"$REAL_PI_LOG"
-yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" TMPDIR="$TEST_ROOT/host-tmp" SECRET_SHOULD_NOT_LEAK=host-secret "$WRAPPER" --yolo --tools read --flag "two words")"
+yolo_stderr="$TEST_ROOT/yolo.err"
+yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" TMPDIR="$TEST_ROOT/host-tmp" SECRET_SHOULD_NOT_LEAK=host-secret "$WRAPPER" --yolo --tools read --flag "two words" 2>"$yolo_stderr")"
+grep -F 'pi: warning: sandbox disabled by --yolo' "$yolo_stderr" >/dev/null
 grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE><--tools><read><--flag><two words>" <<<"$yolo_output" >/dev/null
 [[ "$(grep -c '^session$' "$REAL_PI_LOG")" -eq 1 ]]
 [[ "$(grep -c '^metadata$' "$REAL_PI_LOG")" -eq 1 ]]
@@ -512,5 +518,17 @@ grep -F "args=<--models><$EXPECTED_CLAUDE_SCOPE>" <<<"$yolo_output" >/dev/null
 # An explicit yolo scope remains authoritative, as it does in normal mode.
 yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" "$WRAPPER" --yolo --models openai-codex/gpt-5.6-sol --tools read)"
 grep -F 'args=<--models><openai-codex/gpt-5.6-sol><--tools><read>' <<<"$yolo_output" >/dev/null
+
+# A subagent-style `spawn("pi", ...)` inherits yolo's host environment. The
+# installed Pi must take PATH precedence so the child cannot re-enter this
+# wrapper and start a controller.
+: >"$CLIENT_LOG"
+yolo_output="$(cd "$SHIM_BIN" && HOME="$TEST_HOME" PATH="$SHIM_BIN:$WRAPPER_BIN:$REAL_BIN:$TRUSTED_BIN:$TOOL_PATH" SECRET_SHOULD_NOT_LEAK=nested-host-secret "$WRAPPER" --yolo --nested-pi-probe)"
+grep -F "nested_pi_resolution=$RESOLVED_REAL_BIN/pi" <<<"$yolo_output" >/dev/null
+grep -F "real=$RESOLVED_REAL_BIN/pi" <<<"$yolo_output" >/dev/null
+grep -F 'args=<--nested-pi-child>' <<<"$yolo_output" >/dev/null
+grep -F 'secret=nested-host-secret' <<<"$yolo_output" >/dev/null
+grep -F 'sandbox=unset' <<<"$yolo_output" >/dev/null
+! grep -q '^preflight ' "$CLIENT_LOG"
 
 echo "wrapper tests passed"

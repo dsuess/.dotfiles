@@ -246,6 +246,9 @@ if [[ "$yolo" == true ]]; then
         fi
     fi
     echo "pi: warning: sandbox disabled by --yolo" >&2
+    # Preserve the host environment, but keep child Pi processes from resolving
+    # this wrapper and accidentally re-entering the sandboxed launch path.
+    PATH="${real_pi%/*}:${PATH-}"
     exec "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
 fi
 
