@@ -15,13 +15,23 @@ import {
 } from "@earendil-works/gondolin";
 
 export const GONDOLIN_VERSION = "0.12.0";
-export const IMAGE_SPEC_VERSION = 3;
+export const IMAGE_SPEC_VERSION = 4;
 export const RTK_VERSION = "0.44.0";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(SCRIPT_DIR, "image", "docker.json");
 const INIT_PATH = path.join(SCRIPT_DIR, "image", "docker-init-extra.sh");
 const ROOTFS_DOCKERFILE_PATH = path.join(SCRIPT_DIR, "image", "rootfs.Dockerfile");
+const GONDOLIN_INIT_SCRIPTS_PATH = path.join(
+  SCRIPT_DIR,
+  "node_modules",
+  "@earendil-works",
+  "gondolin",
+  "dist",
+  "src",
+  "alpine",
+  "init-scripts.js",
+);
 const PACKAGE_PATH = path.join(
   SCRIPT_DIR,
   "node_modules",
@@ -74,6 +84,9 @@ export function getImageInputs(arch = getHostImageArch()) {
   const config = readRequired(CONFIG_PATH);
   const init = readRequired(INIT_PATH);
   const rootfsDockerfile = readRequired(ROOTFS_DOCKERFILE_PATH);
+  // The host-side v1 fields require this patched guest parser. Hash it so an
+  // initramfs built before the compatibility patch cannot pass verification.
+  const gondolinInitScripts = readRequired(GONDOLIN_INIT_SCRIPTS_PATH);
   const packageJson = JSON.parse(readRequired(PACKAGE_PATH).toString("utf8"));
   if (packageJson.version !== GONDOLIN_VERSION) {
     throw new Error(
@@ -85,6 +98,7 @@ export function getImageInputs(arch = getHostImageArch()) {
     config: sha256(config),
     init: sha256(init),
     rootfsDockerfile: sha256(rootfsDockerfile),
+    gondolinInitScripts: sha256(gondolinInitScripts),
   });
   const input = Buffer.from(
     JSON.stringify({
@@ -101,6 +115,7 @@ export function getImageInputs(arch = getHostImageArch()) {
     config,
     init,
     rootfsDockerfile,
+    gondolinInitScripts,
     digest: sha256(input),
     inputChecksums,
   };

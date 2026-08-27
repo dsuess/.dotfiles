@@ -80,11 +80,11 @@ async function waitFor(predicate, message, timeoutMs = 10_000) {
 }
 
 test(
-  "two real clients share one QEMU VM and survive cancellation and policy restart",
+  "two real clients share one QEMU VM in a spaced workspace and survive cancellation and policy restart",
   { timeout: 300_000 },
   async (t) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-controller-native-")));
-    const workspace = path.join(root, "workspace");
+    const workspace = path.join(root, "workspace with spaces");
     const runtimeRoot = path.join(root, "runtime");
     const cacheRoot = path.join(root, "cache");
     const settingsPath = path.join(root, "settings.json");
@@ -122,6 +122,7 @@ test(
     assert.equal((await first.client.status()).attachedRoots, 2);
     assert.equal(first.status.dockerHealthy, true);
     assert.equal(first.status.mounts.some((mount) => mount.guestPath === "/var/lib/docker"), false);
+    assert.equal((await guestCommandOutput(first.client, ["/bin/pwd"], workspace)).trim(), workspace);
     const guestListener = first.status.ingress.listeners.find((listener) => listener.name === "guest-http");
     const dockerListener = first.status.ingress.listeners.find((listener) => listener.name === "docker-http");
     assert.equal(first.status.ingress.health, "healthy");

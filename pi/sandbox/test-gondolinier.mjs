@@ -8,6 +8,7 @@ import {
   formatVmInventory,
   getVmInventory,
   inspectHostImageCache,
+  parseHostProcessTable,
   removeStaleImageGenerations,
   runGondolinier,
 } from "./gondolinier.mjs";
@@ -103,13 +104,14 @@ test("gondolinier vm list shows only connectable sessions and maps Pi workspaces
       { id: "bad", pid: 0, alive: true, createdAt: "2026-08-23T10:00:00Z" },
     ],
     manifests: [{ vmId: "pi-vm", workspaceRoot: "/work/project" }],
+    listHostProcesses: () => [],
   });
   assert.deepEqual(inventory, [
-    { id: "other", pid: 11, age: "30s", label: "other-vm", workspace: "-" },
-    { id: "pi-vm", pid: 12, age: "2h", label: "pi:abc", workspace: "/work/project" },
+    { state: "connectable", id: "other", pid: 11, age: "30s", label: "other-vm", workspace: "-" },
+    { state: "connectable", id: "pi-vm", pid: 12, age: "2h", label: "pi:abc", workspace: "/work/project" },
   ]);
-  assert.match(formatVmInventory(inventory), /^VM ID  PID  AGE  LABEL     WORKSPACE/m);
-  assert.match(formatVmInventory(inventory), /pi-vm  12   2h   pi:abc    \/work\/project/);
+  assert.match(formatVmInventory(inventory), /^STATE        VM ID  PID  AGE  LABEL     WORKSPACE/m);
+  assert.match(formatVmInventory(inventory), /connectable  pi-vm  12   2h   pi:abc    \/work\/project/);
 });
 
 test("gondolinier image build forces reusable image assembly without starting a VM", async () => {
@@ -136,13 +138,65 @@ test("gondolinier image build forces reusable image assembly without starting a 
 test("gondolinier vm list reports an empty inventory and command help", async () => {
   const stdout = output();
   const stderr = output();
-  assert.equal(await runGondolinier(["vm", "list"], { stdout, stderr, listSessions: async () => [], manifests: [] }), 0);
-  assert.equal(stdout.value(), "No Gondolin VMs are running.\n");
+  assert.equal(await runGondolinier(["vm", "list"], {
+    stdout,
+    stderr,
+    listSessions: async () => [],
+    manifests: [],
+    listHostProcesses: () => [],
+  }), 0);
+  assert.equal(stdout.value(), "No connectable or orphaned Gondolin QEMUs found.\n");
   assert.equal(stderr.value(), "");
 
   const help = output();
   assert.equal(await runGondolinier(["vm", "--help"], { stdout: help, stderr }), 0);
   assert.equal(help.value(), "Usage: gondolinier vm list\n");
+});
+
+function gondolinQemuCommand(id = "deadbeef") {
+  return [
+    "/opt/homebrew/bin/qemu-system-aarch64",
+    "-chardev socket,id=virtiocon0,path=/tmp/gondolin-virtio-deadbeef.sock,server=off",
+    `-chardev socket,id=virtiofs0,path=/tmp/gondolin-virtio-fs-${id}.sock,server=off`,
+    "-device virtserialport,chardev=virtiofs0,name=virtio-fs,bus=virtio-serial0.0",
+    `-qmp unix:/tmp/gondolin-qmp-${id}.sock,server=on,wait=off`,
+  ].join(" ");
+}
+
+test("gondolinier vm list adds only init-reparented Gondolin QEMU observations", async () => {
+  const inventory = await getVmInventory({
+    now: NOW,
+    listSessions: async () => [{ id: "managed", pid: 101, alive: true, createdAt: "2026-08-23T11:00:00Z" }],
+    manifests: [{ vmId: "managed", workspaceRoot: "/work/managed" }],
+    listHostProcesses: () => [
+      { pid: 402, ppid: 1, ageSeconds: 3661, command: gondolinQemuCommand("facefeed") },
+      { pid: 403, ppid: 99, ageSeconds: 10, command: gondolinQemuCommand("badc0ded") },
+      { pid: 404, ppid: 1, ageSeconds: 10, command: gondolinQemuCommand("11111111").replace(" -qmp", "") },
+      { pid: 101, ppid: 1, ageSeconds: 10, command: gondolinQemuCommand("22222222") },
+      { pid: 405, ppid: 1, ageSeconds: 10, command: "/usr/bin/qemu-system-aarch64 -m 1G" },
+      "malformed process output",
+      { pid: 406, ppid: 1, ageSeconds: 10, command: gondolinQemuCommand("33333333") },
+      { pid: 407, ppid: 1, ageSeconds: 10, command: gondolinQemuCommand("44444444") },
+    ],
+    readProcessCwd(pid) {
+      if (pid === 402) return "/Users/dsuess/src/Video Upscale";
+      if (pid === 406) return null;
+      return undefined;
+    },
+  });
+  assert.deepEqual(inventory, [
+    { state: "connectable", id: "managed", pid: 101, age: "1h", label: "-", workspace: "/work/managed" },
+    { state: "orphaned-qemu", id: "-", pid: 402, age: "1h", label: "-", workspace: "/Users/dsuess/src/Video Upscale" },
+    { state: "orphaned-qemu", id: "-", pid: 407, age: "10s", label: "-", workspace: "-" },
+  ]);
+  assert.match(formatVmInventory(inventory), /orphaned-qemu\s+-\s+402\s+1h/);
+});
+
+test("host process parsing preserves commands with spaces and ignores malformed rows", () => {
+  assert.deepEqual(
+    parseHostProcessTable(`  402     1 01:01:01 ${gondolinQemuCommand("facefeed")}\ninvalid\n`),
+    [{ pid: 402, ppid: 1, ageSeconds: 3661, command: gondolinQemuCommand("facefeed") }],
+  );
 });
 
 test("host image inventory classifies current, live, stale, malformed, symlink, and hard-link entries", async () => {

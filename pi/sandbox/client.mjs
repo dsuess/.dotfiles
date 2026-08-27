@@ -615,7 +615,33 @@ function spawnController(scope, paths, options) {
   return child;
 }
 
-export async function waitForManifest(paths, scope, child, timeoutMs, signal) {
+function anotherControllerIsStarting(paths, scope, startupPid) {
+  try {
+    const stat = fs.statSync(paths.lockPath);
+    const uid = process.getuid?.() ?? null;
+    if ((stat.mode & 0o077) !== 0 || (uid !== null && stat.uid !== uid)) return false;
+    const lock = JSON.parse(fs.readFileSync(paths.lockPath, "utf8"));
+    return lock && Object.keys(lock).length === 2 && lock.workspaceKey === scope.workspaceKey &&
+      Number.isSafeInteger(lock.pid) && lock.pid > 0 && lock.pid !== startupPid && pidIsAlive(lock.pid);
+  } catch {
+    return false;
+  }
+}
+
+function controllerStartupFailure(paths, startupPid) {
+  let detail = "";
+  try {
+    detail = fs.readFileSync(paths.logPath, "utf8").slice(-4096).trim();
+  } catch {
+    // The log is best-effort diagnostics only.
+  }
+  return clientError(
+    "controller_start_failed",
+    `controller process ${startupPid} exited before publishing a manifest${detail ? `: ${detail}` : ""}`,
+  );
+}
+
+export async function waitForManifest(paths, scope, startupPid, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
@@ -631,17 +657,13 @@ export async function waitForManifest(paths, scope, child, timeoutMs, signal) {
     } catch (error) {
       lastError = error;
     }
-    if (child?.exitCode !== null && child?.exitCode !== undefined && child.exitCode !== 0) {
-      let detail = "";
-      try {
-        detail = fs.readFileSync(paths.logPath, "utf8").slice(-4096).trim();
-      } catch {
-        // The log is best-effort diagnostics only.
-      }
-      throw clientError(
-        "controller_start_failed",
-        `controller exited with ${child.exitCode}${detail ? `: ${detail}` : ""}`,
-      );
+    // startupPid is present only in the validated descriptor emitted by the
+    // root process that spawned this cold controller. A warm/shared startup
+    // has no PID. Concurrent cold starts can race before the daemon lock is
+    // visible; if another private, live lock owns this workspace, join it.
+    if (Number.isSafeInteger(startupPid) && startupPid > 0 && !pidIsAlive(startupPid) &&
+        !anotherControllerIsStarting(paths, scope, startupPid)) {
+      throw controllerStartupFailure(paths, startupPid);
     }
     await sleep(50, signal);
   }
@@ -736,7 +758,7 @@ export async function acquireControllerLease(options = {}) {
   const startup = options.startup ?? await beginControllerStartup(options);
   const { scope, paths } = validateStartupDescriptor(startup);
   const manifest = await waitForManifest(
-    paths, scope, null, options.startTimeoutMs ?? START_TIMEOUT_MS, options.signal,
+    paths, scope, startup.startupPid, options.startTimeoutMs ?? START_TIMEOUT_MS, options.signal,
   );
   if (options.signal?.aborted) throw abortError();
   const acquired = await ControllerClient.acquire(manifest, { 

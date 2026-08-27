@@ -11,6 +11,7 @@ import {
   ensureGondolinImage,
   extractDebianKernel,
   getDebianKernelPackage,
+  getImageInputs,
 } from "./build-gondolin-image.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -22,7 +23,12 @@ function inputs(arch = "aarch64") {
     init: Buffer.from("init"),
     rootfsDockerfile: Buffer.from("Dockerfile"),
     digest: "a".repeat(64),
-    inputChecksums: { config: "b".repeat(64), init: "c".repeat(64), rootfsDockerfile: "d".repeat(64) },
+    inputChecksums: {
+      config: "b".repeat(64),
+      init: "c".repeat(64),
+      rootfsDockerfile: "d".repeat(64),
+      gondolinInitScripts: "e".repeat(64),
+    },
   };
 }
 
@@ -69,6 +75,27 @@ function makeHarness(t, options = {}) {
     loadAssetManifest: () => manifest,
   };
 }
+
+test("patched Gondolin guest init source is an image-generation input", () => {
+  const initScriptsPath = path.join(
+    import.meta.dirname,
+    "node_modules",
+    "@earendil-works",
+    "gondolin",
+    "dist/src/alpine/init-scripts.js",
+  );
+  const original = fs.readFileSync(initScriptsPath);
+  const before = getImageInputs();
+  assert.equal(before.inputChecksums.gondolinInitScripts.length, 64);
+  try {
+    fs.writeFileSync(initScriptsPath, Buffer.concat([original, Buffer.from("\n// test input mutation\n")]));
+    const after = getImageInputs();
+    assert.notEqual(after.inputChecksums.gondolinInitScripts, before.inputChecksums.gondolinInitScripts);
+    assert.notEqual(after.digest, before.digest);
+  } finally {
+    fs.writeFileSync(initScriptsPath, original);
+  }
+});
 
 test("Debian kernel packages and Docker rootfs platforms match both supported architectures", () => {
   assert.deepEqual(getDebianKernelPackage("aarch64"), { architecture: "arm64", package: "linux-image-arm64" });

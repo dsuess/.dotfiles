@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -20,7 +21,7 @@ const USAGE = `Usage:
 
 Commands:
   image build   Force-build and verify the Debian/glibc Gondolin image.
-  vm list       List connectable Gondolin VMs.
+  vm list       List connectable Gondolin VMs and orphaned QEMU observations.
   storage list  Show reclaimable Docker storage and stale host VM image cache.
   storage purge Preview and remove reclaimable Docker storage and stale host VM images.`;
 
@@ -432,27 +433,118 @@ export function readLiveControllerManifests(options = {}) {
   return manifests;
 }
 
+function parseElapsedAge(value) {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(value);
+  if (!match) return null;
+  const [, days = "0", hours = "0", minutes, seconds] = match;
+  const total = Number(days) * 86400 + Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  return Number.isSafeInteger(total) ? total : null;
+}
+
+function formatElapsedAge(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+export function parseHostProcessTable(output) {
+  return String(output).split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
+    if (!match) return [];
+    const [, pid, ppid, elapsed, command] = match;
+    const ageSeconds = parseElapsedAge(elapsed);
+    const numericPid = Number(pid);
+    const numericParentPid = Number(ppid);
+    if (!Number.isSafeInteger(numericPid) || numericPid < 1 || !Number.isSafeInteger(numericParentPid) || ageSeconds === null) {
+      return [];
+    }
+    return [{ pid: numericPid, ppid: numericParentPid, ageSeconds, command }];
+  });
+}
+
+function readHostProcessTable() {
+  const psPath = process.platform === "darwin" ? "/bin/ps" : process.platform === "linux" ? "/usr/bin/ps" : null;
+  if (!psPath) return [];
+  try {
+    return parseHostProcessTable(execFileSync(psPath, ["-ww", "-axo", "pid=,ppid=,etime=,command="], { encoding: "utf8" }));
+  } catch {
+    return [];
+  }
+}
+
+function readHostProcessCwd(pid) {
+  if (process.platform === "linux") {
+    try {
+      const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      return path.isAbsolute(cwd) ? cwd : undefined;
+    } catch (error) {
+      return error?.code === "ENOENT" ? null : undefined;
+    }
+  }
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const output = execFileSync("/usr/sbin/lsof", ["-a", "-d", "cwd", "-p", String(pid), "-Fn"], { encoding: "utf8" });
+    const cwd = output.split(/\r?\n/).find((line) => line.startsWith("n"))?.slice(1);
+    return cwd && path.isAbsolute(cwd) ? cwd : undefined;
+  } catch (error) {
+    return error?.code === "ENOENT" ? null : undefined;
+  }
+}
+
+export function isOrphanedGondolinQemu(processInfo, ownedPids) {
+  if (!processInfo || processInfo.ppid !== 1 || ownedPids.has(processInfo.pid)) return false;
+  const command = processInfo.command;
+  if (typeof command !== "string") return false;
+  return /(?:^|\s)(?:\S*\/)?qemu-system-(?:aarch64|x86_64)(?:\s|$)/.test(command)
+    && /-chardev\s+socket,id=virtiofs0,path=\/tmp\/gondolin-virtio-fs-[0-9a-f]{8}\.sock,server=off(?:\s|$)/.test(command)
+    && /-device\s+virtserialport,chardev=virtiofs0,name=virtio-fs,bus=virtio-serial0\.0(?:\s|$)/.test(command)
+    && /-qmp\s+unix:\/tmp\/gondolin-qmp-[0-9a-f]{8}\.sock,server=on,wait=off(?:\s|$)/.test(command);
+}
+
+function getOrphanedQemuInventory(sessions, options) {
+  const ownedPids = new Set(sessions.filter(isLiveSession).map((session) => session.pid));
+  const processes = options.listHostProcesses ? options.listHostProcesses() : readHostProcessTable();
+  const readCwd = options.readProcessCwd ?? readHostProcessCwd;
+  return processes.flatMap((processInfo) => {
+    if (!isOrphanedGondolinQemu(processInfo, ownedPids)) return [];
+    const workspace = readCwd(processInfo.pid);
+    // A vanished process is not an observation we can safely report.
+    if (workspace === null) return [];
+    return [{
+      state: "orphaned-qemu",
+      id: "-",
+      pid: processInfo.pid,
+      age: formatElapsedAge(processInfo.ageSeconds),
+      label: "-",
+      workspace: workspace ?? "-",
+    }];
+  });
+}
+
 export async function getVmInventory(options = {}) {
   const sessions = await (options.listSessions ?? listSessions)();
   const manifests = options.manifests ?? readLiveControllerManifests(options);
   const workspaceByVmId = new Map(manifests.map((manifest) => [manifest.vmId, manifest.workspaceRoot]));
   const now = options.now ?? Date.now();
-  return sessions
+  const connectable = sessions
     .filter(isLiveSession)
     .map((session) => ({
+      state: "connectable",
       id: session.id,
       pid: session.pid,
       age: formatAge(session.createdAt, now),
       label: session.label ?? "-",
       workspace: workspaceByVmId.get(session.id) ?? "-",
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    }));
+  return [...connectable, ...getOrphanedQemuInventory(sessions, options)]
+    .sort((left, right) => left.state.localeCompare(right.state) || left.id.localeCompare(right.id) || left.pid - right.pid);
 }
 
 export function formatVmInventory(inventory) {
-  if (inventory.length === 0) return "No Gondolin VMs are running.";
-  const headers = ["VM ID", "PID", "AGE", "LABEL", "WORKSPACE"];
-  const rows = inventory.map((entry) => [entry.id, String(entry.pid), entry.age, entry.label, entry.workspace]);
+  if (inventory.length === 0) return "No connectable or orphaned Gondolin QEMUs found.";
+  const headers = ["STATE", "VM ID", "PID", "AGE", "LABEL", "WORKSPACE"];
+  const rows = inventory.map((entry) => [entry.state, entry.id, String(entry.pid), entry.age, entry.label, entry.workspace]);
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...rows.map((row) => row[index].length)),
   );

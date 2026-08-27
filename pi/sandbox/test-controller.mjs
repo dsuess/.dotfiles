@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   WorkspaceController,
 } from "./controller.mjs";
 import { IngressManager } from "./ingress.mjs";
+import { PROTOCOL_VERSION } from "./protocol.mjs";
 
 const GENERATION_A = "a".repeat(64);
 const GENERATION_B = "b".repeat(64);
@@ -447,6 +449,57 @@ test("controller startup forwards the configured rootfs size only through its al
   assert.equal(env.PI_GONDOLIN_MEMORY, "4G");
   assert.equal(env.UNRELATED_SECRET, undefined);
   assert.equal(env.PI_GONDOLIN_RUNTIME_DIR, "/runtime");
+});
+
+test("startup wait preserves warm manifests and reports a dead detached controller log immediately", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-controller-startup-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const workspacePath = path.join(root, "workspace");
+  fs.mkdirSync(workspacePath);
+  const workspace = fs.realpathSync(workspacePath);
+  const paths = {
+    socketPath: path.join(root, "controller.sock"),
+    manifestPath: path.join(root, "controller.json"),
+    logPath: path.join(root, "controller.log"),
+  };
+  const scope = { workspaceKey: WORKSPACE_KEY, canonicalWorkspaceRoot: workspace };
+  const server = net.createServer((socket) => socket.destroy());
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(paths.socketPath, resolve);
+  });
+  fs.chmodSync(paths.socketPath, 0o700);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  fs.writeFileSync(paths.manifestPath, `${JSON.stringify({
+    version: 1,
+    protocolVersion: PROTOCOL_VERSION,
+    pid: process.pid,
+    uid: process.getuid?.() ?? null,
+    workspaceKey: WORKSPACE_KEY,
+    workspaceRoot: workspace,
+    bareCommonDirectory: null,
+    socketPath: paths.socketPath,
+    controllerToken: CONTROLLER_TOKEN,
+    policyGeneration: GENERATION_A,
+    imageGeneration: "e".repeat(64),
+    vmId: "warm-controller",
+    dockerHealthy: true,
+  })}\n`, { mode: 0o600 });
+  fs.chmodSync(paths.manifestPath, 0o600);
+  const warm = await clientInternals.waitForManifest(paths, scope, null, 1_000);
+  assert.equal(warm.pid, process.pid);
+
+  fs.unlinkSync(paths.manifestPath);
+  fs.writeFileSync(paths.logPath, "missing verified Gondolin image generation\n", { mode: 0o600 });
+  const child = spawn(process.execPath, ["-e", "process.exit(23)"], { stdio: "ignore" });
+  await new Promise((resolve) => child.once("exit", resolve));
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => clientInternals.waitForManifest(paths, scope, child.pid, 10_000),
+    (error) => error?.code === "controller_start_failed" &&
+      /missing verified Gondolin image generation/.test(error.message),
+  );
+  assert.ok(Date.now() - startedAt < 1_000, "dead detached startup waited for the normal timeout");
 });
 
 test("host code caches are private and use fixed private paths", (t) => {

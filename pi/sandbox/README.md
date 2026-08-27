@@ -231,7 +231,9 @@ The exact Gondolin version is `0.12.0`. The rootfs Dockerfile installs the archi
 
 The image contains Bash, certificates, Git/OpenSSH, ripgrep/fd, Node/npm, Python, UV, direct RTK, GCC plus glibc/Python/Linux development headers, Docker/Buildx/Compose, iptables, e2fsprogs, `gcloud`, and `direnv`. It also contains system Chromium and DejaVu/Liberation fonts. System Chromium is a baseline; repositories can still install their Playwright release's matching Chromium into the persistent guest cache.
 
-The image input digest covers the architecture, Gondolin settings and init script, the reviewed rootfs Dockerfile (including its base-image digest and standalone-tool checksums), and Gondolin version.
+The image input digest covers the architecture, Gondolin settings and init script, the reviewed rootfs Dockerfile (including its base-image digest and standalone-tool checksums), and Gondolin version. It also covers the patched Gondolin guest init source.
+
+Pi sends sandbox mount paths with versioned base64url boot fields. This preserves spaces, commas, percent signs, and other path bytes. The guest decodes the fields before it creates mounts. Existing Gondolin boot fields remain valid for compatibility. A changed parser creates a new image generation.
 
 Built images use this path:
 
@@ -296,7 +298,11 @@ gondolinier storage purge
 
 `gondolinier image build` force-builds the local Docker OCI rootfs, imports it into Gondolin, verifies the checksum-addressed result, and removes the temporary Docker tag. It never starts a controller or VM.
 
-`gondolinier vm list` reports connectable Gondolin VMs and identifies a Pi workspace when its validated controller manifest is available.
+`gondolinier vm list` has a `STATE` column. A `connectable` row comes from a live Gondolin session. Pi maps this row to a workspace only from a validated controller manifest.
+
+An `orphaned-qemu` row is an informational process observation. It identifies a QEMU process only when its Gondolin virtio, QMP, and sandboxfs markers match, its parent is init, and no live session owns its PID. The row has no VM ID or session label. It shows `-` when the process workspace is not available. You cannot attach to, stop, reset, or purge this process with `gondolinier`.
+
+An orphaned QEMU is outside the managed controller lifecycle. It is not an additional shared VM. One controller and one managed VM still serve each canonical workspace.
 
 `gondolinier storage list` shows two storage classes without starting a controller or VM:
 
@@ -347,7 +353,7 @@ The installer runs this dependency command:
 npm ci --omit=dev --ignore-scripts
 ```
 
-Then it builds a missing image or verifies the current image. A missing prerequisite stops the installation with an error.
+Then it applies the reviewed Gondolin compatibility patches. It builds a missing image or verifies the current image. A missing prerequisite stops the installation with an error.
 
 macOS ARM64 has full native verification. Run the same native suite before you claim support for a Linux host.
 
@@ -397,7 +403,7 @@ For every Pi change, run the complete gate from an ordinary terminal or a `pi --
 npm --prefix pi run check
 ```
 
-It runs maintained extension and package checks, deterministic Gondolin unit/wrapper tests, then native QEMU, Docker, routed-tool, production-inventory, Ketch, and live-network canaries. It stops at the first failed suite. It resolves the installed Pi package through `PI_PACKAGE_ROOT` or Homebrew's stable `opt` path; non-Homebrew environments must set `PI_PACKAGE_ROOT`.
+It runs maintained extension and package checks, deterministic Gondolin unit/wrapper tests, then a host-only installed-launcher canary before every image-building native suite. That canary invokes the absolute Stow-installed `~/bin/pi` in RPC mode from a disposable non-Git workspace, verifies a routed guest `pwd` without a model prompt or saved session, and checks root-lease release on stdin close. It then runs the native QEMU, Docker, routed-tool, production-inventory, Ketch, and live-network canaries. It stops at the first failed suite. It resolves the installed Pi package through `PI_PACKAGE_ROOT` or Homebrew's stable `opt` path; non-Homebrew environments must set `PI_PACKAGE_ROOT`.
 
 Use the deterministic-only phase during development:
 
