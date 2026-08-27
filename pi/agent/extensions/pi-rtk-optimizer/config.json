@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "mode": "rewrite",
-  "guardWhenRtkMissing": true,
+  "guardWhenRtkMissing": false,
   "showRewriteNotifications": false,
   "outputCompaction": {
     "enabled": true,

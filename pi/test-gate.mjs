@@ -25,6 +25,7 @@ const deterministic = [
   ["plan-mode", "npm", ["--prefix", "agent/extensions/plan-mode", "run", "check"]],
   ["fzf-file-picker", "npm", ["--prefix", "agent/extensions/fzf-file-picker", "run", "check"]],
   ["git-tree-checkpoints", "npm", ["--prefix", "agent/extensions/git-tree-checkpoints", "run", "check"]],
+  ["RTK stale prompt guard", "node", ["--test", "agent/extensions/pi-rtk-optimizer/stale-status.test.mjs"]],
   ["subagent", "node", ["--test", "agent/extensions/subagent/test/extension.test.mjs", "agent/extensions/subagent/test/runtime.test.mjs", "agent/extensions/subagent/test/tui-smoke.mjs", "agent/extensions/subagent/test/smoke-load.mjs"]],
   ["statusbar context", "node", ["--import", jitiRegister, "--test", "agent/extensions/statusbar-context.test.ts"]],
   ["usage", "node", ["--import", jitiRegister, "--test", "agent/extensions/usage/test/usage.test.ts"]],
