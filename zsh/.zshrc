@@ -125,9 +125,9 @@ bindkey '^O' fzf-home-file-widget
 unalias z 2>/dev/null
 z() {
   if [[ $# -eq 0 ]]; then
-    cd "$(_z -l 2>&1 | fzf +s --tac | sed 's/^[0-9,.]* *//')"
+    cd "$(zshz -l 2>&1 | fzf +s --tac | sed 's/^[0-9,.]* *//')"
   else
-    _z "$@" 2>&1 || cd "$(_z -l 2>&1 | fzf -q "$*" +s --tac | sed 's/^[0-9,.]* *//')"
+    zshz "$@" 2>&1 || cd "$(zshz -l 2>&1 | fzf -q "$*" +s --tac | sed 's/^[0-9,.]* *//')"
   fi
 }
 
