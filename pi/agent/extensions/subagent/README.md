@@ -45,7 +45,7 @@ Adjacent live activities with the same kind and action are coalesced before prog
 
 ## Visual roles
 
-The below-editor row infers one fixed presentation role from the delegated prompt, with this precedence:
+The below-editor row first accepts a leading, standalone directive of the form `[PI SUBAGENT ROLE: worker]`, where the role is one of `reviewer`, `planner`, `worker`, `scout`, or `general`. Malformed, unknown, inline, and non-leading directives are ignored. Without a valid directive, it infers one fixed presentation role from the delegated prompt with this precedence:
 
 1. `🧪 reviewer` — review, audit, critique, assess, verify, validate
 2. `🗺️ planner` — plan, design, architect, roadmap, strategy
@@ -53,6 +53,6 @@ The below-editor row infers one fixed presentation role from the delegated promp
 4. `🔎 scout` — inspect, investigate, explore, search, find, research, analyze, locate
 5. `🤖 general` — no matching word
 
-Matching is case-insensitive and word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The active row displays role, ordinal, and the provider-qualified selected model before the whitespace-normalized task, so terminal-width truncation shortens the task first. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
+Directive and fallback matching are case-insensitive; fallback keyword matching is word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The active row displays role, ordinal, and the provider-qualified selected model before the whitespace-normalized task, so terminal-width truncation shortens the task first. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
 
 Role icons appear only in the below-editor active-run row. Conversation tool-call and activity lines are plain text, while running, completed, failed, and cancelled result headers retain their status icons.

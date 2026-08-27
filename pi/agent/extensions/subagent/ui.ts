@@ -49,11 +49,18 @@ const ROLE_RULES: ReadonlyArray<{ role: SubagentRole; terms: readonly string[] }
 ];
 
 const GENERAL_ROLE: SubagentRole = { name: "general", emoji: "🤖" };
+const EXPLICIT_ROLE_DIRECTIVE = /^[ \t]*\[PI SUBAGENT ROLE: (reviewer|planner|worker|scout|general)\][ \t]*(?:\r?\n|$)/i;
 const COLLAPSED_ACTIVITY_LIMIT = 5;
 const EXPANDED_ACTIVITY_LIMIT = 50;
 
 export function inferRole(prompt: string): SubagentRole {
 	const text = typeof prompt === "string" ? prompt : "";
+	const explicitRole = EXPLICIT_ROLE_DIRECTIVE.exec(text)?.[1]?.toLowerCase();
+	if (explicitRole) {
+		const matchingRole = ROLE_RULES.find(({ role }) => role.name === explicitRole)?.role
+			?? (GENERAL_ROLE.name === explicitRole ? GENERAL_ROLE : undefined);
+		if (matchingRole) return { ...matchingRole };
+	}
 	for (const rule of ROLE_RULES) {
 		const pattern = new RegExp(`\\b(?:${rule.terms.join("|")})\\b`, "i");
 		if (pattern.test(text)) return { ...rule.role };

@@ -24,6 +24,10 @@ const roleCases = [
 	["Please investigate the failing test", "scout", "🔎"],
 	["Summarize the supplied notes", "general", "🤖"],
 	["Preview the supplied notes", "general", "🤖"],
+	["[PI SUBAGENT ROLE: worker]\nImplement the approved plan", "worker", "🔨"],
+	["[PI SUBAGENT ROLE: unknown]\nImplement the approved plan", "planner", "🗺️"],
+	["Implement the approved plan\n[PI SUBAGENT ROLE: worker]", "planner", "🗺️"],
+	["[PI SUBAGENT ROLE: worker] Implement the approved plan", "planner", "🗺️"],
 ];
 for (const [prompt, name, emoji] of roleCases) {
 	assert.deepEqual(uiModule.inferRole(prompt), { name, emoji });

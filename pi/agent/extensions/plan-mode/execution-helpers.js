@@ -59,7 +59,8 @@ export function buildParallelWorkerPrompt(contract, state, stage) {
 		const item = state.ledger?.[id];
 		return `- Part ${id}: ${item?.status ?? "unknown"}${item?.evidence ? ` — ${item.evidence}` : item?.note ? ` — ${item.note}` : ""}`;
 	});
-	return `[PARALLEL PLAN WORKER]
+	return `[PI SUBAGENT ROLE: worker]
+[PARALLEL PLAN WORKER]
 Own only optimized Part ${stage.id} (${part?.title ?? stage.description}). Your exclusive mutation boundary is: ${schedule.ownership}.
 Source Part: ${schedule.sourcePartId}. Do not modify unrelated boundaries, do not start another Part, and do not update the parent ledger or call parent workflow tools.
 

@@ -128,6 +128,7 @@ Change only the test boundary. Accept when the regression test passes.
 	};
 	assert.deepEqual(getActiveParallelWave(parallelState).map((stage) => stage.id), ["A", "B"]);
 	const workerPrompt = buildParallelWorkerPrompt(parallelContract, parallelState, parallelState.plan.stages[0]);
+	assert.match(workerPrompt, /^\[PI SUBAGENT ROLE: worker\]\n\[PARALLEL PLAN WORKER\]/);
 	assert.match(workerPrompt, /Own only optimized Part A/);
 	assert.match(workerPrompt, /implementation boundary/);
 	assert.match(workerPrompt, /shared context/);
