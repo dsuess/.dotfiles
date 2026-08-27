@@ -44,6 +44,8 @@ description = "Allow edits only in the active workspace root; allow installed CL
 
 [permissions.cwd-only.filesystem.":workspace_roots"]
 "." = "write"
+# Git creates index and reference locks in the active workspace's metadata.
+".git" = "write"
 
 [permissions.cwd-only.network]
 enabled = true
