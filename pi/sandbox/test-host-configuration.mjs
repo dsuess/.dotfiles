@@ -3,18 +3,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { discoverGitConfigOrigins, findCanonicalExecutable, resolveGitHubToken, resolveHostReadManifest, sanitizedFixedEnvironment, validateAdditionalHostPath } from "./host-configuration.mjs";
+import { discoverGitConfigOrigins, findCanonicalExecutable, resolveGitHubToken, resolveHostReadManifest, resolveUserToolRuntime, sanitizedFixedEnvironment, validateAdditionalHostPath } from "./host-configuration.mjs";
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-host-config-"))), home = path.join(root, "home"), tools = path.join(root, "tools"), workspace = path.join(root, "workspace");
-  for (const dir of [home, tools, workspace, path.join(home, ".config/gh"), path.join(home, ".config/uv"), path.join(home, ".ssh"), path.join(home, ".pi")]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [home, tools, workspace, path.join(home, ".config/gh"), path.join(home, ".config/uv"), path.join(home, ".ssh"), path.join(home, ".pi"), path.join(home, ".local/bin"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials")]) fs.mkdirSync(dir, { recursive: true });
   for (const file of [".zshrc", ".gitconfig", ".config/gh/hosts.yml", ".config/uv/uv.toml", ".ssh/config", ".ssh/id_ed25519"]) fs.writeFileSync(path.join(home, file), "safe\n");
   const gh = path.join(tools, "gh"); fs.writeFileSync(gh, "#!/bin/sh\n"); fs.chmodSync(gh, 0o755); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return { home, tools, workspace, gh };
 }
 test("exposes reviewed configuration but not GH credential storage or private keys", (t) => {
   const item = fixture(t), manifest = resolveHostReadManifest({ home: item.home, toolRoots: [item.tools] });
   assert(manifest.files.includes(path.join(item.home, ".ssh/config"))); assert(!manifest.files.includes(path.join(item.home, ".ssh/id_ed25519"))); assert(!manifest.files.includes(path.join(item.home, ".config/gh/hosts.yml"))); assert.equal(findCanonicalExecutable("gh", [item.tools]), item.gh);
+  assert.deepEqual(resolveUserToolRuntime({ home: item.home }), {
+    bin: path.join(item.home, ".local/bin"), toolDir: path.join(item.home, ".local/share/uv/tools"), pythonInstallDir: path.join(item.home, ".local/share/uv/python"),
+  });
+  for (const root of [".local/bin", ".local/share/uv/tools", ".local/share/uv/python"]) assert(manifest.roots.includes(path.join(item.home, root)), root);
+  assert(!manifest.roots.includes(path.join(item.home, ".local"))); assert(!manifest.roots.includes(path.join(item.home, ".local/share/uv/credentials")));
   assert.throws(() => validateAdditionalHostPath(item.home, "ro", { home: item.home, workspaceRoot: item.workspace }), /overlaps|non-grantable/);
+  assert.throws(() => validateAdditionalHostPath(path.join(item.home, ".local/share/uv/credentials"), "ro", { home: item.home, workspaceRoot: item.workspace }), /non-grantable/);
 });
 test("uses one fixed host gh call and never applies token masking", async () => {
   const token = "github_pat_abcdefghijklmnopqrstuvwxyz0123456789"; let seen;

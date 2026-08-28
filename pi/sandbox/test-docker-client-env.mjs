@@ -15,6 +15,9 @@ test("materializes an empty Docker config with only reviewed Buildx and Compose 
   const tools = resolveDockerClientTools({ roots: [brew] });
   const environment = materializeDockerClientEnvironment(path.join(root, "generation"), tools);
   assert.equal(fs.readFileSync(path.join(environment.config, "config.json"), "utf8"), "{}\n");
+  assert.equal(environment.path, path.join(root, "generation", "docker-bin"));
+  assert.equal(environment.docker, path.join(environment.path, "docker"));
+  assert.equal(fs.realpathSync(environment.docker), tools.docker);
   assert.equal(fs.realpathSync(path.join(environment.pluginDirectory, "docker-buildx")), tools.plugins.buildx);
   assert.equal(fs.realpathSync(path.join(environment.pluginDirectory, "docker-compose")), tools.plugins.compose);
   assert.deepEqual(fs.readdirSync(environment.pluginDirectory).sort(), ["docker-buildx", "docker-compose"]);

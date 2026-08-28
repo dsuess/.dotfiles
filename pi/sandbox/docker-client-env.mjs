@@ -27,17 +27,21 @@ export function resolveDockerClientTools(options = {}) {
 
 /** Create a per-generation Docker config with exactly the approved plugins. */
 export function materializeDockerClientEnvironment(root, tools) {
+  const clientDirectory = path.join(root, "docker-bin");
+  const docker = path.join(clientDirectory, "docker");
   const config = path.join(root, "docker-config");
   const pluginDirectory = path.join(config, "cli-plugins");
+  fs.mkdirSync(clientDirectory, { recursive: true, mode: 0o700 });
   fs.mkdirSync(pluginDirectory, { recursive: true, mode: 0o700 });
-  fs.chmodSync(config, 0o700); fs.chmodSync(pluginDirectory, 0o700);
+  fs.chmodSync(clientDirectory, 0o700); fs.chmodSync(config, 0o700); fs.chmodSync(pluginDirectory, 0o700);
+  fs.rmSync(docker, { force: true }); fs.symlinkSync(tools.docker, docker);
   fs.writeFileSync(path.join(config, "config.json"), "{}\n", { mode: 0o600 });
   for (const [name, source] of Object.entries(tools.plugins)) {
     const target = path.join(pluginDirectory, `docker-${name}`);
     fs.rmSync(target, { force: true }); fs.symlinkSync(source, target);
   }
   return Object.freeze({
-    config, pluginDirectory, path: path.dirname(tools.docker), docker: tools.docker,
-    files: Object.freeze([tools.docker, ...Object.values(tools.plugins), config, pluginDirectory, path.join(config, "config.json"), ...Object.keys(tools.plugins).map((name) => path.join(pluginDirectory, `docker-${name}`))]),
+    config, pluginDirectory, path: clientDirectory, docker,
+    files: Object.freeze([docker, tools.docker, ...Object.values(tools.plugins), config, pluginDirectory, path.join(config, "config.json"), ...Object.keys(tools.plugins).map((name) => path.join(pluginDirectory, `docker-${name}`))]),
   });
 }

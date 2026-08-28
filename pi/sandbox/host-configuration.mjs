@@ -6,8 +6,8 @@ import path from "node:path";
 
 const execFile = promisify(execFileCallback);
 const TOKEN_ENV_NAMES = /^(?:GH_TOKEN|GITHUB_TOKEN|GIT_ASKPASS|SSH_AUTH_SOCK|DOCKER_|SBX_|AWS_|AZURE_|GOOGLE_|PI_)/;
-const FORBIDDEN_PATH_PARTS = new Set([".pi", ".codex", ".sbx", "Library/Application Support/com.docker.sandboxes"]);
-const DEFAULT_TOOL_ROOTS = ["/opt/homebrew", "/usr/local", path.join(os.homedir(), "bin"), path.join(os.homedir(), ".local")];
+const FORBIDDEN_PATH_PARTS = new Set([".pi", ".codex", ".sbx", ".local/share/uv/credentials", "Library/Application Support/com.docker.sandboxes"]);
+const USER_TOOL_ROOTS = [".local/bin", ".local/share/uv/tools", ".local/share/uv/python"];
 const DEFAULT_EXECUTABLE_ROOTS = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), "bin"), path.join(os.homedir(), ".local/bin")];
 const DEFAULT_SHELL_FILES = [".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile"];
 
@@ -50,6 +50,12 @@ export function sanitizedFixedEnvironment(environment = process.env) {
  * Resolve only controller-reviewed, non-secret host configuration. Every result
  * is a real canonical path; callers hand these exact paths to the SRT policy.
  */
+export function resolveUserToolRuntime(options = {}) {
+  const home = fs.realpathSync(options.home ?? os.homedir());
+  const [bin, toolDir, pythonInstallDir] = USER_TOOL_ROOTS.map((item) => realDirectory(path.join(home, item)));
+  return { bin, toolDir, pythonInstallDir };
+}
+
 export function resolveHostReadManifest(options = {}) {
   const home = fs.realpathSync(options.home ?? os.homedir());
   const dotfilesRoot = realDirectory(options.dotfilesRoot ?? path.join(home, ".dotfiles"));
@@ -64,7 +70,7 @@ export function resolveHostReadManifest(options = {}) {
   for (const candidate of options.gitConfigOrigins ?? []) addFile(files, candidate, home);
   for (const candidate of options.signingMaterial ?? []) addFile(files, candidate, home);
   if (dotfilesRoot) roots.add(dotfilesRoot);
-  for (const candidate of [...DEFAULT_TOOL_ROOTS, ...(options.toolRoots ?? [])]) {
+  for (const candidate of ["/opt/homebrew", "/usr/local", path.join(home, "bin"), ...USER_TOOL_ROOTS.map((item) => path.join(home, item)), ...(options.toolRoots ?? [])]) {
     const resolved = realDirectory(candidate);
     if (resolved && !isForbidden(resolved, home)) roots.add(resolved);
   }

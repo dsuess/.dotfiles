@@ -11,6 +11,7 @@ import { applySrtWorkspaceWritePatch } from "./apply-srt-workspace-write-patch.m
 import { buildSrtPolicy } from "./srt-policy.mjs";
 import { WorkspaceDockerSidecar } from "./docker-sidecar.mjs";
 import { materializeDockerClientEnvironment, resolveDockerClientTools } from "./docker-client-env.mjs";
+import { resolveHostReadManifest, resolveUserToolRuntime } from "./host-configuration.mjs";
 import { atomicJson, manifestFor, validateDescriptor } from "./capability.mjs";
 import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamEvent, validateRequest } from "./protocol.mjs";
 
@@ -29,11 +30,23 @@ for (const directory of [generationRoot, toolHomeRoot, path.join(toolHomeRoot, "
 const helper = path.join(generationRoot, "operation-helper.mjs");
 fs.rmSync(helper, { force: true });
 fs.copyFileSync(sourceHelper, helper); fs.chmodSync(helper, 0o500);
+const hostHome = os.homedir();
+const generatedHome = path.join(toolHomeRoot, "home");
+const serenaConfiguration = path.join(hostHome, ".serena", "serena_config.yml");
+try {
+  if (fs.statSync(serenaConfiguration).isFile()) {
+    const generatedSerenaDirectory = path.join(generatedHome, ".serena");
+    fs.mkdirSync(generatedSerenaDirectory, { recursive: true, mode: 0o700 });
+    fs.copyFileSync(serenaConfiguration, path.join(generatedSerenaDirectory, "serena_config.yml"));
+  }
+} catch (error) { if (error?.code !== "ENOENT") throw error; }
+const hostReadManifest = resolveHostReadManifest({ home: hostHome });
+const userToolRuntime = resolveUserToolRuntime({ home: hostHome });
 const dockerClient = materializeDockerClientEnvironment(generationRoot, resolveDockerClientTools());
 applySrtWorkspaceWritePatch();
 const sidecar = new WorkspaceDockerSidecar({ workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, runtimeRoot: descriptor.runtimeRoot, brokerRoot: descriptor.brokerRoot });
 await sidecar.startBroker(); // Sidecar creation stays lazy: bridge() calls ensure on first Docker use.
-const policy = buildSrtPolicy({ home: os.homedir(), workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest: descriptor.hostReadManifest, grants: [] });
+const policy = buildSrtPolicy({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest, grants: [] });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -46,7 +59,7 @@ function boundedEnvironment(overrides = {}) {
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
-  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: path.join(toolHomeRoot, "home"), TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:/usr/local/bin:/usr/bin:/bin`, DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
+  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: generatedHome, TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:${process.env.PATH ?? ""}`, ...(userToolRuntime.bin ? { UV_TOOL_BIN_DIR: userToolRuntime.bin } : {}), ...(userToolRuntime.toolDir ? { UV_TOOL_DIR: userToolRuntime.toolDir } : {}), ...(userToolRuntime.pythonInstallDir ? { UV_PYTHON_INSTALL_DIR: userToolRuntime.pythonInstallDir } : {}), DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
 }
 function removeOperation(id, child) { if (active.get(id)?.child === child) { active.delete(id); operationCount -= 1; } }
 async function terminate(operation) {

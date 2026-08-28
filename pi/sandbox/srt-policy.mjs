@@ -34,8 +34,18 @@ function assertGrant(pathname, home, workspace, controllerRoot) {
   if (within(pathname, home)) {
     const first = path.relative(home, pathname).split(path.sep)[0];
     if (FORBIDDEN_HOME.has(first)) throw new Error("grant overlaps credential root");
+    const local = path.join(home, ".local");
+    const uvCredentials = path.join(local, "share", "uv", "credentials");
+    if (pathname === local || within(pathname, uvCredentials) || within(uvCredentials, pathname)) throw new Error("grant overlaps user-tool credential root");
   }
   if (within(pathname, workspace) || within(workspace, pathname)) throw new Error("additional grant overlaps workspace");
+}
+function assertHostReadRoot(pathname, home) {
+  const local = path.join(home, ".local");
+  const uvCredentials = path.join(local, "share", "uv", "credentials");
+  if (pathname === local || within(pathname, uvCredentials) || within(uvCredentials, pathname)) {
+    throw new Error("host read root overlaps user-tool credential root");
+  }
 }
 
 /** Immutable, controller-derived SRT policy. Controller state is never writable. */
@@ -55,7 +65,11 @@ export function buildSrtPolicy(options) {
   const writes = new Set([...workspaceAliases, ...commonAliases, ...generatedRoots]);
   if (stagedHelper) reads.add(stagedHelper);
   for (const file of options.hostReadManifest?.files ?? []) reads.add(existing(file, "host read file"));
-  for (const root of options.hostReadManifest?.roots ?? []) reads.add(directory(root, "host read root"));
+  for (const root of options.hostReadManifest?.roots ?? []) {
+    const resolved = directory(root, "host read root");
+    assertHostReadRoot(resolved, home);
+    reads.add(resolved);
+  }
   for (const grant of options.grants ?? []) {
     const resolved = existing(grant.path, "filesystem grant");
     assertGrant(resolved, home, workspaceRoot, controllerRoot);
@@ -84,4 +98,4 @@ export function buildSrtPolicy(options) {
   };
   return Object.freeze({ ...policy, workspaceRoot, bareCommonDirectory: common, controllerRoot, dockerSocket, generation: createHash("sha256").update(JSON.stringify(policy)).digest("hex") });
 }
-export const srtPolicyInternals = Object.freeze({ within, assertGrant, aliases });
+export const srtPolicyInternals = Object.freeze({ within, assertGrant, assertHostReadRoot, aliases });

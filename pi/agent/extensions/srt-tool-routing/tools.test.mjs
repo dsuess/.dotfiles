@@ -160,6 +160,7 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
     env: {
       TERM: "xterm-256color",
       LANG: "en_US.UTF-8",
+      PATH: "/model-selected-path",
       PI_SESSION_ID: "secret-session",
       GENERIC_SECRET_TOKEN: "secret-generic",
       OPENAI_API_KEY: "secret-provider",
@@ -168,8 +169,9 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
     },
   });
   const call = client.execCalls[0];
-  assert.deepEqual(call.argv, ["/bin/bash", "-lc", "rtk git status"]);
+  assert.deepEqual(call.argv, ["/bin/bash", "-c", "rtk git status"]);
   assert.equal(call.options.env.TERM, "xterm-256color");
+  assert.equal(call.options.env.PATH, "/model-selected-path");
   assert.equal(call.options.env.PI_SESSION_ID, "secret-session");
   assert.equal(call.options.env.GENERIC_SECRET_TOKEN, "secret-generic");
   assert.equal(call.options.env.OPENAI_API_KEY, "secret-provider");
@@ -183,6 +185,7 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
     GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
     LC_TIME: "C",
   });
+  assert.equal(sanitizeGuestEnvironment(undefined).PATH, undefined, "the extension does not construct a guest PATH");
   assert.equal(sanitized.GITHUB_TOKEN, "secret");
   assert.equal(sanitized.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(sanitized.LC_TIME, "C");

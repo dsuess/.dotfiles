@@ -13,7 +13,7 @@ if (command === "preflight") {
   const startup = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
   const { client } = await acquireControllerLease({ startup, clientId: `pi-print-${process.pid}` });
   try {
-    const result = await client.exec(["/bin/bash", "-lc", commandText], {
+    const result = await client.exec(["/bin/bash", "-c", commandText], {
       cwd, env: {}, timeoutMs: 60 * 60 * 1000, maxOutputBytes: 16 * 1024 * 1024,
       onEvent: (_stream, data) => process.stdout.write(data),
     });

@@ -157,7 +157,6 @@ const CONTROL_ENVIRONMENT = /^(?:PI_SRT_|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_|SB
 
 const FIXED_GUEST_ENV = Object.freeze({
   HOME: "/root",
-  PATH: "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
   TMPDIR: "/tmp",
   XDG_CACHE_HOME: "/root/.cache",
   NPM_CONFIG_CACHE: "/root/.npm",
@@ -181,7 +180,7 @@ export function createSandboxBashOperations(getClient: GetSandboxClient): BashOp
       if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout > 3600)) {
         throw new Error("Sandbox Bash timeout must be between 1 and 3600 seconds");
       }
-      const result = await getClient().exec(["/bin/bash", "-lc", command], {
+      const result = await getClient().exec(["/bin/bash", "-c", command], {
         cwd,
         env: sanitizeGuestEnvironment(env),
         timeoutMs: timeout ? Math.ceil(timeout * 1000) : 60 * 60 * 1000,
