@@ -1,8 +1,8 @@
 approval_policy = "never"
 default_permissions = "cwd-only"
-model = "gpt-5.6-terra"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
-plan_mode_reasoning_effort = "xhigh"
+plan_mode_reasoning_effort = "high"
 hide_agent_reasoning = true
 service_tier = "default"
 
@@ -79,6 +79,12 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/dsuess/Library/Mobile Documents/iCloud~md~obsidian/Documents/notes"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/src/visonic/ad20-polishing"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/src/Video Upscale"]
 trust_level = "trusted"
 
 [tui]
