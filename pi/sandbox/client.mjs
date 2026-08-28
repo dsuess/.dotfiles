@@ -11,7 +11,7 @@ import { encodeFrame, FrameDecoder, makeRequest, validateResponse } from "./prot
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const controller = path.join(HERE, "controller.mjs");
-const sourceFiles = [controller, path.join(HERE, "operation-helper.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs")];
+const sourceFiles = [controller, path.join(HERE, "operation-helper.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs")];
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);
@@ -58,6 +58,7 @@ export class ControllerClient {
   async readFile(filePath, options = {}) { const result = (await this.request("fs.readFile", { path: filePath, offset: options.offset ?? 0, limit: options.limit ?? 524288, policyGeneration: this.policyGeneration })).result; return { data: Buffer.from(result.data, "base64"), truncated: result.truncated }; }
   async writeFile(filePath, data) { return (await this.request("fs.writeFile", { path: filePath, data: Buffer.from(data).toString("base64"), policyGeneration: this.policyGeneration })).result; }
   async exec(argv, options) { await this.ready; if (options.signal?.aborted) throw Object.assign(new Error("operation cancelled"), { code: "cancelled" }); const requestId = this.sequence + 1; const abort = () => { void this.request("cancel", { requestId }).catch(() => {}); }; options.signal?.addEventListener("abort", abort, { once: true }); try { const answer = await this.request("exec", { argv, cwd: options.cwd, env: options.env ?? {}, timeoutMs: options.timeoutMs ?? 3600000, maxOutputBytes: options.maxOutputBytes ?? 16777216, policyGeneration: this.policyGeneration }); for (const [stream, data] of answer.events) options.onEvent?.(stream, data); return answer.result; } finally { options.signal?.removeEventListener("abort", abort); } }
+  async resetDocker() { return (await this.request("docker.reset", { policyGeneration: this.policyGeneration })).result; }
   async release() { try { await this.request("lease.release", {}); } finally { this.destroy(); } }
   destroy() { this.socket.destroy(); }
 }

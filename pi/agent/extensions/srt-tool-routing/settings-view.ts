@@ -24,8 +24,6 @@ import {
 interface SettingsClient {
   status(): Promise<any>;
   reload(expectedPolicyGeneration?: string): Promise<any>;
-  restart(): Promise<any>;
-  resetDocker(): Promise<any>;
 }
 
 interface SettingsAction {
@@ -192,8 +190,6 @@ function buildItems(settings: SandboxSettings, status: any): SettingItem[] {
   }
   items.push(
     { id: "mount-add", label: "Add external mount", currentValue: "none", values: ["none", "add…"] },
-    { id: "restart", label: "Restart controller", currentValue: "ready", values: ["ready", "restart"] },
-    { id: "docker-reset", label: "Reset sidecar and clear Docker", currentValue: "keep", values: ["keep", "replace…"] },
   );
   return items;
 }
@@ -205,7 +201,7 @@ async function chooseAction(
 ): Promise<SettingsAction | null> {
   return ctx.ui.custom<SettingsAction | null>((_tui, theme, _keybindings, done) => {
     const container = new Container();
-    container.addChild(new Text(theme.fg("accent", theme.bold("SRT tool routing sandbox")), 1, 1));
+    container.addChild(new Text(theme.fg("accent", theme.bold("SRT tool routing sandbox (use pi-sbx for Docker disk management)")), 1, 1));
     const items = buildItems(settings, status);
     const list = new SettingsList(
       items,
@@ -248,22 +244,6 @@ export async function showSandboxSettings(
     if (["status", "workspace", "bare-common", "generations"].includes(action.id)) continue;
 
     try {
-      if (action.id === "restart" && action.value === "restart") {
-        emitLifecycle({ ...lifecycleFromStatus(status), health: "restarting", pendingRestart: true });
-        emitLifecycle(lifecycleFromStatus(await client.restart()));
-        continue;
-      }
-      if (action.id === "docker-reset" && action.value === "replace…") {
-        const confirmed = await ctx.ui.confirm(
-          "Reset owned sidecar?",
-          "This removes the owned Docker sidecar. Its Docker images, containers, volumes, and build cache will be deleted.",
-        );
-        if (!confirmed) continue;
-        emitLifecycle({ ...lifecycleFromStatus(status), health: "restarting", pendingRestart: true });
-        emitLifecycle(lifecycleFromStatus(await client.resetDocker()));
-        continue;
-      }
-
       const next = structuredClone(settings);
       if (action.id === "network-mode") {
         next.network.mode = action.value as SandboxSettings["network"]["mode"];

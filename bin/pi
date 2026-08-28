@@ -70,6 +70,23 @@ done
 startup="$(node "$CONTROLLER_CLIENT" preflight --launch-dir "$(pwd -P)" --pi "$real_pi")" || fail "controller preflight failed"
 [[ "$startup" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "controller returned an invalid capability descriptor"
 
+# In print mode only, a whole prompt beginning with ! is a direct SRT Bash
+# operation. It deliberately bypasses the model, but never the controller.
+print_prompt=""
+json_or_rpc=false
+for ((index=0; index < ${#pi_args[@]}; index++)); do
+  case "${pi_args[index]}" in
+    --json|--rpc) json_or_rpc=true ;;
+    -p|--print) index=$((index + 1)); print_prompt="${pi_args[index]-}" ;;
+  esac
+done
+if [[ "$json_or_rpc" == false && "$print_prompt" == \!* ]]; then
+  bang_command="${print_prompt#\!}"
+  [[ "$bang_command" == \!* ]] && bang_command="${bang_command#\!}"
+  [[ -n "$bang_command" ]] || fail "leading ! requires a command"
+  exec node "$CONTROLLER_CLIENT" bash "$startup" "$(pwd -P)" "$bang_command"
+fi
+
 # Pi must remain the foreground process for interactive terminal ownership.
 # The extension keeps the core-tool inventory empty until its own readiness
 # gate completes, so this foreground handoff cannot expose host built-ins.

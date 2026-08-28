@@ -50,7 +50,8 @@ export function buildSrtPolicy(options) {
   const commonAliases = common ? aliases(common) : [];
   const stagedHelper = options.stagedHelper ? existing(options.stagedHelper, "staged helper") : null;
   const generatedRoots = (options.generatedRoots ?? []).map((item) => directory(item, "generated tool directory"));
-  const reads = new Set([...workspaceAliases, ...commonAliases, ...TOOL_ROOTS, ...generatedRoots]);
+  const toolFiles = (options.toolFiles ?? []).map((item) => existing(item, "reviewed Docker client file"));
+  const reads = new Set([...workspaceAliases, ...commonAliases, ...TOOL_ROOTS, ...generatedRoots, ...toolFiles]);
   const writes = new Set([...workspaceAliases, ...commonAliases, ...generatedRoots]);
   if (stagedHelper) reads.add(stagedHelper);
   for (const file of options.hostReadManifest?.files ?? []) reads.add(existing(file, "host read file"));

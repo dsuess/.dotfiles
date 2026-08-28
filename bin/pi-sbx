@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+import process from "node:process";
+import {
+  confirm, dockerUsage, inventory, reset, stop, validatedSidecarForDirectory,
+} from "../pi/sandbox/sidecar-management.mjs";
+
+const [command = "list", ...args] = process.argv.slice(2);
+const force = args.includes("--force");
+const target = args.find((arg) => arg !== "--force");
+function usage() {
+  console.error("Usage: pi-sbx <list|status|stop|reset|prune> [workspace] [--force]");
+  process.exitCode = 2;
+}
+try {
+  if (["-h", "--help", "help"].includes(command)) usage();
+  else if (command === "list") {
+    for (const entry of await inventory()) console.log(`${entry.metadata.name}\t${entry.metadata.workspaceRoot}\t${entry.inspect.id}`);
+  } else if (command === "prune") {
+    const entries = await inventory();
+    await confirm("Prune stopped Pi sidecars", `${entries.length} validated sidecar(s)`, force);
+    for (const entry of entries) {
+      if (entry.inspect.status === "stopped" || entry.inspect.state === "stopped") { await reset(entry); console.log(`removed ${entry.metadata.name}`); }
+    }
+  } else if (["status", "stop", "reset"].includes(command)) {
+    const entry = target?.startsWith("pi-srt-")
+      ? (await inventory()).find((candidate) => candidate.metadata.name === target)
+      : await validatedSidecarForDirectory(target ?? process.cwd());
+    if (!entry) throw new Error("no validated Pi Docker sidecar matches the requested name");
+    if (command === "status") {
+      console.log(`Name: ${entry.metadata.name}\nWorkspace: ${entry.metadata.workspaceRoot}\nID: ${entry.metadata.id}`);
+      console.log(await dockerUsage(entry));
+    } else if (command === "stop") {
+      await confirm("Stop", entry.metadata.name, force); await stop(entry); console.log(`stopped ${entry.metadata.name} (disk state preserved)`);
+    } else {
+      await confirm("Reset (removes images, containers, volumes, and cache for)", entry.metadata.name, force);
+      await reset(entry); console.log(`reset ${entry.metadata.name}`);
+    }
+  } else usage();
+} catch (error) { console.error(`pi-sbx: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }

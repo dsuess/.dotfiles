@@ -10,6 +10,7 @@ import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { applySrtWorkspaceWritePatch } from "./apply-srt-workspace-write-patch.mjs";
 import { buildSrtPolicy } from "./srt-policy.mjs";
 import { WorkspaceDockerSidecar } from "./docker-sidecar.mjs";
+import { materializeDockerClientEnvironment, resolveDockerClientTools } from "./docker-client-env.mjs";
 import { atomicJson, manifestFor, validateDescriptor } from "./capability.mjs";
 import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamEvent, validateRequest } from "./protocol.mjs";
 
@@ -27,10 +28,11 @@ for (const directory of [generationRoot, toolHomeRoot, path.join(toolHomeRoot, "
 const helper = path.join(generationRoot, "operation-helper.mjs");
 fs.rmSync(helper, { force: true });
 fs.copyFileSync(sourceHelper, helper); fs.chmodSync(helper, 0o500);
+const dockerClient = materializeDockerClientEnvironment(generationRoot, resolveDockerClientTools());
 applySrtWorkspaceWritePatch();
 const sidecar = new WorkspaceDockerSidecar({ workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, runtimeRoot: descriptor.runtimeRoot, brokerRoot: descriptor.brokerRoot });
 await sidecar.startBroker(); // Sidecar creation stays lazy: bridge() calls ensure on first Docker use.
-const policy = buildSrtPolicy({ home: os.homedir(), workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache")], hostReadManifest: descriptor.hostReadManifest, grants: [] });
+const policy = buildSrtPolicy({ home: os.homedir(), workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest: descriptor.hostReadManifest, grants: [] });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -43,7 +45,7 @@ function boundedEnvironment(overrides = {}) {
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
-  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: path.join(toolHomeRoot, "home"), TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), DOCKER_HOST: `unix://${descriptor.dockerSocket}`, SSH_AUTH_SOCK: "" };
+  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: path.join(toolHomeRoot, "home"), TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:/usr/local/bin:/usr/bin:/bin`, DOCKER_CONFIG: dockerClient.config, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
 }
 function removeOperation(id, child) { if (active.get(id)?.child === child) { active.delete(id); operationCount -= 1; } }
 async function terminate(operation) {
@@ -92,6 +94,7 @@ async function dispatch(request, socket) {
   if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: leases.size === 0 }; }
   if (request.method === "cancel") return { cancelled: await terminate(active.get(p.requestId)) };
   if (p.policyGeneration !== policy.generation) throw Object.assign(new Error("stale policy generation"), { code: "stale_generation" });
+  if (request.method === "docker.reset") { await sidecar.reset(); return { reset: true }; }
   if (request.method === "exec") return spawnSandbox({ ...p, requestId: request.id, socket });
   const map = { "fs.access": "access", "fs.mkdir": "mkdir", "fs.listDir": "listDir", "fs.stat": "stat", "fs.rename": "rename", "fs.readFile": "readFile", "fs.writeFile": "writeFile", "fs.deleteFile": "deleteFile" };
   const operation = map[request.method]; if (!operation) throw Object.assign(new Error("unsupported controller operation"), { code: "unknown_method" });

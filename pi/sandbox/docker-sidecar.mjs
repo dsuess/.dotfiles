@@ -33,7 +33,7 @@ function safeWorkspaceName(workspaceKey) {
 function ownershipDigest(record) {
   return createHash("sha256").update(JSON.stringify({
     workspaceKey: record.workspaceKey, workspaceRoot: record.workspaceRoot, bareCommonDirectory: record.bareCommonDirectory,
-    name: record.name, template: record.template, cpus: record.cpus, memory: record.memory, dockerVolume: record.dockerVolume,
+    name: record.name, template: record.template, cpus: record.cpus, memory: record.memory,
   })).digest("hex");
 }
 
@@ -65,7 +65,6 @@ export class WorkspaceDockerSidecar {
     this.name = safeWorkspaceName(this.workspaceKey);
     this.cpus = options.cpus ?? 2;
     this.memory = String(options.memory ?? "4g").toLowerCase();
-    this.dockerVolume = options.dockerVolume ?? "10g";
     this.template = options.template ?? REVIEWED_SHELL_TEMPLATE;
     this.sbx = options.sbx ?? ((args) => runPiSbx(args, options.sbxOptions));
     this.preflight = options.preflight ?? (() => preflightPiApp(options.sbxOptions));
@@ -74,12 +73,13 @@ export class WorkspaceDockerSidecar {
     this.socketPath = path.join(this.brokerRoot, "docker.sock");
     this.server = null;
     this.ready = null;
+    this.bridges = new Set();
   }
 
   expected() {
     return {
       workspaceKey: this.workspaceKey, workspaceRoot: this.workspaceRoot, bareCommonDirectory: this.bareCommonDirectory,
-      name: this.name, template: this.template, cpus: this.cpus, memory: this.memory, dockerVolume: this.dockerVolume,
+      name: this.name, template: this.template, cpus: this.cpus, memory: this.memory,
     };
   }
 
@@ -143,21 +143,29 @@ export class WorkspaceDockerSidecar {
       const child = this.spawn("/opt/homebrew/bin/sbx", piSbxArgs(["exec", "-i", this.name, "docker", "system", "dial-stdio"]), {
         cwd: this.workspaceRoot, env: fixedSpawnEnvironment(), stdio: ["pipe", "pipe", "pipe"],
       });
-      let stderr = "";
+      const bridge = { client, child }; this.bridges.add(bridge);
+      let stderr = ""; let settled = false;
+      const cleanup = () => { if (!settled) { settled = true; this.bridges.delete(bridge); } };
       child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-MAX_STDERR_BYTES); });
+      // pipe() preserves client FIN as stdin EOF, which Docker needs for request bodies.
       client.pipe(child.stdin); child.stdout.pipe(client);
-      const close = () => { client.destroy(); child.kill("SIGTERM"); };
-      client.once("error", close); client.once("close", () => child.stdin.end());
-      child.once("error", close);
+      const terminate = () => { if (!child.killed) child.kill("SIGTERM"); };
+      client.once("error", terminate);
+      client.once("close", () => { child.stdin.end(); terminate(); });
+      child.once("error", (error) => { if (!client.destroyed) client.destroy(error); cleanup(); });
       child.once("close", (code) => {
-        if (code !== 0 && !client.destroyed) client.destroy(new Error(`private Docker bridge exited (${code}): ${stderr}`));
+        if (code !== 0 && !client.destroyed) client.destroy(new Error(`private Docker bridge exited (${code}): ${stderr.replace(/((?:token|password|authorization))=[^\\s]+/gi, "$1=[redacted]")}`));
+        cleanup();
       });
     } catch (error) {
       client.destroy(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
+  activeBridgeCount() { return this.bridges.size; }
+
   async reset() {
+    if (this.bridges.size > 0) throw new Error("refusing to reset while Docker bridge traffic is active");
     const inspected = await this.inspect();
     if (!inspected) throw new Error("refusing to reset an unvalidated sidecar");
     const removed = await this.sbx(["rm", "--force", this.name]);
@@ -166,6 +174,8 @@ export class WorkspaceDockerSidecar {
   }
 
   async close() {
+    for (const { client, child } of this.bridges) { client.destroy(); child.kill("SIGTERM"); }
+    this.bridges.clear();
     if (this.server) await new Promise((resolve) => this.server.close(resolve));
     this.server = null; fs.rmSync(this.socketPath, { force: true });
   }
