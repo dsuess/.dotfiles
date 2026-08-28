@@ -29,8 +29,11 @@ find_real_pi() {
   return 1
 }
 
+# `--yolo` was historically consumed by this wrapper. Keep accepting it for
+# invocation compatibility, but never restore its retired host-tool bypass.
+pi_args=()
 for argument in "$@"; do
-  [[ "$argument" != "--yolo" ]] || fail "host-built-in bypasses are not supported"
+  [[ "$argument" == "--yolo" ]] || pi_args+=("$argument")
 done
 
 case "$(uname -s)" in
@@ -45,9 +48,9 @@ real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind
 
 # Informational modes expose no model-directed core tools and must not create
 # controller or sidecar state.
-for argument in "$@"; do
+for argument in ${pi_args[@]+"${pi_args[@]}"}; do
   case "$argument" in
-    -h|--help|--version|--list-models|models|--no-extensions) exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" "$@" ;;
+    -h|--help|--version|--list-models|models|--no-extensions) exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"} ;;
   esac
 done
 
@@ -64,4 +67,4 @@ exec /usr/bin/env \
   PATH="${real_pi%/*}:$PATH" \
   PI_SRT_ROUTING=1 \
   PI_SRT_ROUTING_STARTUP_DESCRIPTOR="$startup" \
-  "$real_pi" --no-builtin-tools "$@"
+  "$real_pi" --no-builtin-tools ${pi_args[@]+"${pi_args[@]}"}
