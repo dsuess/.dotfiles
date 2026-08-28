@@ -7,7 +7,7 @@ import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-age
 import {
   childToolCliArgs,
   splitChildCapabilities,
-} from "../../../extensions/gondolin-sandbox/child-capabilities.js";
+} from "../../../extensions/srt-tool-routing/child-capabilities.js";
 import type {
   DiscussionMessage,
   DiscussionResolution,
@@ -352,8 +352,8 @@ function childEnvironment(
   }
   env[DISCUSSION_CHILD_MARKER] = "1";
   env[DISCUSSION_SYSTEM_PROMPT_PATH] = systemPath;
-  env.PI_GONDOLIN_BUILTIN_TOOLS = builtinTools.join(",");
-  env.PI_GONDOLIN_HOST_TOOLS = hostTools.join(",");
+  env.PI_SRT_ROUTING_BUILTIN_TOOLS = builtinTools.join(",");
+  env.PI_SRT_ROUTING_HOST_TOOLS = hostTools.join(",");
   if (planningMode) env.PI_SUBAGENT_PLANNING = "1";
   else delete env.PI_SUBAGENT_PLANNING;
   return env;

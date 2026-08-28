@@ -1,31 +1,14 @@
 {
-  "name": "pi-gondolin-runtime",
+  "name": "pi-srt-runtime",
   "private": true,
   "version": "1.0.0",
-  "description": "Pinned Gondolin tool-plane runtime for Pi",
+  "description": "Pinned SRT tool-plane runtime for Pi",
   "scripts": {
-    "build:image": "node build-gondolin-image.mjs",
-    "benchmark:startup": "node benchmark-startup.mjs",
-    "test": "npm run test:patch && npm run test:model-scope && npm run test:palette && npm run test:controller && npm run test:image-builder && npm run test:gondolinier && npm run test:extension && npm run test:wrapper && npm run test:repository && npm run test:ketch-config",
-    "test:native": "npm run test:installed-launcher && npm run test:canary && npm run test:controller-native && npm run test:tools-native && npm run test:inventory && npm run test:ketch-live",
-    "test:patch": "node --test test-apply-gondolin-public-tcp-patch.mjs test-apply-gondolin-mount-path-patch.mjs",
-    "test:model-scope": "node --test test-model-scope-cache.mjs",
-    "test:palette": "node --test ../agent/extensions/command-palette-models.test.mjs",
-    "test:controller": "node --test test-policy.mjs test-protocol.mjs test-controller.mjs",
-    "test:image-builder": "node --test test-build-gondolin-image.mjs",
-    "test:gondolinier": "node --test test-gondolinier.mjs",
-    "test:controller-native": "node --test test-controller-integration.mjs",
-    "test:extension": "node --test ../agent/extensions/gondolin-sandbox/*.test.mjs",
-    "test:inventory": "node --test test-gondolin-extension-production.mjs",
-    "test:tools-native": "node --test test-gondolin-tools-native.mjs",
-    "test:installed-launcher": "node --test test-installed-launcher.mjs",
-    "test:canary": "node test-gondolin-canary.mjs",
-    "test:wrapper": "bash test-wrapper.sh",
-    "test:repository": "node --test test-repository-scope.mjs",
-    "test:ketch-config": "bash test-ketch-config.sh",
-    "test:ketch-live": "bash test-ketch-live.sh"
+    "test": "node --test test-*.mjs",
+    "test:native": "node apply-srt-workspace-write-patch.mjs && node srt-compatibility-canary.mjs",
+    "canary:srt": "node apply-srt-workspace-write-patch.mjs && node srt-unix-socket-canary.mjs && node srt-workspace-write-canary.mjs"
   },
   "dependencies": {
-    "@earendil-works/gondolin": "0.12.0"
+    "@anthropic-ai/sandbox-runtime": "0.0.74"
   }
 }

@@ -72,9 +72,9 @@ import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-rev
 const GATED_MODES = new Set(["planning", "approval"]);
 const MAX_INVALID_SUBMISSIONS = 3;
 const MAX_VALIDATION_DETAIL_ROWS = 12;
-const GONDOLIN_VERIFY_TOOLS_EVENT = "gondolin-sandbox:verify-tools";
-const GONDOLIN_BEFORE_USER_BASH_EVENT = "gondolin-sandbox:before-user-bash";
-const GONDOLIN_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+const SRT_ROUTING_VERIFY_TOOLS_EVENT = "srt-tool-routing:verify-tools";
+const SRT_ROUTING_BEFORE_USER_BASH_EVENT = "srt-tool-routing:before-user-bash";
+const SRT_ROUTING_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 function isGated(state: PlanModeState): boolean {
 	return GATED_MODES.has(state.mode);
@@ -248,10 +248,10 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	function verifySandboxToolComposition(stage: string): void {
 		const payload: { stage: string; error?: string } = { stage };
-		pi.events.emit(GONDOLIN_VERIFY_TOOLS_EVENT, payload);
+		pi.events.emit(SRT_ROUTING_VERIFY_TOOLS_EVENT, payload);
 		if (!payload.error) return;
-		pi.setActiveTools(pi.getActiveTools().filter((name) => !GONDOLIN_BUILTINS.has(name)));
-		throw new Error(`Plan mode Gondolin tool verification failed after ${stage}: ${payload.error}`);
+		pi.setActiveTools(pi.getActiveTools().filter((name) => !SRT_ROUTING_BUILTINS.has(name)));
+		throw new Error(`Plan mode SRT tool routing tool verification failed after ${stage}: ${payload.error}`);
 	}
 
 	function applyPlanningGate(): void {
@@ -879,10 +879,10 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		};
 	}
 
-	// The Gondolin user_bash router may load before plan mode. This synchronous
+	// The SRT tool routing user_bash router may load before plan mode. This synchronous
 	// preflight runs the same known-mutator policy before that router can issue an
 	// execution RPC; the ordinary user_bash hook remains fallback coverage.
-	pi.events.on(GONDOLIN_BEFORE_USER_BASH_EVENT, (payload: { command?: string; result?: unknown }) => {
+	pi.events.on(SRT_ROUTING_BEFORE_USER_BASH_EVENT, (payload: { command?: string; result?: unknown }) => {
 		if (typeof payload.command !== "string") return;
 		payload.result = evaluatePlanningUserBash(payload.command);
 	});

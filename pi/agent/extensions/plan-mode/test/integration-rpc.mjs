@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const entrypoint = fileURLToPath(new URL("../index.ts", import.meta.url));
 const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-plan-rpc-"));
 const proc = spawn(process.env.PI_BIN || "pi", [
-	"--yolo", "--no-extensions", "--no-skills", "--no-prompt-templates", "--offline",
+	"--no-extensions", "--no-skills", "--no-prompt-templates", "--offline",
 	"-e", entrypoint, "--mode", "rpc", "--no-session",
 ], {
 	cwd,

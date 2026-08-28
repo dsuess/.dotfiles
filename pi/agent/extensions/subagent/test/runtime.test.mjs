@@ -169,10 +169,10 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	const parentEnv = {
 		PATH: "/bin",
 		PI_SANDBOX_PROFILE: "inherited-profile",
-		PI_GONDOLIN_SANDBOX: "1",
-		PI_GONDOLIN_SOCKET: "/tmp/controller.sock",
-		PI_GONDOLIN_LEASE: "a".repeat(64),
-		PI_GONDOLIN_POLICY_GENERATION: "b".repeat(64),
+		PI_SRT_ROUTING_SANDBOX: "1",
+		PI_SRT_ROUTING_SOCKET: "/tmp/controller.sock",
+		PI_SRT_ROUTING_LEASE: "a".repeat(64),
+		PI_SRT_ROUTING_POLICY_GENERATION: "b".repeat(64),
 		NODE_TEST_CONTEXT: "inherited-test-runner",
 		PI_SESSION_ID: "parent-id",
 		PI_SESSION_FILE: "/parent/session.jsonl",
@@ -225,12 +225,12 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		assert.match(promptSnapshot.text, /parent-session workflow tools/i);
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_CHILD, "1");
 		assert.equal(spawnCall.options.env.PI_SUBAGENT_PLANNING, "1");
-		assert.equal(spawnCall.options.env.PI_GONDOLIN_BUILTIN_TOOLS, "read,bash");
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_BUILTIN_TOOLS, "read,bash");
 		assert.equal(spawnCall.options.env.PI_SANDBOX_PROFILE, "inherited-profile");
-		assert.equal(spawnCall.options.env.PI_GONDOLIN_SANDBOX, "1");
-		assert.equal(spawnCall.options.env.PI_GONDOLIN_SOCKET, "/tmp/controller.sock");
-		assert.equal(spawnCall.options.env.PI_GONDOLIN_LEASE, "a".repeat(64));
-		assert.equal(spawnCall.options.env.PI_GONDOLIN_POLICY_GENERATION, "b".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_SANDBOX, "1");
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_SOCKET, "/tmp/controller.sock");
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_LEASE, "a".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_POLICY_GENERATION, "b".repeat(64));
 		assert.equal(spawnCall.options.env.NODE_TEST_CONTEXT, undefined);
 		for (const name of ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) {
 			assert.equal(spawnCall.options.env[name], undefined, `${name} must not leak from parent`);
@@ -257,8 +257,8 @@ test("passes audited host adapters only through the private post-handshake allow
 	assert.equal(spawnCall.args.includes("--tools"), false);
 	assert.ok(spawnCall.args.includes("--no-builtin-tools"));
 	assert.equal(spawnCall.args.includes("--no-tools"), false);
-	assert.equal(spawnCall.options.env.PI_GONDOLIN_BUILTIN_TOOLS, "read");
-	assert.equal(spawnCall.options.env.PI_GONDOLIN_HOST_TOOLS, "ketch_search");
+	assert.equal(spawnCall.options.env.PI_SRT_ROUTING_BUILTIN_TOOLS, "read");
+	assert.equal(spawnCall.options.env.PI_SRT_ROUTING_HOST_TOOLS, "ketch_search");
 	assert.equal(spawnCall.args.join(" ").includes("unknown_tool"), false);
 });
 

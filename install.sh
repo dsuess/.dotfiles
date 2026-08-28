@@ -194,7 +194,7 @@ cmd_software() {
         brew update
 
         echo "🔧 Installing CLI tools..."
-        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick qemu lz4 e2fsprogs 1broseidon/tap/ketch tuicr herdr switchaudio-osx
+        brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick 1broseidon/tap/ketch tuicr herdr switchaudio-osx
 
         echo "🖥️  Installing GUI apps..."
         for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
@@ -287,54 +287,22 @@ cmd_config() {
         echo "⚠️  npm not found — skipping pi extension npm deps."
     fi
 
-    # Install Gondolin's exact host dependency and build the digest-addressed
-    # guest image only when its reviewed inputs changed. Runtime and image
-    # caches are separate from ordinary package-manager credentials.
+    # SRT prerequisites are intentionally checked before the launcher can be used.
     if ! command -v npm >/dev/null 2>&1 || [[ ! -f ~/.pi/sandbox/package-lock.json ]]; then
-        echo "❌ npm or the Pi Gondolin lockfile is missing — normal pi will fail closed." >&2
+        echo "❌ npm or the Pi SRT runtime lockfile is missing — normal pi will fail closed." >&2
         exit 1
     fi
-    if ! command -v node >/dev/null 2>&1 || ! node -e '
-        const [major, minor] = process.versions.node.split(".").map(Number);
-        process.exit(major > 23 || (major === 23 && minor >= 6) ? 0 : 1);
-    '; then
-        echo "❌ Node.js 23.6 or newer is required for Pi Gondolin." >&2
+    if [[ "$PLATFORM" != "Darwin" ]]; then
+        echo "❌ Pi SRT tool routing currently supports macOS only." >&2
         exit 1
     fi
-    case "$(uname -m)" in
-        arm64|aarch64) gondolin_qemu=qemu-system-aarch64 ;;
-        x86_64|amd64) gondolin_qemu=qemu-system-x86_64 ;;
-        *) echo "❌ Unsupported Gondolin architecture: $(uname -m)" >&2; exit 1 ;;
-    esac
-    for prerequisite in "$gondolin_qemu" cpio lz4 tar; do
-        if ! command -v "$prerequisite" >/dev/null 2>&1; then
-            echo "❌ '$prerequisite' is required to build/run the Pi Gondolin image." >&2
-            echo "   macOS: brew install qemu lz4 e2fsprogs" >&2
-            echo "   Debian/Ubuntu: install the matching qemu-system package plus lz4 cpio e2fsprogs" >&2
-            exit 1
-        fi
-    done
-    gondolin_e2fs_path=""
-    if command -v mke2fs >/dev/null 2>&1; then
-        gondolin_e2fs_path="$(dirname "$(command -v mke2fs)")"
-    elif [[ -x /opt/homebrew/opt/e2fsprogs/sbin/mke2fs ]]; then
-        gondolin_e2fs_path=/opt/homebrew/opt/e2fsprogs/sbin
-    else
-        echo "❌ mke2fs from e2fsprogs is required to build the Pi Gondolin image." >&2
-        exit 1
-    fi
-
-    echo "📦 Installing Pi Gondolin runtime"
-    mkdir -p ~/.cache/pi-gondolin/npm
+    echo "📦 Installing Pi SRT runtime"
+    mkdir -p ~/.cache/pi-srt/npm
     (
         cd ~/.pi/sandbox
-        npm_config_cache=~/.cache/pi-gondolin/npm npm ci --omit=dev --ignore-scripts
-        node apply-gondolin-public-tcp-patch.mjs
-        node apply-gondolin-mount-path-patch.mjs
-        # The normal cache-aware path and `gondolinier image build` both use
-        # ensureGondolinImage(); only a missing or changed image needs Docker.
-        PATH="$gondolin_e2fs_path:$PATH" node build-gondolin-image.mjs --quiet
-        node build-gondolin-image.mjs --verify --quiet
+        npm_config_cache=~/.cache/pi-srt/npm npm ci --omit=dev --ignore-scripts
+        node apply-srt-workspace-write-patch.mjs
+        node srt-compatibility-canary.mjs --preflight-only
     )
 
     if [[ "$PLATFORM" == "Darwin" ]]; then

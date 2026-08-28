@@ -1,627 +1,67 @@
 #!/bin/bash -p
 set -euo pipefail
 
-readonly SANDBOX_DIR="$HOME/.pi/sandbox"
-readonly GONDOLIN_CLIENT="$SANDBOX_DIR/client-cli.mjs"
-readonly GONDOLIN_CONTROLLER="$SANDBOX_DIR/controller.mjs"
-readonly GONDOLIN_EXTENSION="$HOME/.pi/agent/extensions/gondolin-sandbox/index.ts"
-readonly MODEL_SCOPE_CACHE="$SANDBOX_DIR/model-scope-cache.mjs"
-readonly HOST_CODE_CACHE_ROOT="$HOME/.cache/pi-gondolin/host"
-readonly NODE_COMPILE_CACHE_DIR="$HOST_CODE_CACHE_ROOT/node-compile"
-readonly JITI_FS_CACHE_DIR="$HOST_CODE_CACHE_ROOT/jiti"
-MODEL_SCOPE_CACHE_FILE="$HOME/.cache/pi-gondolin/model-scope.json"
-if [[ -n "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" && "${PI_GONDOLIN_BENCHMARK_MODEL_SCOPE_CACHE_FILE-}" == /* ]]; then
-    MODEL_SCOPE_CACHE_FILE="$PI_GONDOLIN_BENCHMARK_MODEL_SCOPE_CACHE_FILE"
-fi
-readonly MODEL_SCOPE_CACHE_FILE
+readonly SRT_ROOT="$HOME/.pi/sandbox"
+readonly ROUTING_EXTENSION="$HOME/.pi/agent/extensions/srt-tool-routing/index.ts"
+readonly CONTROLLER_CLIENT="$SRT_ROOT/client-cli.mjs"
 
-HANDSHAKE_DIR=""
-PI_CHILD_PID=""
-STARTUP_DESCRIPTOR=""
-
-trace_startup() {
-    local phase="$1"
-    local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
-
-    [[ "$trace_file" == /* && "$trace_file" != *$'\n'* && "$trace_file" != *$'\r'* && "$trace_file" != *$'\t'* ]] || return 0
-    local at
-    at="$(/usr/bin/perl -MTime::HiRes -e 'printf "%.0f\n", Time::HiRes::time() * 1000' 2>/dev/null || true)"
-    [[ "$at" =~ ^[0-9]+$ ]] || at="$(( $(/bin/date +%s) * 1000 ))"
-    printf '{"phase":"%s","at":%s}\n' "$phase" "$at" >>"$trace_file" 2>/dev/null || true
-}
-CONTROLLER_WORKSPACE_KEY=""
-CONTROLLER_WORKSPACE_ROOT=""
-
-cleanup_launcher() {
-    [[ -z "$HANDSHAKE_DIR" ]] || /bin/rm -rf -- "$HANDSHAKE_DIR"
-}
-
-forward_signal() {
-    local signal="$1"
-    [[ -n "$PI_CHILD_PID" ]] || return 0
-    kill -"$signal" "$PI_CHILD_PID" 2>/dev/null || true
-}
-
-die() {
-    echo "pi: sandbox initialization failed: $*" >&2
-    exit 1
-}
-
-readonly LAUNCH_DIR="$(builtin pwd -P)"
-
-BOOTSTRAP_EXCLUDED_ROOTS=("$LAUNCH_DIR")
-CANDIDATE_WORKTREE_ROOT=""
-
-path_is_within() {
-    local candidate="$1"
-    local root="$2"
-
-    [[ "$root" == "/" || "$candidate" == "$root" || "$candidate" == "$root/"* ]]
-}
-
-canonical_directory() {
-    local directory="$1"
-
-    (
-        builtin cd -- "$directory" 2>/dev/null || exit 1
-        builtin pwd -P
-    )
-}
-
-add_bootstrap_exclusion() {
-    local root="$1"
-    local existing
-
-    [[ "$root" == /* ]] || return 0
-    for existing in "${BOOTSTRAP_EXCLUDED_ROOTS[@]}"; do
-        [[ "$root" == "$existing" ]] && return 0
-    done
-    BOOTSTRAP_EXCLUDED_ROOTS+=("$root")
-}
-
-# Locate the nearest .git marker without executing Git or anything from the
-# candidate repository. These paths are exclusions only; they do not grant
-# sandbox access until a trusted host Git validates them below.
-discover_bootstrap_exclusions() {
-    local cursor="$LAUNCH_DIR"
-    local dot_git metadata_hint metadata_dir common_hint common_dir
-
-    while :; do
-        dot_git="$cursor/.git"
-        if [[ -e "$dot_git" || -L "$dot_git" ]]; then
-            CANDIDATE_WORKTREE_ROOT="$cursor"
-            add_bootstrap_exclusion "$cursor"
-
-            if [[ -d "$dot_git" ]]; then
-                metadata_dir="$(canonical_directory "$dot_git")" || return 0
-            elif [[ -f "$dot_git" ]]; then
-                IFS= read -r metadata_hint <"$dot_git" || return 0
-                [[ "$metadata_hint" == "gitdir: "* ]] || return 0
-                metadata_hint="${metadata_hint#gitdir: }"
-                [[ -n "$metadata_hint" ]] || return 0
-                if [[ "$metadata_hint" != /* ]]; then
-                    metadata_hint="$cursor/$metadata_hint"
-                fi
-                metadata_dir="$(canonical_directory "$metadata_hint")" || return 0
-            else
-                return 0
-            fi
-            add_bootstrap_exclusion "$metadata_dir"
-
-            if [[ -f "$metadata_dir/commondir" ]]; then
-                IFS= read -r common_hint <"$metadata_dir/commondir" || return 0
-                [[ -n "$common_hint" ]] || return 0
-                if [[ "$common_hint" != /* ]]; then
-                    common_hint="$metadata_dir/$common_hint"
-                fi
-                common_dir="$(canonical_directory "$common_hint")" || return 0
-                add_bootstrap_exclusion "$common_dir"
-            fi
-            return 0
-        fi
-        [[ "$cursor" == "/" ]] && return 0
-        cursor="${cursor%/*}"
-        [[ -n "$cursor" ]] || cursor="/"
-    done
-}
-
-discover_bootstrap_exclusions
-
-bootstrap_path_is_allowed() {
-    local candidate="$1"
-    local excluded
-
-    for excluded in "${BOOTSTRAP_EXCLUDED_ROOTS[@]}"; do
-        path_is_within "$candidate" "$excluded" && return 1
-    done
-    return 0
-}
-
-canonical_executable() {
-    local candidate="$1"
-
-    if [[ -x /usr/bin/realpath ]]; then
-        /usr/bin/realpath "$candidate" 2>/dev/null
-    elif [[ -x /bin/realpath ]]; then
-        /bin/realpath "$candidate" 2>/dev/null
-    elif [[ ! -L "$candidate" ]]; then
-        printf '%s\n' "$candidate"
-    else
-        return 1
-    fi
-}
-
-# Resolve canonical bootstrap directories once, after repository exclusions
-# are known. Every trusted lookup preserves this first-match ordering.
-SAFE_PATH_ENTRIES=()
-raw_path_entries=()
-IFS=: read -r -a raw_path_entries <<<"${PATH-}"
-for entry in "${raw_path_entries[@]}"; do
-    [[ "$entry" == /* ]] || continue
-    resolved_dir="$(canonical_directory "$entry")" || continue
-    bootstrap_path_is_allowed "$resolved_dir" || continue
-    duplicate=false
-    for existing in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
-        [[ "$resolved_dir" == "$existing" ]] && duplicate=true && break
-    done
-    [[ "$duplicate" == true ]] || SAFE_PATH_ENTRIES+=("$resolved_dir")
-done
-readonly SAFE_PATH_ENTRIES
-
-find_host_executable() {
-    local name="$1"
-    local entry candidate resolved_candidate
-
-    for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
-        candidate="$entry/$name"
-        [[ -x "$candidate" && ! -d "$candidate" ]] || continue
-        resolved_candidate="$(canonical_executable "$candidate")" || continue
-        [[ -x "$resolved_candidate" && ! -d "$resolved_candidate" ]] || continue
-        bootstrap_path_is_allowed "$resolved_candidate" || continue
-        printf '%s\n' "$resolved_candidate"
-        return 0
-    done
-
-    return 1
+fail() {
+  printf 'pi: SRT tool routing is unavailable: %s\n' "$*" >&2
+  exit 1
 }
 
 find_real_pi() {
-    local candidate entry resolved_candidate
-
-    for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
-        candidate="$entry/pi"
-        [[ -x "$candidate" ]] || continue
-        resolved_candidate="$(canonical_executable "$candidate")" || continue
-        bootstrap_path_is_allowed "$resolved_candidate" || continue
-        [[ "$resolved_candidate" -ef "${BASH_SOURCE[0]}" ]] && continue
-        printf '%s\n' "$resolved_candidate"
-        return 0
-    done
-
-    return 1
-}
-
-yolo=false
-pi_args=()
-for arg in "$@"; do
-    if [[ "$arg" == --yolo ]]; then
-        yolo=true
-    else
-        pi_args+=("$arg")
-    fi
-done
-
-# Keep the automatic cached scope off for commands where Pi must use its native
-# catalog resolution, and leave an explicit user scope authoritative.
-automatic_model_scope_requested() {
-    local arg
-
-    for arg in "$@"; do
-        case "$arg" in
-            -h|--help|-v|--version|--list-models|--list-models=*|--models|--models=*) return 1 ;;
-        esac
-    done
-    (($#)) && [[ "$1" =~ ^(install|remove|uninstall|update|list|config|auth)$ ]] && return 1
+  local self candidate resolved entry
+  self="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  IFS=: read -r -a entries <<<"${PATH:-}"
+  for entry in "${entries[@]}"; do
+    [[ "$entry" == /* && -x "$entry/pi" ]] || continue
+    candidate="$entry/pi"
+    resolved="$(/usr/bin/realpath "$candidate" 2>/dev/null || /bin/realpath "$candidate" 2>/dev/null || true)"
+    [[ -n "$resolved" && "$resolved" != "$self" ]] || continue
+    # Never trust a Pi executable supplied by the repository being routed.
+    case "$resolved" in
+      "$(pwd -P)"/*|"$HOME/.dotfiles"/*) continue ;;
+    esac
+    printf '%s\n' "$resolved"
     return 0
+  done
+  return 1
 }
 
-if [[ "$yolo" == true ]]; then
-    real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
-    if automatic_model_scope_requested ${pi_args[@]+"${pi_args[@]}"} && [[ -r "$MODEL_SCOPE_CACHE" ]]; then
-        yolo_node="$(find_host_executable node || true)"
-        if [[ -n "$yolo_node" ]]; then
-            scope_models="$(LC_ALL=C "$yolo_node" "$MODEL_SCOPE_CACHE" \
-                --pi "$real_pi" \
-                --settings "$HOME/.pi/agent/settings.json" \
-                --auth "$HOME/.pi/agent/auth.json" \
-                --models "$HOME/.pi/agent/models.json" \
-                --cache "$MODEL_SCOPE_CACHE_FILE")" || scope_models=""
-            if [[ -n "$scope_models" ]]; then
-                if ((${#pi_args[@]})); then
-                    pi_args=(--models "$scope_models" "${pi_args[@]}")
-                else
-                    pi_args=(--models "$scope_models")
-                fi
-            fi
-        fi
-    fi
-    echo "pi: warning: sandbox disabled by --yolo" >&2
-    # Preserve the host environment, but keep child Pi processes from resolving
-    # this wrapper and accidentally re-entering the sandboxed launch path.
-    PATH="${real_pi%/*}:${PATH-}"
-    exec "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
-fi
+for argument in "$@"; do
+  [[ "$argument" != "--yolo" ]] || fail "host-built-in bypasses are not supported"
+done
 
-case "$OSTYPE" in
-    darwin*|linux*) ;;
-    *) die "only macOS and Linux are supported" ;;
+case "$(uname -s)" in
+  Darwin) ;;
+  *) fail "this runtime requires macOS Seatbelt support" ;;
 esac
 
-case "$(uname -m)" in
-    arm64|aarch64) qemu_name="qemu-system-aarch64" ;;
-    x86_64|amd64) qemu_name="qemu-system-x86_64" ;;
-    *) die "unsupported Gondolin architecture: $(uname -m)" ;;
-esac
-host_qemu="$(find_host_executable "$qemu_name")" || die "$qemu_name is required"
-readonly HOST_QEMU="$host_qemu"
+command -v node >/dev/null 2>&1 || fail "Node.js is required"
+[[ -r "$CONTROLLER_CLIENT" ]] || fail "controller client is missing: $CONTROLLER_CLIENT"
+[[ -r "$ROUTING_EXTENSION" ]] || fail "routing extension is missing: $ROUTING_EXTENSION"
+real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind this launcher"
 
-host_node="$(find_host_executable node)" || die "Node.js is required"
-readonly HOST_NODE="$host_node"
-trusted_node() {
-    /usr/bin/env -i \
-        HOME="$HOME" \
-        PATH="${HOST_NODE%/*}:/usr/bin:/bin" \
-        LC_ALL=C \
-        NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" \
-        JITI_FS_CACHE="$JITI_FS_CACHE_DIR" \
-        "$HOST_NODE" "$@"
-}
-# The trusted preflight asserts the Node version and validates repository scope.
-# It is the only normal-launch Node process before Pi starts.
-
-CONTROLLER_PATH="$(IFS=:; printf '%s' "${SAFE_PATH_ENTRIES[*]}")"
-readonly CONTROLLER_PATH
-trusted_controller_node() {
-    /usr/bin/env -i \
-        HOME="$HOME" \
-        PATH="$CONTROLLER_PATH" \
-        TMPDIR="${TMPDIR:-/tmp}" \
-        LC_ALL=C \
-        PI_GONDOLIN_STARTUP_TRACE_FILE="${PI_GONDOLIN_STARTUP_TRACE_FILE-}" \
-        PI_GONDOLIN_ROOTFS_SIZE="${PI_GONDOLIN_ROOTFS_SIZE-}" \
-        NODE_COMPILE_CACHE="$NODE_COMPILE_CACHE_DIR" \
-        JITI_FS_CACHE="$JITI_FS_CACHE_DIR" \
-        "$HOST_NODE" "$@"
-}
-
-[[ -r "$GONDOLIN_CLIENT" ]] || die "Gondolin client is missing: $GONDOLIN_CLIENT"
-[[ -r "$GONDOLIN_CONTROLLER" ]] || die "Gondolin controller is missing: $GONDOLIN_CONTROLLER"
-[[ -r "$GONDOLIN_EXTENSION" ]] || die "Gondolin routing extension is missing: $GONDOLIN_EXTENSION"
-real_pi="$(find_real_pi)" || die "cannot find the installed Pi binary behind this wrapper"
-readonly REAL_PI="$real_pi"
-readonly REAL_PI_DIR="${REAL_PI%/*}"
-
-BUILTIN_TOOL_NAMES=(read write edit bash grep find ls)
-HOST_TOOL_NAMES=(
-    ketch_search ketch_scrape ketch_code ketch_docs ketch_crawl
-    ask_user_question subagent submit_plan plan_progress complete_plan complete_stage
-)
-requested_builtins=()
-requested_hosts=()
-excluded_tools=()
-tools_explicit=false
-no_tools=false
-no_builtin_tools=false
-
-append_unique_tool() {
-    local group="$1" name="$2" existing
-    if [[ "$group" == builtin ]]; then
-        for existing in ${requested_builtins[@]+"${requested_builtins[@]}"}; do [[ "$existing" == "$name" ]] && return 0; done
-        requested_builtins+=("$name")
-    else
-        for existing in ${requested_hosts[@]+"${requested_hosts[@]}"}; do [[ "$existing" == "$name" ]] && return 0; done
-        requested_hosts+=("$name")
-    fi
-}
-
-classify_requested_tool() {
-    local name="$1" candidate
-    [[ -n "$name" ]] || return 0
-    for candidate in "${BUILTIN_TOOL_NAMES[@]}"; do
-        [[ "$candidate" == "$name" ]] && append_unique_tool builtin "$name" && return 0
-    done
-    for candidate in "${HOST_TOOL_NAMES[@]}"; do
-        [[ "$candidate" == "$name" ]] && append_unique_tool host "$name" && return 0
-    done
-    die "tool '$name' is not an audited sandbox tool or host adapter"
-}
-
-parse_requested_tool_list() {
-    local value="$1" name
-    local names=()
-    IFS=, read -r -a names <<<"$value"
-    for name in "${names[@]}"; do classify_requested_tool "$name"; done
-}
-
-parse_excluded_tool_list() {
-    local value="$1" name
-    local names=()
-    IFS=, read -r -a names <<<"$value"
-    for name in "${names[@]}"; do [[ -n "$name" ]] && excluded_tools+=("$name"); done
-}
-
-raw_args=(${pi_args[@]+"${pi_args[@]}"})
-pi_args=()
-index=0
-while (( index < ${#raw_args[@]} )); do
-    arg="${raw_args[$index]}"
-    case "$arg" in
-        --no-extensions|--no-extensions=*)
-            die "--no-extensions is incompatible with sandboxed mode; use --yolo for host built-ins"
-            ;;
-        --tools|-t)
-            ((index += 1))
-            (( index < ${#raw_args[@]} )) || die "$arg requires a comma-separated value"
-            tools_explicit=true
-            parse_requested_tool_list "${raw_args[$index]}"
-            ;;
-        --tools=*|-t=*)
-            tools_explicit=true
-            parse_requested_tool_list "${arg#*=}"
-            ;;
-        --exclude-tools|-xt)
-            ((index += 1))
-            (( index < ${#raw_args[@]} )) || die "$arg requires a comma-separated value"
-            parse_excluded_tool_list "${raw_args[$index]}"
-            ;;
-        --exclude-tools=*|-xt=*) parse_excluded_tool_list "${arg#*=}" ;;
-        --no-tools|-nt) no_tools=true ;;
-        --no-builtin-tools|-nbt) no_builtin_tools=true ;;
-        *) pi_args+=("$arg") ;;
-    esac
-    ((index += 1))
+# Informational modes expose no model-directed core tools and must not create
+# controller or sidecar state.
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help|--version|--models|--list-models|models|--no-extensions) exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" "$@" ;;
+  esac
 done
 
-if [[ "$tools_explicit" == false ]]; then
-    requested_builtins=("${BUILTIN_TOOL_NAMES[@]}")
-    requested_hosts=("${HOST_TOOL_NAMES[@]}")
-fi
-if [[ "$no_tools" == true ]]; then
-    requested_builtins=()
-    requested_hosts=()
-elif [[ "$no_builtin_tools" == true ]]; then
-    requested_builtins=()
-fi
-if ((${#excluded_tools[@]})); then
-    filtered=()
-    for candidate in ${requested_builtins[@]+"${requested_builtins[@]}"}; do
-        excluded=false
-        for name in ${excluded_tools[@]+"${excluded_tools[@]}"}; do [[ "$candidate" == "$name" ]] && excluded=true; done
-        [[ "$excluded" == true ]] || filtered+=("$candidate")
-    done
-    requested_builtins=(${filtered[@]+"${filtered[@]}"})
-    filtered=()
-    for candidate in ${requested_hosts[@]+"${requested_hosts[@]}"}; do
-        excluded=false
-        for name in ${excluded_tools[@]+"${excluded_tools[@]}"}; do [[ "$candidate" == "$name" ]] && excluded=true; done
-        [[ "$excluded" == true ]] || filtered+=("$candidate")
-    done
-    requested_hosts=(${filtered[@]+"${filtered[@]}"})
-fi
-readonly REQUESTED_BUILTINS="$(IFS=,; printf '%s' "${requested_builtins[*]-}")"
-readonly REQUESTED_HOST_TOOLS="$(IFS=,; printf '%s' "${requested_hosts[*]-}")"
-pi_args+=(--no-builtin-tools)
+# The client validates the pinned package and prepares a capability descriptor.
+# Pi itself stays host-native; no model tools are enabled until the extension
+# has attached to the ready controller.
+startup="$(node "$CONTROLLER_CLIENT" preflight --launch-dir "$(pwd -P)" --pi "$real_pi")" || fail "controller preflight failed"
+[[ "$startup" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "controller returned an invalid capability descriptor"
 
-umask 077
-trap cleanup_launcher EXIT
-
-# Put only the real Pi package ahead of the trusted caller PATH. Nested Pi
-# processes inherit the controller capability and do not re-enter this launcher.
-# Preserve first-match resolution after excluding repository paths.
-inner_path_entries=("$REAL_PI_DIR")
-for entry in ${SAFE_PATH_ENTRIES[@]+"${SAFE_PATH_ENTRIES[@]}"}; do
-    [[ "$entry" == "$REAL_PI_DIR" ]] || inner_path_entries+=("$entry")
-done
-readonly inner_path="$(IFS=:; printf '%s' "${inner_path_entries[*]}")"
-
-startup_trace_file=""
-if [[ "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" == /* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\n'* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\r'* && "${PI_GONDOLIN_STARTUP_TRACE_FILE-}" != *$'\t'* ]]; then
-    startup_trace_file="$PI_GONDOLIN_STARTUP_TRACE_FILE"
-fi
-readonly startup_trace_file
-
-preflight_args=(
-    preflight --launch-dir "$LAUNCH_DIR" --pi "$REAL_PI" --settings "$HOME/.pi/agent/settings.json"
-    --auth "$HOME/.pi/agent/auth.json" --models "$HOME/.pi/agent/models.json"
-    --cache "$MODEL_SCOPE_CACHE_FILE" --client-id "launcher-$$"
-)
-automatic_model_scope_requested ${pi_args[@]+"${pi_args[@]}"} && preflight_args+=(--resolve-model-scope)
-trace_startup controller_begin_start
-startup_record="$(trusted_controller_node "$GONDOLIN_CLIENT" "${preflight_args[@]}")" ||
-    die "could not begin the workspace Gondolin controller"
-trace_startup controller_begin_complete
-IFS=$'\t' read -r STARTUP_DESCRIPTOR HANDSHAKE_FILE scope_models <<<"$startup_record" ||
-    die "controller returned an invalid startup record"
-[[ "$STARTUP_DESCRIPTOR" =~ ^[A-Za-z0-9+/=]+$ && "$HANDSHAKE_FILE" == /* &&
-   "$scope_models" != *$'\t'* && "$scope_models" != *$'\n'* ]] ||
-    die "controller returned an invalid startup record"
-descriptor_identity="$(trusted_node -e '
-    const descriptor = JSON.parse(Buffer.from(process.argv[1], "base64").toString("utf8"));
-    if (descriptor?.version !== 1 || !/^[0-9a-f]{64}$/.test(descriptor.workspaceKey) ||
-        typeof descriptor.workspaceRoot !== "string" || !descriptor.workspaceRoot.startsWith("/") ||
-        typeof descriptor.runtimeRoot !== "string" || !descriptor.runtimeRoot.startsWith("/") ||
-        typeof descriptor.socketPath !== "string" || !descriptor.socketPath.startsWith("/") ||
-        typeof descriptor.manifestPath !== "string" || !descriptor.manifestPath.startsWith("/") ||
-        (descriptor.startupPid !== null && descriptor.startupPid !== undefined &&
-          (!Number.isSafeInteger(descriptor.startupPid) || descriptor.startupPid < 1))) process.exit(1);
-    process.stdout.write(`${descriptor.workspaceKey}\t${descriptor.workspaceRoot}\t${descriptor.runtimeRoot}`);
-' "$STARTUP_DESCRIPTOR")" || die "controller returned an invalid startup descriptor"
-IFS=$'\t' read -r CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT CONTROLLER_RUNTIME_ROOT <<<"$descriptor_identity"
-[[ "$HANDSHAKE_FILE" == "$CONTROLLER_RUNTIME_ROOT"/* ]] || die "controller returned an invalid handshake path"
-HANDSHAKE_DIR="${HANDSHAKE_FILE%/*}"
-readonly STARTUP_DESCRIPTOR CONTROLLER_WORKSPACE_KEY CONTROLLER_WORKSPACE_ROOT CONTROLLER_RUNTIME_ROOT
-readonly HANDSHAKE_DIR HANDSHAKE_FILE
-if [[ -n "$scope_models" ]]; then
-    pi_args=(--models "$scope_models" "${pi_args[@]}")
-fi
-
-# Keep ambient cloud, package-manager, SSH, and application credentials out of
-# the host Pi environment. The sole exception is a project-local ADC path: it
-# is already inside the mounted workspace and is required by its Docker binds.
-# Pi still uses its managed auth.json on the host.
-safe_env=(
-    "HOME=$HOME"
-    "PATH=$inner_path"
-    "TMPDIR=/tmp"
-    "XDG_CACHE_HOME=$HOST_CODE_CACHE_ROOT"
-    "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE_DIR"
-    "JITI_FS_CACHE=$JITI_FS_CACHE_DIR"
-    "NPM_CONFIG_CACHE=$HOST_CODE_CACHE_ROOT/npm"
-    "PIP_CACHE_DIR=$HOST_CODE_CACHE_ROOT/pip"
-    "CONDA_PKGS_DIRS=$HOST_CODE_CACHE_ROOT/conda"
-    "UV_CACHE_DIR=$HOME/.cache/uv"
-    "HF_HOME=$HOME/.cache/huggingface"
-    "CARGO_HOME=$HOME/.cargo"
-    "PI_GONDOLIN_SANDBOX=1"
-    "PI_GONDOLIN_STARTUP_DESCRIPTOR=$STARTUP_DESCRIPTOR"
-    "PI_GONDOLIN_BUILTIN_TOOLS=$REQUESTED_BUILTINS"
-    "PI_GONDOLIN_HOST_TOOLS=$REQUESTED_HOST_TOOLS"
-    "PI_GONDOLIN_HANDSHAKE_FILE=$HANDSHAKE_FILE"
-    "PI_GONDOLIN_STARTUP_TRACE_FILE=$startup_trace_file"
-    "PI_TIMING=${startup_trace_file:+1}"
-)
-
-project_adc_path="${GOOGLE_APPLICATION_CREDENTIALS-}"
-if [[ "$project_adc_path" == /* && "$project_adc_path" != *$'\n'* && "$project_adc_path" != *$'\r'* &&
-      "$project_adc_path" != *$'\t'* && -f "$project_adc_path" ]]; then
-    project_adc_directory="$(canonical_directory "${project_adc_path%/*}")" || project_adc_directory=""
-    project_adc_name="${project_adc_path##*/}"
-    if [[ -n "$project_adc_directory" && -n "$project_adc_name" &&
-          "$project_adc_name" != . && "$project_adc_name" != .. ]] &&
-       path_is_within "$project_adc_directory/$project_adc_name" "$CONTROLLER_WORKSPACE_ROOT"; then
-        safe_env+=("GOOGLE_APPLICATION_CREDENTIALS=$project_adc_directory/$project_adc_name")
-    fi
-fi
-
-for name in \
-    USER LOGNAME SHELL TERM COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION \
-    LANG LC_ALL LC_CTYPE TZ EDITOR VISUAL PAGER NO_COLOR FORCE_COLOR \
-    HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH
-do
-    value="${!name-}"
-    [[ -n "$value" ]] && safe_env+=("$name=$value")
-done
-
-requires_handshake=true
-for arg in "${pi_args[@]}"; do
-    case "$arg" in
-        -h|--help|-v|--version|--list-models|--list-models=*) requires_handshake=false ;;
-    esac
-done
-if ((${#raw_args[@]})) && [[ "${raw_args[0]}" =~ ^(install|remove|uninstall|update|list|config|auth)$ ]]; then
-    requires_handshake=false
-fi
-
-trace_startup pi_initialize_start
-trace_startup pi_child_spawn
-set +e
-/usr/bin/env -i "${safe_env[@]}" \
-    /bin/bash -c '
-            builtin cd -- "$1" || exit 1
-            shift
-            real_pi="$1"
-            shift
-
-            trace_real_pi() {
-                local trace_file="${PI_GONDOLIN_STARTUP_TRACE_FILE-}"
-                [[ -n "$trace_file" ]] || return 0
-                at="$(/usr/bin/perl -MTime::HiRes -e '\''printf "%.0f\n", Time::HiRes::time() * 1000'\'' 2>/dev/null || true)"
-                [[ "$at" =~ ^[0-9]+$ ]] || at="$(( $(/bin/date +%s) * 1000 ))"
-                printf '\''{"phase":"real_pi_launch","at":%s}\n'\'' "$at" >>"$trace_file" 2>/dev/null || true
-            }
-            exec_real_pi() {
-                trace_real_pi
-                exec "$real_pi" "$@"
-            }
-
-            # The launcher injects an availability-filtered --models scope when
-            # cached discovery succeeds. Pi remains the final scope/default-model
-            # authority. Only a user-requested catalog command must always bypass
-            # the settings model scope.
-            for arg in "$@"; do
-                case "$arg" in
-                    --list-models|--list-models=*) exec_real_pi --models "*" "$@" ;;
-                esac
-            done
-            exec_real_pi "$@"
-    ' \
-    pi-gondolin-launch "$LAUNCH_DIR" "$REAL_PI" ${pi_args[@]+"${pi_args[@]}"} <&0 &
-PI_CHILD_PID=$!
-trap 'forward_signal TERM' TERM
-trap 'forward_signal INT' INT
-trap 'forward_signal HUP' HUP
-
-if [[ "$requires_handshake" == true ]]; then
-    trace_startup routing_handshake_start
-    timeout_ms="${PI_GONDOLIN_HANDSHAKE_TIMEOUT_MS:-15000}"
-    [[ "$timeout_ms" =~ ^[0-9]+$ && "$timeout_ms" -ge 100 ]] || timeout_ms=15000
-    attempts=$((timeout_ms / 25))
-    ((attempts > 0)) || attempts=1
-    handshake_ready=false
-    for ((attempt = 0; attempt < attempts; attempt += 1)); do
-        if [[ -s "$HANDSHAKE_FILE" ]]; then
-            if trusted_node -e '
-                const fs = require("node:fs");
-                const [file, workspaceKey, workspaceRoot] = process.argv.slice(1);
-                const value = JSON.parse(fs.readFileSync(file, "utf8"));
-                const expectedTools = ["bash", "edit", "find", "grep", "ls", "read", "write"];
-                if (value.ok !== true || value.workspaceKey !== workspaceKey ||
-                    value.workspaceRoot !== workspaceRoot || !/^[0-9a-f]{64}$/.test(value.policyGeneration) ||
-                    !/^[0-9a-f]{64}$/.test(value.imageGeneration) || typeof value.vmId !== "string" || !value.vmId ||
-                    value.dockerHealthy !== true || !Array.isArray(value.tools) ||
-                    JSON.stringify([...value.tools].sort()) !== JSON.stringify(expectedTools)) {
-                    if (value.error) console.error(value.error);
-                    process.exit(1);
-                }
-            ' "$HANDSHAKE_FILE" "$CONTROLLER_WORKSPACE_KEY" "$CONTROLLER_WORKSPACE_ROOT"
-            then
-                handshake_ready=true
-                trace_startup routing_handshake_complete
-                break
-            fi
-            kill -TERM "$PI_CHILD_PID" 2>/dev/null || true
-            wait "$PI_CHILD_PID" 2>/dev/null || true
-            PI_CHILD_PID=""
-            die "the Gondolin routing extension rejected its controller or tool inventory"
-        fi
-        if ! kill -0 "$PI_CHILD_PID" 2>/dev/null; then
-            wait "$PI_CHILD_PID" 2>/dev/null
-            child_status=$?
-            PI_CHILD_PID=""
-            die "Pi exited before the Gondolin routing extension became ready (status $child_status)"
-        fi
-        /bin/sleep 0.025
-    done
-    if [[ "$handshake_ready" != true ]]; then
-        kill -TERM "$PI_CHILD_PID" 2>/dev/null || true
-        for _ in {1..100}; do
-            kill -0 "$PI_CHILD_PID" 2>/dev/null || break
-            /bin/sleep 0.01
-        done
-        kill -KILL "$PI_CHILD_PID" 2>/dev/null || true
-        wait "$PI_CHILD_PID" 2>/dev/null || true
-        PI_CHILD_PID=""
-        die "timed out waiting for the Gondolin routing extension handshake"
-    fi
-fi
-
-wait "$PI_CHILD_PID"
-status=$?
-if kill -0 "$PI_CHILD_PID" 2>/dev/null; then
-    wait "$PI_CHILD_PID"
-    child_status=$?
-    [[ "$status" -ne 0 ]] || status=$child_status
-fi
-PI_CHILD_PID=""
-set -e
-exit "$status"
+# Pi must remain the foreground process for interactive terminal ownership.
+# The extension keeps the core-tool inventory empty until its own readiness
+# gate completes, so this foreground handoff cannot expose host built-ins.
+exec /usr/bin/env \
+  PATH="${real_pi%/*}:$PATH" \
+  PI_SRT_ROUTING=1 \
+  PI_SRT_ROUTING_STARTUP_DESCRIPTOR="$startup" \
+  "$real_pi" --no-builtin-tools "$@"

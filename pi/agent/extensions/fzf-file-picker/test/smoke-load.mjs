@@ -6,7 +6,7 @@ const entrypoint = fileURLToPath(new URL("../index.ts", import.meta.url));
 const piBin = process.env.PI_BIN || "pi";
 const result = spawnSync(
   piBin,
-  ["--yolo", "--no-extensions", "--no-skills", "--no-prompt-templates", "--offline", "-e", entrypoint, "--list-models"],
+  ["--no-extensions", "--no-skills", "--no-prompt-templates", "--offline", "-e", entrypoint, "--list-models"],
   { encoding: "utf8", timeout: 30_000 },
 );
 

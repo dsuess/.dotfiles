@@ -270,7 +270,7 @@ async function acquireRefreshLock(lockPath, cachePath, source, now, ttlMs) {
 }
 
 async function traceStartup(env, phase) {
-  const tracePath = env.PI_GONDOLIN_STARTUP_TRACE_FILE;
+  const tracePath = env.PI_SRT_ROUTING_STARTUP_TRACE_FILE;
   if (typeof tracePath !== "string" || !tracePath.startsWith("/") || /[\t\r\n]/.test(tracePath)) return;
   await fs.appendFile(tracePath, `${JSON.stringify({ phase, at: Date.now() })}\n`).catch(() => {});
 }

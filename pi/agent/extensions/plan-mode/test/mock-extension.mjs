@@ -25,7 +25,7 @@ let modelSwitchAllowed = true;
 let activeTools = ["read", "bash", "edit", "write", "custom_tool"];
 const allTools = new Set(activeTools);
 const persistedDefaults = [];
-const gondolinCompositionStages = [];
+const srtRoutingCompositionStages = [];
 const busHandlers = new Map();
 let defaultWriteAllowed = true;
 const modelDefaults = {
@@ -48,7 +48,7 @@ const pi = {
 			return () => {};
 		},
 		emit(name, payload) {
-			if (name === "gondolin-sandbox:verify-tools") gondolinCompositionStages.push(payload.stage);
+			if (name === "srt-tool-routing:verify-tools") srtRoutingCompositionStages.push(payload.stage);
 			for (const handler of busHandlers.get(name) ?? []) handler(payload);
 		},
 	},
@@ -115,7 +115,7 @@ try {
 	assert.equal(thinkingLevel, "high");
 	assert.equal(activeTools.includes("edit"), false);
 	const userBashPreflight = { command: "touch blocked-in-planning", result: undefined };
-	pi.events.emit("gondolin-sandbox:before-user-bash", userBashPreflight);
+	pi.events.emit("srt-tool-routing:before-user-bash", userBashPreflight);
 	assert.equal(userBashPreflight.result.result.exitCode, 126, "known user Bash mutation is blocked before sandbox execution");
 	const planningPrompt = await handlers.get("before_agent_start")[0]({ systemPrompt: "base" }, ctx);
 	assert.match(planningPrompt.systemPrompt, /do not ask while any useful, safe read-only progress remains/i);
@@ -251,9 +251,9 @@ try {
 	assert.equal(activeModel.id, "claude-sonnet-5", "explicit CLI model wins during planning startup");
 	process.argv.pop();
 
-	assert.ok(gondolinCompositionStages.includes("planning gate"), "planning transitions request source-aware Gondolin verification");
-	assert.ok(gondolinCompositionStages.includes("execution-tool transition"), "execution transitions request source-aware Gondolin verification");
-	assert.ok(gondolinCompositionStages.includes("original-tool restore"), "original-tool restoration requests source-aware Gondolin verification");
+	assert.ok(srtRoutingCompositionStages.includes("planning gate"), "planning transitions request source-aware SRT tool routing verification");
+	assert.ok(srtRoutingCompositionStages.includes("execution-tool transition"), "execution transitions request source-aware SRT tool routing verification");
+	assert.ok(srtRoutingCompositionStages.includes("original-tool restore"), "original-tool restoration requests source-aware SRT tool routing verification");
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

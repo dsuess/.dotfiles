@@ -117,8 +117,8 @@ describe("discussion fork runtime", () => {
           expect(args).not.toContain("--tools");
           expect(args).not.toContain("--no-tools");
           expect((options?.env as Record<string, string>)["PI_ASK_USER_QUESTION_DISCUSSION_CHILD"]).toBe("1");
-          expect((options?.env as Record<string, string>)["PI_GONDOLIN_BUILTIN_TOOLS"]).toBe("read,edit");
-          expect((options?.env as Record<string, string>)["PI_GONDOLIN_HOST_TOOLS"]).toBe("");
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_BUILTIN_TOOLS"]).toBe("read,edit");
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_HOST_TOOLS"]).toBe("");
           expect((options?.env as Record<string, string>)["PI_SUBAGENT_PLANNING"]).toBe("1");
           expect((options?.env as Record<string, string>)["HERDR_ENV"]).toBeUndefined();
           expect((options?.env as Record<string, string>)["HERDR_SOCKET_PATH"]).toBeUndefined();

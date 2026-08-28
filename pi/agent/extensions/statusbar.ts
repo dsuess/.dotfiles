@@ -17,7 +17,7 @@ import { selectContextDisplay } from "./statusbar-context.ts";
 import {
 	SANDBOX_LIFECYCLE_EVENT,
 	type SandboxLifecycleEvent,
-} from "./gondolin-sandbox/events.ts";
+} from "./srt-tool-routing/events.ts";
 import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
@@ -206,7 +206,7 @@ export default function (pi: ExtensionAPI) {
 						const health = sandboxLifecycle.health;
 						const color = health === "healthy" ? P.green : health === "failed" ? P.red : P.peach;
 						const label = health === "healthy"
-							? `vm:${sandboxLifecycle.vmId?.slice(0, 6) ?? "ready"}`
+							? `srt:${sandboxLifecycle.sidecarId?.slice(0, 6) ?? "ready"}`
 							: health;
 						line += cf(color, ` ${health === "healthy" ? "●" : "◌"} ${label} `);
 					}

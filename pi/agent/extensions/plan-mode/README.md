@@ -170,9 +170,9 @@ There are three distinct layers:
 
 1. **Workflow gate:** hides model mutation tools and rejects known shell mutations during planning.
 2. **Trusted writes:** this extension writes the active plan/ledger; tuicr receives only a disposable isolated snapshot.
-3. **Gondolin tool boundary:** the trusted host control plane runs Pi, reviewed extensions, model access, sessions, and the controller. The guest tool plane runs routed built-in file and Bash operations. Audited host adapters remain on the host.
+3. **SRT tool routing tool boundary:** the trusted host control plane runs Pi, reviewed extensions, model access, sessions, and the controller. The guest tool plane runs routed built-in file and Bash operations. Audited host adapters remain on the host.
 
-Because unknown Bash commands are allowed, planning mode cannot promise that the workspace is absolutely read-only. Treat the extension as workflow enforcement and the Gondolin guest tool plane as the boundary for routed model tools. The host control plane and audited adapters are trusted; this is not a whole-process OS sandbox for Pi or extension code.
+Because unknown Bash commands are allowed, planning mode cannot promise that the workspace is absolutely read-only. Treat the extension as workflow enforcement and the SRT tool routing guest tool plane as the boundary for routed model tools. The host control plane and audited adapters are trusted; this is not a whole-process OS sandbox for Pi or extension code.
 
 ## Development
 

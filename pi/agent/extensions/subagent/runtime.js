@@ -5,7 +5,7 @@ import path from "node:path";
 import {
 	childToolCliArgs,
 	splitChildCapabilities,
-} from "../gondolin-sandbox/child-capabilities.js";
+} from "../srt-tool-routing/child-capabilities.js";
 
 const EXCLUDED_CHILD_TOOLS = new Set([
 	"subagent",
@@ -219,15 +219,15 @@ function createChildEnvironment(baseEnv, planningMode, builtinTools, hostTools) 
 		"PI_MODEL",
 		"PI_REASONING_LEVEL",
 		"PI_SUBAGENT_PLANNING",
-		"PI_GONDOLIN_BUILTIN_TOOLS",
-		"PI_GONDOLIN_HOST_TOOLS",
+		"PI_SRT_ROUTING_BUILTIN_TOOLS",
+		"PI_SRT_ROUTING_HOST_TOOLS",
 		"NODE_TEST_CONTEXT",
 	]) {
 		delete env[name];
 	}
 	env.PI_SUBAGENT_CHILD = "1";
-	env.PI_GONDOLIN_BUILTIN_TOOLS = builtinTools.join(",");
-	env.PI_GONDOLIN_HOST_TOOLS = hostTools.join(",");
+	env.PI_SRT_ROUTING_BUILTIN_TOOLS = builtinTools.join(",");
+	env.PI_SRT_ROUTING_HOST_TOOLS = hostTools.join(",");
 	if (planningMode) env.PI_SUBAGENT_PLANNING = "1";
 	return env;
 }

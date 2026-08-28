@@ -34,14 +34,14 @@ const deterministic = [
   ["ask-user-question dependencies", "npm", ["ci", "--ignore-scripts"], path.join(root, "agent/packages/ask-user-question")],
   ["ask-user-question", "npm", ["--prefix", "agent/packages/ask-user-question", "test"]],
   ["ask-user-question typecheck", "npm", ["--prefix", "agent/packages/ask-user-question", "run", "typecheck"]],
-  ["Gondolin deterministic sandbox", "npm", ["--prefix", "sandbox", "test"]],
+  ["SRT deterministic routing", "npm", ["--prefix", "sandbox", "test"]],
 ];
 
 async function main() {
   const mode = process.argv[2] ?? "all";
   if (mode !== "deterministic" && mode !== "all") throw new Error(`Unknown test-gate mode: ${mode}`);
   for (const [label, command, args, cwd] of deterministic) await run(label, command, args, cwd);
-  if (mode === "all") await run("Gondolin native sandbox", "npm", ["--prefix", "sandbox", "run", "test:native"]);
+  if (mode === "all") await run("SRT native routing", "npm", ["--prefix", "sandbox", "run", "test:native"]);
 }
 
 main().catch((error) => {
