@@ -53,3 +53,27 @@ test("controller cancels a process group on timeout", async (t) => {
   assert.equal(result.cancelled, true);
   await attached.client.release();
 });
+
+test("controller gives Buildx writable state without making Docker configuration writable", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-buildx-state-"));
+  const startup = beginControllerStartup({ launchDirectory: workspace });
+  t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
+  const attached = await acquire(startup, "buildx-state");
+  const chunks = [];
+  const result = await attached.client.exec(["/bin/bash", "-lc", "printf '%s\\n%s\\n' \"$BUILDX_CONFIG\" \"$DOCKER_CONFIG\"; mkdir -p \"$BUILDX_CONFIG/state/nested\"; printf mutable > \"$BUILDX_CONFIG/state/nested/value\"; if printf tampered > \"$DOCKER_CONFIG/config.json\"; then printf config-writable; else printf config-protected; fi; printf '\\n'; if rm \"$DOCKER_CONFIG/cli-plugins/docker-buildx\"; then printf plugin-writable; else printf plugin-protected; fi"], {
+    cwd: workspace, env: { BUILDX_CONFIG: path.join(workspace, "caller-selected-buildx") },
+    onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); },
+  });
+  assert.equal(result.exitCode, 0);
+  const [buildxConfig, dockerConfig, configResult, pluginResult] = Buffer.concat(chunks).toString().split("\n");
+  assert.notEqual(buildxConfig, path.join(workspace, "caller-selected-buildx"));
+  assert.notEqual(buildxConfig, dockerConfig);
+  assert.ok(path.relative(startup.runtimeRoot, buildxConfig).startsWith(`..${path.sep}`), "Buildx state must be outside controller state");
+  assert.equal(fs.statSync(buildxConfig).mode & 0o777, 0o700);
+  assert.equal(fs.readFileSync(path.join(buildxConfig, "state/nested/value"), "utf8"), "mutable");
+  assert.equal(fs.readFileSync(path.join(dockerConfig, "config.json"), "utf8"), "{}\n");
+  assert.deepEqual(fs.readdirSync(path.join(dockerConfig, "cli-plugins")).sort(), ["docker-buildx", "docker-compose"]);
+  assert.equal(configResult, "config-protected");
+  assert.equal(pluginResult, "plugin-protected");
+  await attached.client.release();
+});

@@ -5,8 +5,8 @@ Pi, its UI, provider authentication, and audited non-core adapters run on the ho
 ## Security contract
 
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
-- Tool processes receive a generated HOME, temp directory, cache, and empty `DOCKER_CONFIG`. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
-- The generated Docker client directory exposes the reviewed Docker CLI and only Buildx and Compose. Other Docker Desktop plugins are not available.
+- Tool processes receive a generated HOME, temp directory, cache, and empty immutable `DOCKER_CONFIG`. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
+- The generated Docker client directory exposes the reviewed Docker CLI and only Buildx and Compose. Other Docker Desktop plugins are not available. Buildx configuration, state, and logs use a separate writable generated `BUILDX_CONFIG` directory.
 - Ordinary tool environment values, including secrets, are forwarded directly. Do not mask credentials: failures and retained diagnostics must redact values instead.
 - Only the configured signing-key exception may be granted from SSH storage. Hard-link handling is path-based.
 - IP egress is unrestricted. Unix-socket access is limited to the exact private Docker broker socket and reviewed system exceptions.

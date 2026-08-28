@@ -24,7 +24,8 @@ for (const directory of [descriptor.runtimeRoot, path.dirname(descriptor.socketP
 fs.rmSync(descriptor.socketPath, { force: true });
 const generationRoot = path.join(descriptor.runtimeRoot, `generation-${descriptor.generation}`);
 const toolHomeRoot = path.join("/tmp", `pi-srt-${process.getuid()}`, "g", descriptor.workspaceKey, String(descriptor.generation));
-for (const directory of [generationRoot, toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache")]) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); }
+const buildxConfig = path.join(toolHomeRoot, "buildx");
+for (const directory of [generationRoot, toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig]) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); }
 const helper = path.join(generationRoot, "operation-helper.mjs");
 fs.rmSync(helper, { force: true });
 fs.copyFileSync(sourceHelper, helper); fs.chmodSync(helper, 0o500);
@@ -32,7 +33,7 @@ const dockerClient = materializeDockerClientEnvironment(generationRoot, resolveD
 applySrtWorkspaceWritePatch();
 const sidecar = new WorkspaceDockerSidecar({ workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, runtimeRoot: descriptor.runtimeRoot, brokerRoot: descriptor.brokerRoot });
 await sidecar.startBroker(); // Sidecar creation stays lazy: bridge() calls ensure on first Docker use.
-const policy = buildSrtPolicy({ home: os.homedir(), workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest: descriptor.hostReadManifest, grants: [] });
+const policy = buildSrtPolicy({ home: os.homedir(), workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest: descriptor.hostReadManifest, grants: [] });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -45,7 +46,7 @@ function boundedEnvironment(overrides = {}) {
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
-  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: path.join(toolHomeRoot, "home"), TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:/usr/local/bin:/usr/bin:/bin`, DOCKER_CONFIG: dockerClient.config, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
+  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: path.join(toolHomeRoot, "home"), TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:/usr/local/bin:/usr/bin:/bin`, DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
 }
 function removeOperation(id, child) { if (active.get(id)?.child === child) { active.delete(id); operationCount -= 1; } }
 async function terminate(operation) {
