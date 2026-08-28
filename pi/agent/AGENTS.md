@@ -8,9 +8,14 @@ concepts do not exist.
 
 ### 1. Think and Plan Deliberately
 
-- For any non-trivial task, create a concise plan before editing. Prefer Pi's
-  planning extension (`/plan` or `--plan`) and its persistent ledger; otherwise
-  write and maintain a checkable plan in the conversation.
+- For any non-trivial task, use Pi's integrated planning mode before editing:
+  enter it with `/plan <goal>` (or `--plan` at startup), investigate, and submit
+  the plan with `submit_plan`. Treat its saved `.pi/plans/` document and
+  persistent ledger as the sole plan record.
+- Never self-roll a plan file with `write`, `edit`, or Bash. In particular, do
+  not create `./plans/` or choose a plan-file path yourself. If integrated plan
+  mode is unavailable, keep a concise, checkable plan in the conversation and
+  state that the extension was unavailable.
 - Treat a task as non-trivial when it has three or more steps, touches multiple
   files, changes architecture, or has meaningful verification risk.
 - For large or ambiguous work, spell out the expected behavior and state
