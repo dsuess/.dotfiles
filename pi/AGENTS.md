@@ -10,9 +10,9 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 
 ## SRT tool-routing invariants
 
-- Pi, provider authentication, extension UI, and audited non-core adapters stay on the host. Every model-directed core file and shell operation runs through the per-operation SRT controller.
+- Pi, provider authentication, extension UI, and audited non-core adapters stay on the host. Except for explicit `--yolo` launches, every model-directed core file and shell operation runs through the per-operation SRT controller.
 - Normal startup fails closed. Missing SRT package, verified patch, controller, policy, sidecar inventory, or routing handshake must leave native core tools disabled and block model input.
-- There is no host-built-in bypass. The launcher starts Pi with native built-ins disabled and the routing extension activates exact audited replacements only after readiness.
+- `pi --yolo` is the explicit host-native bypass: it must skip SRT preflight and routing, retain Pi's native built-ins, and warn on stderr. The launcher starts every normal Pi process with native built-ins disabled and the routing extension activates exact audited replacements only after readiness.
 - A root Pi client owns the canonical-workspace controller lease. Reloaded and child clients attach through opaque capabilities; they cannot start or release a controller.
 - The private Docker broker is the only Docker endpoint given to tool commands. Never expose host Docker, Docker Sandboxes control variables, SSH agents, credential stores, or controller state.
 - Permission grants are canonicalized and scoped once, session, or persistent. Persistent settings use the resolved Stow source and a locked atomic write.

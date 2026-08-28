@@ -6,11 +6,11 @@ Accepted.
 
 ## Decision
 
-Keep Pi, its UI, provider authentication, and audited host adapters on the host. Route model-directed file and shell operations through per-operation SRT processes. Route Docker only through a private, workspace-owned Docker Sandboxes sidecar broker.
+Keep Pi, its UI, provider authentication, and audited host adapters on the host. Route normal model-directed file and shell operations through per-operation SRT processes. Route Docker only through a private, workspace-owned Docker Sandboxes sidecar broker. `pi --yolo` is an explicit host-native bypass that skips SRT entirely.
 
 ## Consequences
 
-The launcher disables native core tools before Pi starts and fails closed until routing verifies its descriptor, controller, policy generation, and tool inventory. Tool secrets are passed directly in the tool environment; controller tokens and control sockets are removed. The sidecar is lazy and persistent, has no default host ports, and may expose only validated loopback mappings.
+For normal launches, the launcher disables native core tools before Pi starts and fails closed until routing verifies its descriptor, controller, policy generation, and tool inventory. `pi --yolo` consumes the wrapper flag, warns on stderr, and directly starts the installed Pi binary with native tools; it performs no SRT preflight. Tool secrets are passed directly in the tool environment; controller tokens and control sockets are removed. The sidecar is lazy and persistent, has no default host ports, and may expose only validated loopback mappings.
 
 ## Rejected alternatives
 

@@ -29,12 +29,23 @@ find_real_pi() {
   return 1
 }
 
-# `--yolo` was historically consumed by this wrapper. Keep accepting it for
-# invocation compatibility, but never restore its retired host-tool bypass.
+# `--yolo` is a wrapper-only, host-native escape hatch. It is consumed here so
+# nested Pi processes do not re-enter this launcher.
+yolo=false
 pi_args=()
 for argument in "$@"; do
-  [[ "$argument" == "--yolo" ]] || pi_args+=("$argument")
+  if [[ "$argument" == "--yolo" ]]; then
+    yolo=true
+  else
+    pi_args+=("$argument")
+  fi
 done
+
+real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind this launcher"
+if [[ "$yolo" == true ]]; then
+  printf 'pi: warning: SRT disabled by --yolo\n' >&2
+  exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
+fi
 
 case "$(uname -s)" in
   Darwin) ;;
@@ -44,7 +55,6 @@ esac
 command -v node >/dev/null 2>&1 || fail "Node.js is required"
 [[ -r "$CONTROLLER_CLIENT" ]] || fail "controller client is missing: $CONTROLLER_CLIENT"
 [[ -r "$ROUTING_EXTENSION" ]] || fail "routing extension is missing: $ROUTING_EXTENSION"
-real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind this launcher"
 
 # Informational modes expose no model-directed core tools and must not create
 # controller or sidecar state.
