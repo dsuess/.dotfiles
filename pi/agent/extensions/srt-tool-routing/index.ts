@@ -59,6 +59,7 @@ interface ExtensionDependencies {
     policyGeneration: string;
     runtimeGeneration: string;
     adoptLease: boolean;
+    renewalStartup?: any;
   }) => Promise<{ client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> }; status: any }>;
   acquire?: (options: { startup: any; clientId: string; signal: AbortSignal }) => Promise<{
     client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> };
@@ -250,7 +251,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
         pendingRestart: false,
         failure: reason,
       }, ctx);
-      if (ctx?.hasUI) ctx.ui.notify(`SRT tool routing tool routing failed closed: ${reason}`, "error");
+      if (ctx?.hasUI) ctx.ui.notify(`SRT tool routing failed closed: ${reason}`, "error");
       writeHandshake(env.PI_SRT_ROUTING_HANDSHAKE_FILE, { ok: false, error: reason });
       ctx?.shutdown();
     };
@@ -305,11 +306,15 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
             const leaseToken = requiredHex(env.PI_SRT_ROUTING_LEASE, "PI_SRT_ROUTING_LEASE");
             workspaceKey = requiredHex(env.PI_SRT_ROUTING_WORKSPACE_KEY, "PI_SRT_ROUTING_WORKSPACE_KEY");
             workspaceRoot = requiredString(env.PI_SRT_ROUTING_WORKSPACE_ROOT, "PI_SRT_ROUTING_WORKSPACE_ROOT");
+            const renewalStartup = adoptRootLease
+              ? parseStartupDescriptor(env.PI_SRT_ROUTING_STARTUP_DESCRIPTOR)
+              : undefined;
             connected = await connect({
               socketPath, leaseToken, workspaceKey, workspaceRoot,
               policyGeneration: requiredHex(env.PI_SRT_ROUTING_POLICY_GENERATION, "PI_SRT_ROUTING_POLICY_GENERATION"),
               runtimeGeneration: requiredHex(env.PI_SRT_ROUTING_IMAGE_GENERATION, "PI_SRT_ROUTING_IMAGE_GENERATION"),
               adoptLease: adoptRootLease,
+              renewalStartup,
             });
           } else {
             const startup = parseStartupDescriptor(env.PI_SRT_ROUTING_STARTUP_DESCRIPTOR);

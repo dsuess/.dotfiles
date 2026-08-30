@@ -219,6 +219,7 @@ function createChildEnvironment(baseEnv, planningMode, builtinTools, hostTools) 
 		"PI_MODEL",
 		"PI_REASONING_LEVEL",
 		"PI_SUBAGENT_PLANNING",
+		"PI_SRT_ROUTING_STARTUP_DESCRIPTOR",
 		"PI_SRT_ROUTING_BUILTIN_TOOLS",
 		"PI_SRT_ROUTING_HOST_TOOLS",
 		"NODE_TEST_CONTEXT",

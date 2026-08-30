@@ -343,6 +343,7 @@ function childEnvironment(
       key === "PI_PROVIDER" ||
       key === "PI_MODEL" ||
       key === "PI_REASONING_LEVEL" ||
+      key === "PI_SRT_ROUTING_STARTUP_DESCRIPTOR" ||
       key === "NODE_TEST_CONTEXT" ||
       key.startsWith("HERDR_") ||
       key.startsWith("PI_HERDR_")

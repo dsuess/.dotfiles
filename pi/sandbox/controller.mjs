@@ -19,7 +19,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const descriptor = validateDescriptor(JSON.parse(Buffer.from(process.argv[2] ?? "", "base64").toString("utf8")));
 const MAX_OPERATIONS = 8;
 const TERM_GRACE_MS = 1_000;
-const LEASE_TTL_MS = 30_000;
+const testLeaseTtl = Number(process.env.PI_SRT_TEST_LEASE_TTL_MS);
+const LEASE_TTL_MS = process.env.NODE_TEST_CONTEXT && Number.isSafeInteger(testLeaseTtl) && testLeaseTtl > 0
+  ? testLeaseTtl
+  : 30_000;
+
 const sourceHelper = path.join(HERE, "operation-helper.mjs");
 for (const directory of [descriptor.runtimeRoot, path.dirname(descriptor.socketPath), descriptor.brokerRoot]) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); }
 fs.rmSync(descriptor.socketPath, { force: true });
@@ -94,18 +98,44 @@ async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxO
     if (helperRequest) child.stdin.end(JSON.stringify(helperRequest));
   });
 }
+function leaseError(code, message) { return Object.assign(new Error(message), { code }); }
+function activeLeaseCount(now = Date.now()) {
+  let count = 0;
+  for (const lease of leases.values()) if (lease.expiresAt >= now) count += 1;
+  return count;
+}
 function validateLease(request) {
-  const lease = leases.get(request.auth); if (!lease || lease.expiresAt < Date.now()) throw Object.assign(new Error("lease expired"), { code: "unauthorized" });
-  lease.expiresAt = Date.now() + LEASE_TTL_MS; return lease;
+  const lease = leases.get(request.auth);
+  if (!lease) throw leaseError("invalid_lease", "invalid lease");
+  if (lease.expiresAt < Date.now()) throw leaseError("lease_expired", "lease expired");
+  lease.expiresAt = Date.now() + LEASE_TTL_MS;
+  return lease;
 }
 async function dispatch(request, socket) {
   const p = request.params;
-  for (const [token, lease] of leases) if (lease.expiresAt < Date.now()) leases.delete(token);
-  if (request.method === "lease.acquire") { if (request.auth !== descriptor.token || p.workspaceKey !== descriptor.workspaceKey) throw Object.assign(new Error("workspace mismatch"), { code: "unauthorized" }); const leaseToken = randomBytes(32).toString("hex"); leases.set(leaseToken, { clientId: p.clientId, expiresAt: Date.now() + LEASE_TTL_MS }); return { leaseToken, expiresAt: Date.now() + LEASE_TTL_MS }; }
+  if (request.method === "lease.acquire") {
+    if (request.auth !== descriptor.token || p.workspaceKey !== descriptor.workspaceKey) {
+      throw leaseError("unauthorized", "workspace mismatch");
+    }
+    const leaseToken = randomBytes(32).toString("hex");
+    const expiresAt = Date.now() + LEASE_TTL_MS;
+    leases.set(leaseToken, { clientId: p.clientId, expiresAt });
+    return { leaseToken, expiresAt };
+  }
+  if (request.method === "lease.renew") {
+    if (request.auth !== descriptor.token || p.workspaceKey !== descriptor.workspaceKey) {
+      throw leaseError("unauthorized", "workspace mismatch");
+    }
+    const lease = leases.get(p.leaseToken);
+    if (!lease) throw leaseError("invalid_lease", "invalid lease");
+    const expiresAt = Date.now() + LEASE_TTL_MS;
+    lease.expiresAt = expiresAt;
+    return { leaseToken: p.leaseToken, expiresAt };
+  }
   validateLease(request);
-  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, policyGeneration: policy.generation, runtimeGeneration: String(descriptor.generation).padStart(64, "0"), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: leases.size, pendingRestart: false, brokerHealthy: true }; }
+  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, policyGeneration: policy.generation, runtimeGeneration: String(descriptor.generation).padStart(64, "0"), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
   if (request.method === "lease.heartbeat") return { ok: true };
-  if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: leases.size === 0 }; }
+  if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: activeLeaseCount() === 0 }; }
   if (request.method === "cancel") return { cancelled: await terminate(active.get(p.requestId)) };
   if (p.policyGeneration !== policy.generation) throw Object.assign(new Error("stale policy generation"), { code: "stale_generation" });
   if (request.method === "docker.reset") { await sidecar.reset(); return { reset: true }; }

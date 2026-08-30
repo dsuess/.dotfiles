@@ -172,7 +172,11 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		PI_SRT_ROUTING_SANDBOX: "1",
 		PI_SRT_ROUTING_SOCKET: "/tmp/controller.sock",
 		PI_SRT_ROUTING_LEASE: "a".repeat(64),
+		PI_SRT_ROUTING_WORKSPACE_KEY: "c".repeat(64),
+		PI_SRT_ROUTING_WORKSPACE_ROOT: "/workspace/project",
 		PI_SRT_ROUTING_POLICY_GENERATION: "b".repeat(64),
+		PI_SRT_ROUTING_IMAGE_GENERATION: "d".repeat(64),
+		PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "private-root-startup",
 		NODE_TEST_CONTEXT: "inherited-test-runner",
 		PI_SESSION_ID: "parent-id",
 		PI_SESSION_FILE: "/parent/session.jsonl",
@@ -230,7 +234,12 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_SANDBOX, "1");
 		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_SOCKET, "/tmp/controller.sock");
 		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_LEASE, "a".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_WORKSPACE_KEY, "c".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_WORKSPACE_ROOT, "/workspace/project");
 		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_POLICY_GENERATION, "b".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_IMAGE_GENERATION, "d".repeat(64));
+		assert.equal(spawnCall.options.env.PI_SRT_ROUTING_STARTUP_DESCRIPTOR, undefined);
+		assert.equal(parentEnv.PI_SRT_ROUTING_STARTUP_DESCRIPTOR, "private-root-startup");
 		assert.equal(spawnCall.options.env.NODE_TEST_CONTEXT, undefined);
 		for (const name of ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) {
 			assert.equal(spawnCall.options.env[name], undefined, `${name} must not leak from parent`);

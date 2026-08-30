@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { acquireControllerLease, beginControllerStartup, stopStartedController } from "./client.mjs";
+import { acquireControllerLease, beginControllerStartup, ControllerClient, stopStartedController } from "./client.mjs";
 
 async function acquire(startup, name) {
   return acquireControllerLease({ startup, clientId: name });
@@ -107,4 +107,66 @@ test("controller gives Buildx writable state without making Docker configuration
   assert.equal(configResult, "config-protected");
   assert.equal(pluginResult, "plugin-protected");
   await attached.client.release();
+});
+
+test("only a root can renew an expired lease without replacing the controller or lease token", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-lease-renewal-"));
+  const previousTtl = process.env.PI_SRT_TEST_LEASE_TTL_MS;
+  process.env.PI_SRT_TEST_LEASE_TTL_MS = "25";
+  let startup;
+  try {
+    startup = beginControllerStartup({ launchDirectory: workspace });
+  } finally {
+    if (previousTtl === undefined) delete process.env.PI_SRT_TEST_LEASE_TTL_MS;
+    else process.env.PI_SRT_TEST_LEASE_TTL_MS = previousTtl;
+  }
+  t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
+  const root = await acquire(startup, "renewing-root");
+  const leaseToken = root.leaseToken;
+  const before = JSON.parse(fs.readFileSync(startup.manifestPath, "utf8"));
+  const initial = await root.client.status();
+  const child = await ControllerClient.connectInherited({
+    socketPath: startup.socketPath,
+    leaseToken,
+    workspaceKey: startup.workspaceKey,
+    workspaceRoot: startup.workspaceRoot,
+    policyGeneration: initial.policyGeneration,
+    runtimeGeneration: initial.runtimeGeneration,
+  });
+  t.after(() => child.client.destroy());
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await assert.rejects(child.client.status(), (error) => error?.code === "lease_expired");
+  const renewed = await root.client.status();
+  const after = JSON.parse(fs.readFileSync(startup.manifestPath, "utf8"));
+  assert.equal(root.client.descriptor.token, leaseToken);
+  assert.equal(after.pid, before.pid, "renewal must not restart the controller");
+  assert.equal(renewed.policyGeneration, initial.policyGeneration);
+  assert.equal(renewed.runtimeGeneration, initial.runtimeGeneration);
+  assert.equal(renewed.sidecarId, initial.sidecarId);
+  assert.equal(renewed.brokerHealthy, true);
+
+  const badAuthority = await ControllerClient.connectInherited({
+    socketPath: startup.socketPath,
+    leaseToken,
+    workspaceKey: startup.workspaceKey,
+    workspaceRoot: startup.workspaceRoot,
+    policyGeneration: renewed.policyGeneration,
+    runtimeGeneration: renewed.runtimeGeneration,
+    renewalStartup: { ...startup, token: "f".repeat(64) },
+    adoptLease: true,
+  });
+  t.after(() => badAuthority.client.destroy());
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await assert.rejects(badAuthority.client.status(), (error) => error?.code === "unauthorized");
+
+  const master = new ControllerClient(startup);
+  t.after(() => master.destroy());
+  await master.ready;
+  await assert.rejects(
+    master.request("lease.renew", { workspaceKey: "e".repeat(64), leaseToken }),
+    (error) => error?.code === "unauthorized",
+  );
+  await root.client.status();
+  await root.client.release();
 });

@@ -81,6 +81,13 @@ describe("discussion fork runtime", () => {
     vi.stubEnv("HERDR_FUTURE_CAPABILITY", "future");
     vi.stubEnv("PI_HERDR_STATUS_PORT", "12345");
     vi.stubEnv("NON_HERDR_CHILD_CAPABILITY", "preserved");
+    vi.stubEnv("PI_SRT_ROUTING_SOCKET", "/tmp/controller.sock");
+    vi.stubEnv("PI_SRT_ROUTING_LEASE", "a".repeat(64));
+    vi.stubEnv("PI_SRT_ROUTING_WORKSPACE_KEY", "b".repeat(64));
+    vi.stubEnv("PI_SRT_ROUTING_WORKSPACE_ROOT", "/workspace/project");
+    vi.stubEnv("PI_SRT_ROUTING_POLICY_GENERATION", "c".repeat(64));
+    vi.stubEnv("PI_SRT_ROUTING_IMAGE_GENERATION", "d".repeat(64));
+    vi.stubEnv("PI_SRT_ROUTING_STARTUP_DESCRIPTOR", "private-root-startup");
     const { parent } = parentWithQuestionnaireTool();
     const thread = createDiscussionThread({
       questionIndex: 0,
@@ -119,6 +126,14 @@ describe("discussion fork runtime", () => {
           expect((options?.env as Record<string, string>)["PI_ASK_USER_QUESTION_DISCUSSION_CHILD"]).toBe("1");
           expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_BUILTIN_TOOLS"]).toBe("read,edit");
           expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_HOST_TOOLS"]).toBe("");
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_SOCKET"]).toBe("/tmp/controller.sock");
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_LEASE"]).toBe("a".repeat(64));
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_WORKSPACE_KEY"]).toBe("b".repeat(64));
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_WORKSPACE_ROOT"]).toBe("/workspace/project");
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_POLICY_GENERATION"]).toBe("c".repeat(64));
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_IMAGE_GENERATION"]).toBe("d".repeat(64));
+          expect((options?.env as Record<string, string>)["PI_SRT_ROUTING_STARTUP_DESCRIPTOR"]).toBeUndefined();
+          expect((process.env as Record<string, string>)["PI_SRT_ROUTING_STARTUP_DESCRIPTOR"]).toBe("private-root-startup");
           expect((options?.env as Record<string, string>)["PI_SUBAGENT_PLANNING"]).toBe("1");
           expect((options?.env as Record<string, string>)["HERDR_ENV"]).toBeUndefined();
           expect((options?.env as Record<string, string>)["HERDR_SOCKET_PATH"]).toBeUndefined();

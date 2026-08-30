@@ -112,8 +112,10 @@ function createHarness(t, options = {}) {
   if (options.root) {
     for (const name of ["PI_SRT_ROUTING_SOCKET", "PI_SRT_ROUTING_LEASE", "PI_SRT_ROUTING_ROOT_OWNER_PID", "PI_SRT_ROUTING_WORKSPACE_KEY", "PI_SRT_ROUTING_WORKSPACE_ROOT", "PI_SRT_ROUTING_POLICY_GENERATION", "PI_SRT_ROUTING_IMAGE_GENERATION", "PI_SRT_ROUTING_VM_ID"]) delete env[name];
     env.PI_SRT_ROUTING_STARTUP_DESCRIPTOR = Buffer.from(JSON.stringify({
-      version: 1, workspaceKey: HEX_C, workspaceRoot: "/physical/workspace", bareCommonDirectory: null,
-      runtimeRoot: root, socketPath: path.join(root, "controller.sock"), manifestPath: path.join(root, "controller.json"),
+      version: 2, workspaceKey: HEX_C, workspaceRoot: "/physical/workspace", bareCommonDirectory: null,
+      token: HEX_A, sourceDigest: HEX_B, generation: 1, runtimeRoot: root,
+      socketPath: path.join(root, "controller.sock"), manifestPath: path.join(root, "controller.json"),
+      capabilityPath: path.join(root, "capability.json"),
     })).toString("base64");
   }
   const connectCalls = [];
@@ -337,6 +339,7 @@ test("root replacements retain one lease and VM for every Pi replacement reason"
     assert.equal(acquisitions, 1, `${reason} must not acquire a second root lease`);
     assert.equal(second.connectCalls.length, 1);
     assert.equal(second.connectCalls[0].adoptLease, true, `${reason} must transfer release ownership`);
+    assert.equal(second.connectCalls[0].renewalStartup.token, HEX_A, `${reason} must retain root renewal authority`);
     assert.deepEqual(second.active().sort(), ["bash", "read"]);
     await second.emit("session_shutdown", { reason: "quit" });
     assert.equal(secondClient.releaseCalls, 1, `${reason} final quit must release exactly once`);
@@ -456,6 +459,41 @@ test("connection failure handles queued input without activating built-ins", asy
   assert.equal(harness.shutdownCalls(), 1);
   const handshake = JSON.parse(fs.readFileSync(harness.handshake, "utf8"));
   assert.equal(handshake.ok, false);
+});
+
+test("an adopted root that cannot prove renewal authority fails closed", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "srt-routing-renewal-authority-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = {
+    PI_SRT_ROUTING_SANDBOX: "1",
+    PI_SRT_ROUTING_SOCKET: path.join(root, "controller.sock"),
+    PI_SRT_ROUTING_LEASE: HEX_A,
+    PI_SRT_ROUTING_ROOT_OWNER_PID: String(process.pid),
+    PI_SRT_ROUTING_WORKSPACE_KEY: HEX_C,
+    PI_SRT_ROUTING_WORKSPACE_ROOT: "/physical/workspace",
+    PI_SRT_ROUTING_POLICY_GENERATION: HEX_B,
+    PI_SRT_ROUTING_IMAGE_GENERATION: HEX_A,
+    PI_SRT_ROUTING_BUILTIN_TOOLS: "read,bash",
+    PI_SRT_ROUTING_HOST_TOOLS: "",
+    PI_SRT_ROUTING_STARTUP_DESCRIPTOR: Buffer.from(JSON.stringify({
+      version: 2, token: "f".repeat(64), workspaceKey: HEX_C, workspaceRoot: "/physical/workspace",
+      runtimeRoot: root, socketPath: path.join(root, "controller.sock"), manifestPath: path.join(root, "manifest.json"),
+      capabilityPath: path.join(root, "capability.json"), sourceDigest: HEX_B, generation: 1,
+    })).toString("base64"),
+  };
+  let supplied;
+  const harness = createHarness(t, {
+    env,
+    connect: async (options) => {
+      supplied = options.renewalStartup;
+      throw new Error("lease renewal denied");
+    },
+  });
+  await harness.emit("session_start", { reason: "reload" });
+  assert.deepEqual(await harness.emit("input", { text: "queued" }), { action: "handled" });
+  assert.equal(supplied.token, "f".repeat(64));
+  assert.deepEqual(harness.active(), []);
+  assert.equal(harness.shutdownCalls(), 1);
 });
 
 test("extension is inert for explicit --yolo launches", () => {

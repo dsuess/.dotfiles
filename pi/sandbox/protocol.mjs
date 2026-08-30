@@ -8,6 +8,7 @@ export const MAX_PATH_BYTES = 4096;
 
 export const PROTOCOL_METHODS = Object.freeze([
   "lease.acquire",
+  "lease.renew",
   "lease.heartbeat",
   "lease.release",
   "status",
@@ -176,6 +177,11 @@ function validateMethod(method, params) {
       exactKeys(params, new Set(["workspaceKey", "clientId"]), "params");
       generation(params.workspaceKey, "params.workspaceKey");
       string(params.clientId, "params.clientId", 256);
+      break;
+    case "lease.renew":
+      exactKeys(params, new Set(["workspaceKey", "leaseToken"]), "params");
+      generation(params.workspaceKey, "params.workspaceKey");
+      authToken(params.leaseToken);
       break;
     case "lease.heartbeat":
     case "lease.release":

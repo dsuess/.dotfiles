@@ -44,9 +44,114 @@ function descriptorFor(launchDir) {
 function start(descriptor) { if (stateIsUsable(descriptor)) return; const child = spawn(process.execPath, [controller, Buffer.from(JSON.stringify(descriptor)).toString("base64")], { detached: true, stdio: "ignore", cwd: descriptor.workspaceRoot, env: process.env }); child.unref(); }
 export function beginControllerStartup({ launchDirectory }) { const descriptor = descriptorFor(launchDirectory); start(descriptor); return descriptor; }
 export class ControllerClient {
-  constructor(descriptor) { this.descriptor = validateDescriptor({ ...descriptor }); this.policyGeneration = descriptor.policyGeneration; this.sequence = 0; this.pending = new Map(); this.socket = net.createConnection(descriptor.socketPath); this.ready = new Promise((resolve, reject) => { this.socket.once("connect", resolve); this.socket.once("error", reject); }); const decoder = new FrameDecoder((frame) => { const response = validateResponse(frame); const item = this.pending.get(response.id); if (!item) return; if (response.type === "event") { item.events.push([response.event, Buffer.from(response.data, "base64")]); return; } this.pending.delete(response.id); response.ok ? item.resolve({ result: response.result, events: item.events }) : item.reject(Object.assign(new Error(response.error.message), { code: response.error.code })); }); this.socket.on("data", (data) => decoder.push(data)); }
-  static async connectInherited(options) { const client = new ControllerClient({ ...options, version: 2, token: options.leaseToken, runtimeRoot: path.dirname(options.socketPath), manifestPath: options.manifestPath ?? path.join(path.dirname(options.socketPath), "manifest.json"), capabilityPath: options.capabilityPath ?? path.join(path.dirname(options.socketPath), "capability.json"), sourceDigest: options.sourceDigest ?? "0".repeat(64), generation: options.generation ?? 1 }); await client.ready; return { client, status: await client.status() }; }
-  async request(method, params) { await this.ready; const id = ++this.sequence; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject, events: [] }); this.socket.write(encodeFrame(makeRequest(id, method, this.descriptor.token, params))); }); }
+  constructor(descriptor) {
+    this.descriptor = validateDescriptor({ ...descriptor });
+    this.policyGeneration = descriptor.policyGeneration;
+    this.sequence = 0;
+    this.pending = new Map();
+    this.renewalAuthority = null;
+    this.renewal = null;
+    this.leaseEpoch = 0;
+    this.socket = net.createConnection(descriptor.socketPath);
+    this.ready = new Promise((resolve, reject) => {
+      this.socket.once("connect", resolve);
+      this.socket.once("error", reject);
+    });
+    const decoder = new FrameDecoder((frame) => {
+      const response = validateResponse(frame);
+      const item = this.pending.get(response.id);
+      if (!item) return;
+      if (response.type === "event") {
+        item.events.push([response.event, Buffer.from(response.data, "base64")]);
+        return;
+      }
+      this.pending.delete(response.id);
+      response.ok
+        ? item.resolve({ result: response.result, events: item.events })
+        : item.reject(Object.assign(new Error(response.error.message), { code: response.error.code }));
+    });
+    this.socket.on("data", (data) => decoder.push(data));
+  }
+  configureLeaseRenewal(startup) {
+    const authority = validateDescriptor({ ...startup });
+    if (
+      authority.workspaceKey !== this.descriptor.workspaceKey ||
+      authority.workspaceRoot !== this.descriptor.workspaceRoot ||
+      authority.socketPath !== this.descriptor.socketPath
+    ) {
+      throw new Error("renewal startup descriptor does not match the inherited lease");
+    }
+    this.renewalAuthority = {
+      token: authority.token,
+      workspaceKey: authority.workspaceKey,
+      leaseToken: this.descriptor.token,
+    };
+  }
+  static async connectInherited(options) {
+    const client = new ControllerClient({
+      ...options,
+      version: 2,
+      token: options.leaseToken,
+      runtimeRoot: path.dirname(options.socketPath),
+      manifestPath: options.manifestPath ?? path.join(path.dirname(options.socketPath), "manifest.json"),
+      capabilityPath: options.capabilityPath ?? path.join(path.dirname(options.socketPath), "capability.json"),
+      sourceDigest: options.sourceDigest ?? "0".repeat(64),
+      generation: options.generation ?? 1,
+    });
+    try {
+      if (options.adoptLease && options.renewalStartup) client.configureLeaseRenewal(options.renewalStartup);
+      await client.ready;
+      return { client, status: await client.status() };
+    } catch (error) {
+      client.destroy();
+      throw error;
+    }
+  }
+  async requestOnce(method, params, auth = this.descriptor.token) {
+    await this.ready;
+    const id = ++this.sequence;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, events: [] });
+      this.socket.write(encodeFrame(makeRequest(id, method, auth, params)));
+    });
+  }
+  async renewLease(observedEpoch) {
+    if (this.leaseEpoch !== observedEpoch) return;
+    if (!this.renewal) {
+      const authority = this.renewalAuthority;
+      this.renewal = (async () => {
+        const response = await this.requestOnce("lease.renew", {
+          workspaceKey: authority.workspaceKey,
+          leaseToken: authority.leaseToken,
+        }, authority.token);
+        if (response.result?.leaseToken !== authority.leaseToken) {
+          throw Object.assign(new Error("controller returned an invalid lease renewal"), { code: "invalid_response" });
+        }
+        this.leaseEpoch += 1;
+      })();
+    }
+    try {
+      await this.renewal;
+    } finally {
+      if (this.renewal) this.renewal = null;
+    }
+  }
+  async request(method, params) {
+    const leaseEpoch = this.leaseEpoch;
+    try {
+      return await this.requestOnce(method, params);
+    } catch (error) {
+      if (
+        method === "lease.release" ||
+        !this.renewalAuthority ||
+        !["lease_expired", "invalid_lease"].includes(error?.code)
+      ) {
+        throw error;
+      }
+      await this.renewLease(leaseEpoch);
+      return this.requestOnce(method, params);
+    }
+  }
   async status() { return (await this.request("status", { policyGeneration: this.policyGeneration })).result; }
   async access(filePath, mode = 0) { return (await this.request("fs.access", { path: filePath, mode, policyGeneration: this.policyGeneration })).result; }
   async mkdir(filePath, options = {}) { return (await this.request("fs.mkdir", { path: filePath, recursive: Boolean(options.recursive), mode: options.mode ?? 0o755, policyGeneration: this.policyGeneration })).result; }
@@ -63,5 +168,19 @@ export class ControllerClient {
   destroy() { this.socket.destroy(); }
 }
 async function waitForClient(descriptor) { let last; for (let attempt = 0; attempt < 50; attempt += 1) { try { const client = new ControllerClient(descriptor); await client.ready; return client; } catch (error) { last = error; await new Promise((resolve) => setTimeout(resolve, 20)); } } throw last ?? new Error("controller did not become ready"); }
-export async function acquireControllerLease({ startup, clientId }) { const client = await waitForClient(startup); const acquired = (await client.request("lease.acquire", { workspaceKey: startup.workspaceKey, clientId })).result; client.descriptor.token = acquired.leaseToken; const status = await client.status(); client.policyGeneration = status.policyGeneration; return { client, status, leaseToken: acquired.leaseToken, scope: { workspaceKey: startup.workspaceKey, canonicalWorkspaceRoot: startup.workspaceRoot }, manifest: { socketPath: startup.socketPath, manifestPath: startup.manifestPath } }; }
+export async function acquireControllerLease({ startup, clientId }) {
+  const client = await waitForClient(startup);
+  const acquired = (await client.request("lease.acquire", { workspaceKey: startup.workspaceKey, clientId })).result;
+  client.descriptor.token = acquired.leaseToken;
+  client.configureLeaseRenewal(startup);
+  const status = await client.status();
+  client.policyGeneration = status.policyGeneration;
+  return {
+    client,
+    status,
+    leaseToken: acquired.leaseToken,
+    scope: { workspaceKey: startup.workspaceKey, canonicalWorkspaceRoot: startup.workspaceRoot },
+    manifest: { socketPath: startup.socketPath, manifestPath: startup.manifestPath },
+  };
+}
 export function stopStartedController(startup) { try { const manifest = readPrivateJson(startup.manifestPath); if (validateManifest(manifest, startup)) process.kill(manifest.pid, "SIGTERM"); } catch {} }
