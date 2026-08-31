@@ -488,10 +488,10 @@ test("requested changes can be resubmitted and receive one fresh approval", asyn
 
 test("failed tuicr attempts remain pending and a later valid comment set consumes approval once", async () => {
 	const comments = [
-		{ id: "review", location: { kind: "review", path: null, startLine: null, endLine: null, side: null }, commentType: null, lifecycleState: "local_draft", content: "Clarify the overall outcome." },
-		{ id: "file", location: { kind: "file", path: "/plan.md", startLine: null, endLine: null, side: null }, commentType: "note", lifecycleState: "local_draft", content: "Keep terminology consistent." },
-		{ id: "line", location: { kind: "line", path: "/plan.md", startLine: 8, endLine: 8, side: "new" }, commentType: "issue", lifecycleState: "local_draft", content: "Support this claim with repository evidence." },
-		{ id: "range", location: { kind: "range", path: "/plan.md", startLine: 12, endLine: 15, side: "new" }, commentType: "suggestion", lifecycleState: "local_draft", content: "Combine these acceptance outcomes." },
+		{ id: "e1d00443b9a54cc1", location: { kind: "review", path: null, startLine: null, endLine: null, side: null }, commentType: null, lifecycleState: "local_draft", content: "Why does this change need a new queue?" },
+		{ id: "a34f16d7c82b5e90", location: { kind: "file", path: "/plan.md", startLine: null, endLine: null, side: null }, commentType: "note", lifecycleState: "local_draft", content: "Keep terminology consistent.\nUse the terms in docs/glossary.md." },
+		{ id: "7cb289f4d0e16a3b", location: { kind: "line", path: "/plan.md", startLine: 8, endLine: 8, side: "new" }, commentType: "issue", lifecycleState: "local_draft", content: "Support this claim with repository evidence." },
+		{ id: "f81a5ce92d07b634", location: { kind: "range", path: "/plan.md", startLine: 12, endLine: 15, side: "new" }, commentType: "suggestion", lifecycleState: "local_draft", content: "Combine these acceptance outcomes." },
 	];
 	const harness = await createHarness({
 		actions: ["review", "review"],
@@ -514,7 +514,12 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.equal(harness.sentUserMessages.length, 1);
 		const prompt = harness.sentUserMessages[0].message;
 		assert.match(prompt, /\[PLAN REVIEW COMMENTS\]/);
-		assert.match(prompt, /Clarify the overall outcome/);
+		assert.match(prompt, /> Exact user question or comment\n\n\*\*Resolution:\*\* Grounded answer, reconciliation, and plan impact\./);
+		assert.match(prompt, /one visible resolution block per comment in the supplied original order/i);
+		assert.match(prompt, /prefixing every line of a multi-line comment with "> "/i);
+		assert.match(prompt, /The quoted user text—not an anchor, stable ID, or opaque hash—is the visible label/i);
+		assert.match(prompt, /do not present an ID-only bullet or hash-led answer/i);
+		assert.match(prompt, /Before submit_plan, provide a final complete resolution block for every comment/i);
 		assert.match(prompt, /"kind": "range"/);
 		assert.match(prompt, /types are advisory context/i);
 		assert.match(prompt, /explicitly answer every user question/i);
@@ -522,6 +527,11 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.match(prompt, /After every question has an explicit answer or agreed resolution/i);
 		assert.match(prompt, /collect-then-batch clarification workflow/i);
 		assert.match(prompt, /submit_plan exactly once/i);
+		const serializedComments = prompt.slice(
+			prompt.indexOf("Comments (JSON):\n") + "Comments (JSON):\n".length,
+			prompt.indexOf("\n\nBefore submit_plan, provide a final complete resolution block for every comment."),
+		);
+		assert.deepEqual(JSON.parse(serializedComments), comments, "the planner receives every exact comment in order");
 		assert.doesNotMatch(prompt, /genuinely unresolved decision|resolve every \?|cleaned edited draft|direct edits present/i);
 		assert.equal(harness.notifications.some(({ message, level }) => level === "info" && /approval remains pending/.test(message)), true);
 		const revised = PART_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");

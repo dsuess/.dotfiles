@@ -105,12 +105,22 @@ Be careful about false positives:
 
 ### Step 2 — Acknowledge what you parsed (do not revise yet)
 
-In Pi, acknowledge every structured comment by its anchor or ID and explain how you will reconcile it
-against repository evidence; comment types are advisory context only. Inventory every user question in the
-comments individually, including natural-language interrogatives and requests for a choice that are not
-marker-prefixed or phrased with a trailing `?`. For each question, visibly provide an attributable answer
-or mark the required user decision as open. Ground an answer in repository evidence, a clearly stated
-assumption, or the user's decision, and state whether it changes the plan. Never silently turn an
+In Pi, make the visible response one resolution block per structured comment in the supplied original
+order; comment types are advisory context only. Quote the exact user content as a Markdown blockquote,
+prefixing every line of a multi-line comment with `> `, and put `**Resolution:**` immediately below it:
+
+```markdown
+> Exact user question or comment
+
+**Resolution:** Grounded answer, reconciliation, and plan impact.
+```
+
+The quoted user text is the visible label. Stable IDs and anchors may support internal inventory checks,
+but never present an ID-only bullet or opaque hash as the user's attribution. Inventory every user question
+in the comments individually, including natural-language interrogatives and requests for a choice that are
+not marker-prefixed or phrased with a trailing `?`. For each question, visibly provide an attributable
+answer or mark the required user decision as open. Ground an answer in repository evidence, a clearly
+stated assumption, or the user's decision, and state whether it changes the plan. Never silently turn an
 answerable question into plan text. Use the normal collect-then-batch clarification workflow for every
 user-owned decision that remains open.
 
@@ -124,11 +134,12 @@ If there are open questions, the revision waits.
 ### Step 3 — Resolve every `?` question interactively
 
 In Pi, resolve each question in the structured-comment inventory rather than treating only unresolved
-decisions as needing attention. When repository evidence or a stated assumption settles a question, give
-that answer visibly by its anchor or ID and say whether the plan changes. When a question exposes a
-user-owned choice or remains ambiguous after investigation, leave it open, reconcile any conflict with
-other feedback explicitly, and batch all such choices through the normal clarification workflow. This is
-question accountability, not a marker-driven interpretation of tuicr comment types.
+decisions as needing attention. When repository evidence or a stated assumption settles a question, put
+that answer in its quoted comment's `**Resolution:**` directly below the quote and say whether the plan
+changes. When a question exposes a user-owned choice or remains ambiguous after investigation, leave it
+open, reconcile any conflict with other feedback explicitly, and batch all such choices through the normal
+clarification workflow. This is question accountability, not a marker-driven interpretation of tuicr
+comment types.
 
 Present every unresolved question—whether it came from Pi structured feedback or a Claude `?` marker—and
 discuss it with the user. Default to surfacing all of them together (so the user sees the full set and can
@@ -161,8 +172,9 @@ of this skill is a revised plan for the user to review, not executed changes. Do
 `~/.claude/plans/` yourself; let ExitPlanMode own that file.
 
 In Pi plan mode, submit the single complete canonical revision through `submit_plan` only after every
-question in the structured-comment inventory has an explicit answer or agreed resolution and all supplied
-comments are reconciled. Any open user-owned decision keeps planning active and blocks submission. Record
+question in the structured-comment inventory has an explicit answer or agreed resolution, all supplied
+comments are reconciled, and the visible response has one final complete quoted-comment resolution block
+for every comment. Any open user-owned decision keeps planning active and blocks submission. Record
 user-supplied decisions in the revised plan's canonical `Questions & Answers` section when applicable. No
 marker conversion or annotation stripping applies. The trusted extension owns `.pi/plans/` persistence and
 reopens its four-action interactive approval dialog. Never use ordinary mutation tools to rewrite the Pi
@@ -170,9 +182,9 @@ plan file.
 
 ## Edge cases
 
-- **Pi feedback contains an answerable question:** answer it explicitly by comment anchor or ID, cite the
-  evidence or state the assumption, and say whether the plan changes. Do not silently fold the answer into
-  the revision.
+- **Pi feedback contains an answerable question:** quote it exactly, then answer it in the immediately
+  following `**Resolution:**`, cite the evidence or state the assumption, and say whether the plan changes.
+  Do not silently fold the answer into the revision.
 - **Pi feedback contains a question without `?`:** treat an interrogative or a request for information or
   a choice as a question even when it has no marker syntax; inventory and resolve it like every other
   review question.
@@ -203,17 +215,27 @@ A tuicr round returns these comments:
 
 Correct behavior:
 
-1. Acknowledge all three comments. Identify the first two as questions even though only one has a trailing
-   `?`.
-2. Inspect the repository. Reply to `line-18` with the dispatcher evidence and say that the plan changes
-   to reuse it. For `range-32-35`, explain that no repository rule chooses a cap, so the operator-owned
-   choice remains open. Reconcile the terminology feedback as advisory guidance.
-3. Ask for the retry decision together with any other open choices; do not call `submit_plan` yet.
-4. After the user decides, record that decision in `Questions & Answers` if applicable, then submit one
-   complete canonical revision.
+1. Acknowledge all three comments in their returned order. Identify the first two as questions even though
+   only one has a trailing `?`.
+2. Use a visible block for each comment, for example:
 
-What would be wrong: silently changing the plan to use the dispatcher, or choosing three retries, without
-an explicit answer attributable to the corresponding user question.
+   ```markdown
+   > Why does this need a new queue instead of the existing dispatcher?
+
+   **Resolution:** Repository evidence shows the dispatcher supports this workload, so the plan will reuse
+   it rather than add a queue.
+   ```
+
+   Quote every line when a comment spans lines. Do not substitute `line-18:` or a stable-ID hash for the
+   quote. Reconcile the terminology feedback as advisory guidance in its own block.
+3. For `range-32-35`, explain in its `**Resolution:**` that no repository rule chooses a cap, so the
+   operator-owned choice remains open. Ask for it together with any other open choices; do not call
+   `submit_plan` yet.
+4. After the user decides, complete the resolution block, record that decision in `Questions & Answers` if
+   applicable, then submit one complete canonical revision.
+
+What would be wrong: silently changing the plan to use the dispatcher, choosing three retries, presenting
+only `line-18:` or a hash, or paraphrasing instead of quoting the corresponding user comment.
 
 ### Claude marker feedback
 
