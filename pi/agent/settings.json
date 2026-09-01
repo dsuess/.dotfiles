@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.84.2",
+  "lastChangelogVersion": "0.84.4",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "xhigh",
@@ -19,7 +19,7 @@
   ],
   "packages": [
     "extensions/statusbar.ts",
-    "npm:pi-vim",
+    "git:github.com/peloyeje/pi-vim@83921804e626945ba027ff373c975644dfc92083",
     "extensions/fzf-file-picker",
     "npm:pi-ketch@0.1.6",
     "npm:pi-context-usage",

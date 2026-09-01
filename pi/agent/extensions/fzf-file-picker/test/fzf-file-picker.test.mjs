@@ -131,7 +131,9 @@ test("picker cancellation and errors are lossless, and errors notify", async () 
 
 test("settings place the fzf wrapper directly after pi-vim", async () => {
   const settings = JSON.parse(await readFile(new URL("../../../settings.json", import.meta.url), "utf8"));
-  const piVim = settings.packages.indexOf("npm:pi-vim");
+  const piVim = settings.packages.findIndex(
+    (source) => typeof source === "string" && /(?:^npm:pi-vim(?:@|$)|github\.com\/(?:lajarre|peloyeje)\/pi-vim@)/.test(source),
+  );
   assert.ok(piVim >= 0);
   assert.equal(settings.packages[piVim + 1], "extensions/fzf-file-picker");
 });
