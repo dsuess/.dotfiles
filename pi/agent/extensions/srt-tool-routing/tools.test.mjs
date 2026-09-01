@@ -6,6 +6,7 @@ import { createPiJiti } from "../../../test-helpers.mjs";
 const jiti = await createPiJiti(import.meta.url);
 const {
   createSandboxBashOperations,
+  pathResolvedHostTool,
   registerSandboxTools,
   sanitizeGuestEnvironment,
 } = await jiti.import(new URL("./tools.ts", import.meta.url).pathname);
@@ -48,7 +49,7 @@ function fakeClient(cwd) {
     },
     async exec(argv, options) {
       execCalls.push({ argv, options });
-      if (argv[0] === "/usr/bin/rg") {
+      if (argv[0] === "rg") {
         const event = {
           type: "match",
           data: {
@@ -58,7 +59,7 @@ function fakeClient(cwd) {
           },
         };
         options.onEvent?.("stdout", Buffer.from(`${JSON.stringify(event)}\n`));
-      } else if (argv[0] === "/usr/bin/fd") {
+      } else if (argv[0] === "fd") {
         options.onEvent?.("stdout", Buffer.from(`${path.join(cwd, "read.txt")}\n`));
       } else {
         options.onEvent?.("stdout", Buffer.from("bash-output"));
@@ -76,6 +77,14 @@ function registeredTools(client, cwd) {
   );
   return tools;
 }
+
+test("PATH-resolved optional host tools accept only bare executable names", () => {
+  assert.deepEqual(pathResolvedHostTool("rg"), ["rg"]);
+  assert.deepEqual(pathResolvedHostTool("fd-tool_2.0+local"), ["fd-tool_2.0+local"]);
+  for (const name of ["", ".", "-rg", "/usr/bin/rg", "./rg", "../rg", "tools/rg", "tools\\rg", "rg --json", "rg;id", "rg\u0000fd", null]) {
+    assert.throws(() => pathResolvedHostTool(name));
+  }
+});
 
 test("trusted host effects are explicit source-controlled data", () => {
   const effects = adapterEffects();
@@ -120,20 +129,30 @@ test("read, write, edit, and ls use controller VFS paths without /workspace tran
   assert.equal(client.execCalls.length, 0);
 });
 
-test("grep and find execute guest rg/fd as argument vectors and keep truncation details", async () => {
+test("grep and find execute PATH-resolved rg/fd as argument vectors and keep truncation details", async () => {
   const cwd = "/physical/workspace";
   const client = fakeClient(cwd);
   const tools = registeredTools(client, cwd);
 
-  const grep = await tools.get("grep").execute("grep-1", { pattern: "line", path: ".", limit: 10 });
+  const grep = await tools.get("grep").execute("grep-1", { pattern: "line", path: ".", limit: 1 });
   assert.match(grep.content[0].text, /read\.txt:1: line one/);
-  assert.equal(client.execCalls[0].argv[0], "/usr/bin/rg");
-  assert.equal(client.execCalls[0].argv.includes("-lc"), false);
+  assert.equal(grep.details.matchLimitReached, 1);
+  assert.deepEqual(client.execCalls[0].argv, [
+    "rg", "--json", "--line-number", "--color=never", "--hidden", "--max-count", "1", "--", "line", cwd,
+  ]);
 
-  const found = await tools.get("find").execute("find-1", { pattern: "*.txt", path: ".", limit: 10 });
-  assert.equal(found.content[0].text, "read.txt");
-  assert.equal(client.execCalls[1].argv[0], "/usr/bin/fd");
-  assert.equal(client.execCalls[1].argv.includes("-lc"), false);
+  const found = await tools.get("find").execute("find-1", { pattern: "*.txt", path: ".", limit: 1 });
+  assert.match(found.content[0].text, /^read\.txt/);
+  assert.equal(found.details.resultLimitReached, 1);
+  assert.deepEqual(client.execCalls[1].argv, [
+    "fd", "--glob", "--color=never", "--hidden", "--max-results", "1", "--", "*.txt", cwd,
+  ]);
+
+  for (const call of client.execCalls) {
+    assert.equal(path.isAbsolute(call.argv[0]), false, "optional host tools must be PATH-resolved basenames");
+    assert.equal(call.argv.includes("-lc"), false, "adapters must not invoke a login shell");
+    assert.equal(call.options.env.PATH, undefined, "adapters must not reconstruct PATH");
+  }
 });
 
 test("bash and rewritten RTK commands retain tool secrets but strip control authority", async () => {

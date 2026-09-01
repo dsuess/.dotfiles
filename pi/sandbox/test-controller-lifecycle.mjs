@@ -68,11 +68,13 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-path-"));
   const workspaceBin = path.join(workspace, "bin");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-home-"));
-  for (const directory of [workspaceBin, path.join(home, ".local/bin"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
+  const userToolBin = path.join(home, ".local/bin");
+  for (const directory of [workspaceBin, userToolBin, path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(workspaceBin, "workspace-tool"), "#!/bin/sh\nprintf workspace-tool\n"); fs.chmodSync(path.join(workspaceBin, "workspace-tool"), 0o755);
+  fs.writeFileSync(path.join(userToolBin, "user-tool"), "#!/bin/sh\nprintf user-tool\n"); fs.chmodSync(path.join(userToolBin, "user-tool"), 0o755);
   fs.writeFileSync(path.join(home, ".serena/serena_config.yml"), "project: generated-copy\n");
   const originalHome = process.env.HOME, originalPath = process.env.PATH;
-  const inheritedPath = `${workspaceBin}:${originalPath}`;
+  const inheritedPath = `${userToolBin}:${workspaceBin}:${originalPath}`;
   let startup;
   try {
     process.env.HOME = home;
@@ -83,15 +85,18 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
     process.env.PATH = originalPath;
   }
   t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); });
-  const output = execFileSync(process.execPath, [new URL("./client-cli.mjs", import.meta.url).pathname, "bash", Buffer.from(JSON.stringify(startup)).toString("base64"), workspace, "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$PATH\" \"$UV_TOOL_BIN_DIR\" \"$UV_TOOL_DIR\" \"$UV_PYTHON_INSTALL_DIR\" \"$(command -v workspace-tool)\" \"$(command -v docker)\" \"$(cat \"$HOME/.serena/serena_config.yml\")\"; if printf blocked > \"$UV_TOOL_DIR/write-test\"; then printf writable; else printf readonly; fi"], { encoding: "utf8" }).trimEnd().split("\n");
-  assert.equal(output[0], `${path.dirname(output[5])}:${inheritedPath}`);
-  assert.equal(output[1], fs.realpathSync(path.join(home, ".local/bin")));
+  const command = `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "$PATH" "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR" "$UV_PYTHON_INSTALL_DIR" "$(command -v user-tool)" "$(user-tool)" "$(command -v workspace-tool)" "$(command -v docker)" "$(cat "$HOME/.serena/serena_config.yml")"; if printf blocked > ${JSON.stringify(path.join(userToolBin, "write-test"))}; then printf user-tool-writable; else printf user-tool-readonly; fi; if printf blocked > "$UV_TOOL_DIR/write-test"; then printf uv-tool-writable; else printf uv-tool-readonly; fi`;
+  const output = execFileSync(process.execPath, [new URL("./client-cli.mjs", import.meta.url).pathname, "bash", Buffer.from(JSON.stringify(startup)).toString("base64"), workspace, command], { encoding: "utf8" }).trimEnd().split("\n");
+  assert.equal(output[0], `${path.dirname(output[7])}:${inheritedPath}`);
+  assert.equal(output[1], fs.realpathSync(userToolBin));
   assert.equal(output[2], fs.realpathSync(path.join(home, ".local/share/uv/tools")));
   assert.equal(output[3], fs.realpathSync(path.join(home, ".local/share/uv/python")));
-  assert.equal(output[4], path.join(workspaceBin, "workspace-tool"));
-  assert.match(output[5], /\/docker$/);
-  assert.equal(output[6], "project: generated-copy");
-  assert.match(output.slice(7).join("\n"), /^readonly/);
+  assert.equal(output[4], path.join(userToolBin, "user-tool"));
+  assert.equal(output[5], "user-tool");
+  assert.equal(output[6], path.join(workspaceBin, "workspace-tool"));
+  assert.match(output[7], /\/docker$/);
+  assert.equal(output[8], "project: generated-copy");
+  assert.match(output.slice(9).join("\n"), /^user-tool-readonlyuv-tool-readonly$/);
 });
 
 test("controller cancels a process group on timeout", async (t) => {

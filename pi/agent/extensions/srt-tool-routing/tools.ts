@@ -38,6 +38,19 @@ const DEFAULT_FIND_LIMIT = 1000;
 const FILE_CHUNK_BYTES = 512 * 1024;
 const MAX_READ_BYTES = 64 * 1024 * 1024;
 const MAX_SEARCH_OUTPUT_BYTES = 8 * 1024 * 1024;
+const BARE_HOST_EXECUTABLE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+/**
+ * Construct an argv prefix for an optional executable supplied by the
+ * controller's inherited PATH. Fixed controller dependencies retain their
+ * reviewed absolute paths instead.
+ */
+export function pathResolvedHostTool(name: string): string[] {
+  if (typeof name !== "string" || !BARE_HOST_EXECUTABLE.test(name)) {
+    throw new Error(`Optional host tool must be a bare executable name: ${name}`);
+  }
+  return [name];
+}
 
 export interface SandboxClient {
   policyGeneration: string;
@@ -237,7 +250,7 @@ export async function executeSandboxGrep(
   }
   const context = params.context && params.context > 0 ? Math.floor(params.context) : 0;
   const effectiveLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_GREP_LIMIT));
-  const argv = ["/usr/bin/rg", "--json", "--line-number", "--color=never", "--hidden"];
+  const argv = [...pathResolvedHostTool("rg"), "--json", "--line-number", "--color=never", "--hidden"];
   if (params.ignoreCase) argv.push("--ignore-case");
   if (params.literal) argv.push("--fixed-strings");
   if (params.glob) argv.push("--glob", params.glob);
@@ -340,7 +353,7 @@ export async function executeSandboxFind(
     throw new Error(`Path not found: ${searchRoot}`);
   }
   const effectiveLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_FIND_LIMIT));
-  const argv = ["/usr/bin/fd", "--glob", "--color=never", "--hidden"];
+  const argv = [...pathResolvedHostTool("fd"), "--glob", "--color=never", "--hidden"];
   if (!(await isInsideGitRepository(client, searchRoot))) argv.push("--no-require-git");
   argv.push("--max-results", String(effectiveLimit));
   let pattern = params.pattern;
