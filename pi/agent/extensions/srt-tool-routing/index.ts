@@ -5,10 +5,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { acquireControllerLease, ControllerClient, stopStartedController } from "../../../sandbox/client.mjs";
 import {
-  auditToolInventory,
   createHostAdapterManifest,
-  isAuditedHostAdapter,
   isSrtToolRoutingReplacement,
+  isTrustedHostAdapter,
+  verifyToolInventory,
   type ConfiguredToolInfo,
 } from "./host-adapters.ts";
 import {
@@ -194,8 +194,8 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
 
     registerSandboxTools(pi, { cwd, getClient });
 
-    const audit = () =>
-      auditToolInventory(configuredTools(pi), {
+    const verifyInventory = () =>
+      verifyToolInventory(configuredTools(pi), {
         manifest,
         extensionPath: dependencies.auditOptions?.extensionPath,
         agentDir: dependencies.auditOptions?.agentDir,
@@ -254,7 +254,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       ctx?.shutdown();
     };
 
-    const enforceInventory = (ctx?: ExtensionContext, result = audit()): void => {
+    const enforceInventory = (ctx?: ExtensionContext, result = verifyInventory()): void => {
       const safeActive = pi
         .getActiveTools()
         .filter((name) => result.allowedNames.has(name) && permittedNames.has(name));
@@ -267,7 +267,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     };
 
     pi.events.on(SANDBOX_VERIFY_TOOLS_EVENT, (payload: any) => {
-      const result = audit();
+      const result = verifyInventory();
       pi.setActiveTools(
         pi
           .getActiveTools()
@@ -335,10 +335,10 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
               !/^[0-9a-f]{64}$/.test(status.policyGeneration) || !/^[0-9a-f]{64}$/.test(status.runtimeGeneration)) {
             throw new Error("SRT tool routing controller status does not match the requested workspace");
           }
-          const result = audit();
+          const result = verifyInventory();
           if (result.replacementErrors.length > 0) throw new Error(result.replacementErrors.join("; "));
           const missingHostTools = requestedHostTools.filter((name) => !result.allowedNames.has(name));
-          if (missingHostTools.length > 0) throw new Error(`Requested host adapters are missing or unaudited: ${missingHostTools.join(", ")}`);
+          if (missingHostTools.length > 0) throw new Error(`Requested host adapters are missing or have untrusted provenance: ${missingHostTools.join(", ")}`);
           permittedNames = new Set([...requested, ...requestedHostTools]);
           pi.setActiveTools([...permittedNames]);
           enforceInventory(ctx, result);
@@ -415,13 +415,13 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
         tool &&
           permittedNames.has(event.toolName) &&
           (isSrtToolRoutingReplacement(tool, dependencies.auditOptions) ||
-            isAuditedHostAdapter(tool, manifest)),
+            isTrustedHostAdapter(tool, manifest)),
       );
       if (!allowed) {
         return {
           block: true,
           terminate: true,
-          reason: `Tool '${event.toolName}' is not an audited SRT tool routing replacement or host adapter.`,
+          reason: `Tool '${event.toolName}' is not a trusted SRT tool-routing replacement or host adapter.`,
         };
       }
     });

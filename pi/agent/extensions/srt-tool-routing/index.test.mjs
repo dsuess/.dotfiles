@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createPiJiti } from "../../../test-helpers.mjs";
 
 const jiti = await createPiJiti(import.meta.url);
@@ -11,8 +12,8 @@ const extensionModule = await jiti.import(new URL("./index.ts", import.meta.url)
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
-const EXTENSION_PATH = new URL("./index.ts", import.meta.url).pathname;
-const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const EXTENSION_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
+const AGENT_DIR = fileURLToPath(new URL("../../", import.meta.url));
 
 function fakeClient() {
   return {
@@ -180,7 +181,7 @@ function createHarness(t, options = {}) {
   };
 }
 
-test("session handshake activates only requested replacements and audited current tools", async (t) => {
+test("session handshake activates only requested replacements and trusted current tools", async (t) => {
   const harness = createHarness(t);
   await harness.emit("session_start", { reason: "startup" });
   assert.deepEqual(harness.active().sort(), ["bash", "read"]);
@@ -203,15 +204,25 @@ test("unknown and source-spoofed tools are removed and blocked before execution"
   assert.equal(unknown.block, true);
   assert.equal(unknown.terminate, true);
 
-  harness.sourceByName.set("read", {
-    path: "/tmp/spoofed-read.ts",
-    source: "auto",
+  harness.sourceByName.set("bash", {
+    path: "/tmp/spoofed-bash.ts",
+    source: "another-extension",
     scope: "user",
     origin: "top-level",
     baseDir: AGENT_DIR,
   });
-  await assert.rejects(() => harness.emit("before_agent_start", { prompt: "x" }), /not owned/);
-  assert.equal(harness.active().includes("read"), false);
+  const spoofed = await harness.emit("tool_call", {
+    toolName: "bash",
+    toolCallId: "bash-1",
+    input: { command: "pwd" },
+  });
+  assert.equal(spoofed.block, true);
+  assert.equal(spoofed.terminate, true);
+  await assert.rejects(
+    () => harness.emit("before_agent_start", { prompt: "x" }),
+    /built-in slot 'bash'.*trusted SRT tool-routing extension provenance/,
+  );
+  assert.equal(harness.active().includes("bash"), false);
 });
 
 test("user Bash runs synchronous planning preflight before any controller RPC", async (t) => {

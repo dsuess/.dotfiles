@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Pinned SRT tool-plane runtime for Pi",
   "scripts": {
-    "test": "node --test test-*.mjs ../agent/extensions/srt-tool-routing/sandbox-status.test.mjs",
+    "test": "node --test test-*.mjs ../agent/extensions/srt-tool-routing/host-adapters.test.mjs ../agent/extensions/srt-tool-routing/index.test.mjs ../agent/extensions/srt-tool-routing/sandbox-status.test.mjs ../agent/extensions/srt-tool-routing/tools.test.mjs",
     "test:native": "node apply-srt-workspace-write-patch.mjs && node srt-compatibility-canary.mjs",
     "canary:srt": "node apply-srt-workspace-write-patch.mjs && node srt-unix-socket-canary.mjs && node srt-workspace-write-canary.mjs"
   },

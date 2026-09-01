@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Opt-in native contract check for the Pi SRT/Docker-Sandboxes transport.
- * It intentionally refuses to create or mutate anything until a reviewed
- * stable sbx release and a separately authenticated pi-srt app are present.
+ * It intentionally refuses to create a sidecar until the required sbx
+ * capabilities and a separately authenticated pi-srt app are present.
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -12,8 +12,6 @@ import os from "node:os";
 import path from "node:path";
 
 export const PI_SBX_APP = "pi-srt";
-export const REQUIRED_SBX_VERSION = "0.42.0-rc1";
-export const REQUIRED_SBX_COMMIT = "a6d7101a6c48908b39af0dad0103a2700c85ee4d";
 export const MANUAL_LOGIN_COMMAND = "sbx --app-name pi-srt login";
 export const REVIEWED_SHELL_TEMPLATE = "docker.io/docker/sandbox-templates@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919";
 const FIXED_ENV_NAMES = new Set(["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME"]);
@@ -67,23 +65,21 @@ export async function dialPiDockerPing(name, options = {}) {
     child.stdin.end("GET /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n");
   });
   assert.equal(result.code, 0, `Docker dial-stdio ping failed: ${result.stderr || result.stdout}`);
-  assert.match(result.stdout, /^HTTP\/1\.1 200 OK\r?\n/im, `Docker dial-stdio stdout was contaminated: ${result.stdout || result.stderr}`);
+  assert.match(result.stdout, /^HTTP\/1\.1 200 OK\r?\n/i, `Docker dial-stdio stdout was contaminated: ${result.stdout || result.stderr}`);
   assert.match(result.stdout, /(?:^|\r?\n)API-Version: /i, "Docker Engine ping omitted API-Version");
   return result;
 }
 
-export function assertStableSbxVersion(output) {
-  const match = output.match(/v(\d+\.\d+\.\d+(?:-[\w.-]+)?)\s+([0-9a-f]{40})/i);
-  if (!match) throw new Error("could not determine sbx version and commit");
-  const [, version, commit] = match;
-  if (version !== REQUIRED_SBX_VERSION || commit.toLowerCase() !== REQUIRED_SBX_COMMIT) {
-    throw new Error(`exact reviewed sbx v${REQUIRED_SBX_VERSION} (${REQUIRED_SBX_COMMIT.slice(0, 8)}) is required; found v${version} (${commit.slice(0, 8)})`);
-  }
-  return { version, commit };
+/** Record availability diagnostics without treating release text as authority. */
+export function sbxVersionDiagnostic(result) {
+  assert.equal(result.code, 0, `sbx version failed: ${result.stderr || result.stdout}`);
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  assert.ok(output, "sbx version returned no diagnostic output");
+  return output;
 }
 
 export function assertAppAuthenticated(result) {
-  if (/not authenticated|sign in with/i.test(`${result.stdout}\n${result.stderr}`)) {
+  if (/not authenticated|sign in with|401 unauthorized|no valid user session/i.test(`${result.stdout}\n${result.stderr}`)) {
     throw new Error(`Pi Docker Sandboxes authentication is required. Run exactly: ${MANUAL_LOGIN_COMMAND}`);
   }
 }
@@ -128,9 +124,7 @@ export async function preflightPiApp(options = {}) {
       const started = await runPiSbx(["daemon", "start", "--detach"], options);
       assert.equal(started.code, 0, `Pi app daemon start failed: ${started.stderr || started.stdout}`);
     }
-    const version = await runPiSbx(["version"], options);
-    assert.equal(version.code, 0, `sbx version failed: ${version.stderr}`);
-    const versionInfo = assertStableSbxVersion(`${version.stdout}\n${version.stderr}`);
+    const versionDiagnostic = sbxVersionDiagnostic(await runPiSbx(["version"], options));
     const diagnose = await runPiSbx(["diagnose", "--json"], options);
     assertAppAuthenticated(diagnose);
     assert.equal(diagnose.code, 0, `Pi app daemon diagnose failed: ${diagnose.stderr || diagnose.stdout}`);
@@ -142,12 +136,15 @@ export async function preflightPiApp(options = {}) {
     assert.equal(sshForwardingStatus.code, 0, `could not read Pi-app SSH-agent forwarding setting: ${sshForwardingStatus.stderr || sshForwardingStatus.stdout}`);
     assert.equal(sshForwardingStatus.stdout.trim(), "false", "Pi-app SSH-agent forwarding remains enabled");
     let policyResult = await runPiSbx(["policy", "ls", "--json"], options);
+    assertAppAuthenticated(policyResult);
     assert.equal(policyResult.code, 0, `Pi-app policy inspection failed: ${policyResult.stderr || policyResult.stdout}`);
     let policy = JSON.parse(policyResult.stdout);
     if (policy.rules?.length === 0) {
       const initialized = await runPiSbx(["policy", "init", "allow-all"], options);
+      assertAppAuthenticated(initialized);
       assert.equal(initialized.code, 0, `Pi-app allow-all policy initialization failed: ${initialized.stderr || initialized.stdout}`);
       policyResult = await runPiSbx(["policy", "ls", "--json"], options);
+      assertAppAuthenticated(policyResult);
       assert.equal(policyResult.code, 0, `Pi-app policy reinspection failed: ${policyResult.stderr || policyResult.stdout}`);
       policy = JSON.parse(policyResult.stdout);
     }
@@ -159,7 +156,7 @@ export async function preflightPiApp(options = {}) {
     const inventory = await runPiSbx(["template", "ls", "--json"], options);
     assertAppAuthenticated(inventory);
     assert.equal(inventory.code, 0, `Pi app template inventory failed: ${inventory.stderr || inventory.stdout}`);
-    return { version: versionInfo, diagnose: parsed, policy, mcpRegistry: JSON.parse(mcpRegistry.stdout), templateInventory: JSON.parse(inventory.stdout) };
+    return { versionDiagnostic, diagnose: parsed, policy, mcpRegistry: JSON.parse(mcpRegistry.stdout), templateInventory: JSON.parse(inventory.stdout) };
   }, options.runtimeRoot);
 }
 

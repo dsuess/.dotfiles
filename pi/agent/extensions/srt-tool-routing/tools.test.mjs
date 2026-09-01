@@ -9,17 +9,7 @@ const {
   registerSandboxTools,
   sanitizeGuestEnvironment,
 } = await jiti.import(new URL("./tools.ts", import.meta.url).pathname);
-const { adapterEffects, schemaSha256 } = await jiti.import(new URL("./host-adapters.ts", import.meta.url).pathname);
-
-const EXPECTED_SCHEMAS = {
-  read: "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
-  bash: "456434a5b776beeebb2940d78b1c7b6663add6c6f2d47450c7ad4616ecf7ff3a",
-  edit: "55866598f02c5e00ddfcbcae3df78081e3712de09a622bac7a6bc02ef2acc1bc",
-  write: "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
-  grep: "d281ef46cdcb72d6ec342b248a8b622f99638d193fe93fbc77a532002b7ee4f7",
-  find: "fd95c0d507c9b0e6db36704bbe038363f24d43d72d5c5f217dd5c44f94459632",
-  ls: "ad4ee18683e9c3d6bfa7969709a0683bc9f896099ed6a74db0b6c49444718a0c",
-};
+const { adapterEffects } = await jiti.import(new URL("./host-adapters.ts", import.meta.url).pathname);
 
 function fakeClient(cwd) {
   const files = new Map([
@@ -87,7 +77,7 @@ function registeredTools(client, cwd) {
   return tools;
 }
 
-test("audited host effects are explicit source-controlled data", () => {
+test("trusted host effects are explicit source-controlled data", () => {
   const effects = adapterEffects();
   assert.match(effects.ketch_search.join(" "), /public network research/);
   assert.match(effects.ask_user_question.join(" "), /user interaction/);
@@ -99,13 +89,10 @@ test("audited host effects are explicit source-controlled data", () => {
   ].sort());
 });
 
-test("replacement schemas and prompt contracts match Pi built-ins", () => {
+test("replacement names and prompt contracts match Pi built-ins", () => {
   const cwd = "/workspace";
   const tools = registeredTools(fakeClient(cwd), cwd);
-  assert.deepEqual([...tools.keys()].sort(), Object.keys(EXPECTED_SCHEMAS).sort());
-  for (const [name, expected] of Object.entries(EXPECTED_SCHEMAS)) {
-    assert.equal(schemaSha256(tools.get(name).parameters), expected, name);
-  }
+  assert.deepEqual([...tools.keys()].sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
   assert.match(tools.get("read").description, /2000 lines or 50KB/);
   assert.match(tools.get("bash").description, /last 2000 lines or 50KB/);
 });

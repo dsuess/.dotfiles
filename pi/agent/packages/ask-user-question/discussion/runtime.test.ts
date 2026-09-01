@@ -42,7 +42,7 @@ function parentWithQuestionnaireTool() {
 }
 
 describe("discussion fork runtime", () => {
-  it("preserves audited tool order while excluding recursion, workflow, duplicates, and unknown tools", () => {
+  it("preserves trusted tool order while excluding recursion, workflow, duplicates, and unknown tools", () => {
     expect(filterChildTools(["write", "read", "ask_user_question", "edit", "plan_progress", "bash", "read", "unknown_tool"])).toEqual([
       "write",
       "read",

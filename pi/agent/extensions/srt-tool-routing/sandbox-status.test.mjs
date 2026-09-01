@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createPiJiti } from "../../../test-helpers.mjs";
 
 const jiti = await createPiJiti(import.meta.url);
@@ -11,8 +12,8 @@ const extensionModule = await jiti.import(new URL("./index.ts", import.meta.url)
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
-const EXTENSION_PATH = new URL("./index.ts", import.meta.url).pathname;
-const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const EXTENSION_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
+const AGENT_DIR = fileURLToPath(new URL("../../", import.meta.url));
 
 function controllerStatus(overrides = {}) {
   return {

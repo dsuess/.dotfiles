@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,61 +19,42 @@ export interface ConfiguredToolInfo {
   sourceInfo: ToolSourceInfo;
 }
 
-interface AdapterSpec {
+export interface AdapterSpec {
   name: string;
   source: string;
   scope: "user";
   origin: "package" | "top-level";
   sourcePath: string;
   baseDir: string;
-  schemaSha256: string;
-  packageJson?: string;
-  packageVersion?: string;
   hostEffects: readonly string[];
 }
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const SRT_ROUTING_EXTENSION_PATH = path.join(EXTENSION_DIR, "index.ts");
 
-// Pinned against @earendil-works/pi-coding-agent's built-in tool schemas. Recompute with
-// schemaSha256(createXTool(cwd).parameters) after upgrading pi-coding-agent, or every launch
-// will fail tool-inventory verification for the drifted tool.
-const BUILTIN_SCHEMA_HASHES: Readonly<Record<string, string>> = Object.freeze({
-  read: "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
-  bash: "1ad6bb2c22082daa3c896b8b96ee6f799cbe3c6efeca93a3cbefbb4f9965f1fb",
-  edit: "55866598f02c5e00ddfcbcae3df78081e3712de09a622bac7a6bc02ef2acc1bc",
-  write: "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
-  grep: "d281ef46cdcb72d6ec342b248a8b622f99638d193fe93fbc77a532002b7ee4f7",
-  find: "fd95c0d507c9b0e6db36704bbe038363f24d43d72d5c5f217dd5c44f94459632",
-  ls: "ad4ee18683e9c3d6bfa7969709a0683bc9f896099ed6a74db0b6c49444718a0c",
-});
+export const HOST_ADAPTER_NAMES = Object.freeze([
+  "plan_progress",
+  "complete_plan",
+  "complete_stage",
+  "submit_plan",
+  "subagent",
+  "ketch_search",
+  "ketch_scrape",
+  "ketch_code",
+  "ketch_docs",
+  "ketch_crawl",
+  "ask_user_question",
+] as const);
 
-const ADAPTER_SCHEMAS: Readonly<Record<string, string>> = Object.freeze({
-  plan_progress: "608694d7534b76fed9fe8b50a527e9ac3d1dff7009b8aab0af769ff727955c76",
-  complete_plan: "3fdcf886c0c54154083a34b95c6fc8ad4ae6b026796ed5ce78a079f3105c0471",
-  complete_stage: "0c07cc92d9c81f5a986561f8d636dce9a443c977e2556250c95508c05a703790",
-  submit_plan: "6831cf97d50e813d677713dc06f0b930f4c60d75b9988e7d88af3f5822dacc6f",
-  subagent: "0fa20121938abdcac98352bc39bdd4bba7c0cbcdcc7af4b0cca21cbfe487794e",
-  ketch_search: "324c231308e94346cecc2fadbb5c67848f65ecff709be43106356df787a7a211",
-  ketch_scrape: "96681b1aa6231982402dc61738fa88b67dbd642a08e2e75a3b92f244e49fd343",
-  ketch_code: "476d2322712ef8280526dde7f3b728a1340edc5e69a7ad2a57f1ac8cd3016604",
-  ketch_docs: "292538936e3918391b3c23a254d2b9ad6dac69621c95a555098697787e7a8bea",
-  ketch_crawl: "de9e90f95fd269f03e9fdd125266847b96b7d4a8aecc34569a02ac860a18dbd1",
-  ask_user_question: "73e4ecfc199f44fc6f3f30187188e270fdfb52677c9f8630584cd7028fb63813",
-});
-
-export const HOST_ADAPTER_NAMES = Object.freeze(Object.keys(ADAPTER_SCHEMAS));
-
-interface AuditCache {
+interface ProvenanceCache {
   canonicalPaths: Map<string, string | null>;
-  packageVersions: Map<string, string | null>;
 }
 
-function createAuditCache(): AuditCache {
-  return { canonicalPaths: new Map(), packageVersions: new Map() };
+function createProvenanceCache(): ProvenanceCache {
+  return { canonicalPaths: new Map() };
 }
 
-function canonical(candidate: string, cache?: AuditCache): string | null {
+function canonical(candidate: string, cache?: ProvenanceCache): string | null {
   if (cache?.canonicalPaths.has(candidate)) return cache.canonicalPaths.get(candidate) ?? null;
   let resolved: string | null;
   try {
@@ -86,8 +66,9 @@ function canonical(candidate: string, cache?: AuditCache): string | null {
   return resolved;
 }
 
-export function schemaSha256(parameters: unknown): string {
-  return createHash("sha256").update(JSON.stringify(parameters)).digest("hex");
+function canonicalMatches(actual: string, expected: string, cache?: ProvenanceCache): boolean {
+  const expectedPath = canonical(expected, cache);
+  return expectedPath !== null && canonical(actual, cache) === expectedPath;
 }
 
 function agentDirectory(env: NodeJS.ProcessEnv = process.env): string {
@@ -110,9 +91,6 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
       origin: "top-level",
       sourcePath: path.join(planDir, "index.ts"),
       baseDir: agentDir,
-      schemaSha256: ADAPTER_SCHEMAS[name],
-      packageJson: path.join(planDir, "package.json"),
-      packageVersion: "0.1.0",
       hostEffects: Object.freeze(["validated plan/ledger persistence under the current workspace"]),
     });
   }
@@ -123,21 +101,17 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
     origin: "top-level",
     sourcePath: path.join(subagentDir, "index.ts"),
     baseDir: agentDir,
-    schemaSha256: ADAPTER_SCHEMAS.subagent,
     hostEffects: Object.freeze(["spawn one local child Pi process", "bounded temporary prompt/output files"]),
   });
   for (const name of ["ketch_search", "ketch_scrape", "ketch_code", "ketch_docs", "ketch_crawl"]) {
     specs.push({
       name,
-      source: "npm:pi-ketch@0.1.6",
+      source: "npm:pi-ketch",
       scope: "user",
       origin: "package",
       sourcePath: path.join(ketchDir, "src", "index.ts"),
       baseDir: ketchDir,
-      schemaSha256: ADAPTER_SCHEMAS[name],
-      packageJson: path.join(ketchDir, "package.json"),
-      packageVersion: "0.1.6",
-      hostEffects: Object.freeze(["bounded public network research through the pinned Ketch executable"]),
+      hostEffects: Object.freeze(["bounded public network research through the trusted Ketch executable"]),
     });
   }
   specs.push({
@@ -147,57 +121,51 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
     origin: "package",
     sourcePath: path.join(askDir, "index.ts"),
     baseDir: askDir,
-    schemaSha256: ADAPTER_SCHEMAS.ask_user_question,
-    packageJson: path.join(askDir, "package.json"),
-    packageVersion: "2.4.0-local.0",
     hostEffects: Object.freeze(["structured user interaction", "optional persisted discussion child Pi process"]),
   });
 
   return new Map(specs.map((spec) => [spec.name, Object.freeze(spec)]));
 }
 
-function packageVersionMatches(spec: AdapterSpec, cache?: AuditCache): boolean {
-  if (!spec.packageJson) return true;
-  let version = cache?.packageVersions.get(spec.packageJson);
-  if (version === undefined) {
-    try {
-      version = JSON.parse(fs.readFileSync(spec.packageJson, "utf8")).version;
-    } catch {
-      version = null;
-    }
-    cache?.packageVersions.set(spec.packageJson, version);
-  }
-  return version === spec.packageVersion;
+function packageSourceIdentity(source: string): string {
+  if (!source.startsWith("npm:")) return source;
+  const label = source.slice("npm:".length);
+  const separator = label.startsWith("@")
+    ? label.indexOf("@", label.indexOf("/") + 1)
+    : label.indexOf("@");
+  return `npm:${separator === -1 ? label : label.slice(0, separator)}`;
 }
 
-function sourceMatches(sourceInfo: ToolSourceInfo, expected: AdapterSpec, cache?: AuditCache): boolean {
+function sourceLabelMatches(actual: ToolSourceInfo, expected: AdapterSpec): boolean {
+  if (expected.origin === "package" && expected.source.startsWith("npm:")) {
+    return packageSourceIdentity(actual.source) === packageSourceIdentity(expected.source);
+  }
+  return actual.source === expected.source;
+}
+
+function sourceMatches(sourceInfo: ToolSourceInfo, expected: AdapterSpec, cache?: ProvenanceCache): boolean {
   return (
-    sourceInfo.source === expected.source &&
+    sourceLabelMatches(sourceInfo, expected) &&
     sourceInfo.scope === expected.scope &&
     sourceInfo.origin === expected.origin &&
-    canonical(sourceInfo.path, cache) === canonical(expected.sourcePath, cache) &&
-    canonical(sourceInfo.baseDir ?? "", cache) === canonical(expected.baseDir, cache)
+    canonicalMatches(sourceInfo.path, expected.sourcePath, cache) &&
+    canonicalMatches(sourceInfo.baseDir ?? "", expected.baseDir, cache)
   );
 }
 
-export function isAuditedHostAdapter(
+export function isTrustedHostAdapter(
   tool: ConfiguredToolInfo,
   manifest: ReadonlyMap<string, AdapterSpec> = createHostAdapterManifest(),
-  cache?: AuditCache,
+  cache?: ProvenanceCache,
 ): boolean {
   const spec = manifest.get(tool.name);
-  return Boolean(
-    spec &&
-      sourceMatches(tool.sourceInfo, spec, cache) &&
-      packageVersionMatches(spec, cache) &&
-      schemaSha256(tool.parameters) === spec.schemaSha256,
-  );
+  return Boolean(spec && sourceMatches(tool.sourceInfo, spec, cache));
 }
 
 export function isSrtToolRoutingReplacement(
   tool: ConfiguredToolInfo,
   options: { extensionPath?: string; agentDir?: string } = {},
-  cache?: AuditCache,
+  cache?: ProvenanceCache,
 ): boolean {
   if (!SRT_ROUTING_BUILTIN_NAMES.includes(tool.name as (typeof SRT_ROUTING_BUILTIN_NAMES)[number])) {
     return false;
@@ -208,46 +176,49 @@ export function isSrtToolRoutingReplacement(
     tool.sourceInfo.source === "auto" &&
     tool.sourceInfo.scope === "user" &&
     tool.sourceInfo.origin === "top-level" &&
-    canonical(tool.sourceInfo.path, cache) === canonical(expectedPath, cache) &&
-    canonical(tool.sourceInfo.baseDir ?? "", cache) === canonical(expectedAgentDir, cache) &&
-    schemaSha256(tool.parameters) === BUILTIN_SCHEMA_HASHES[tool.name]
+    canonicalMatches(tool.sourceInfo.path, expectedPath, cache) &&
+    canonicalMatches(tool.sourceInfo.baseDir ?? "", expectedAgentDir, cache)
   );
 }
 
-export interface InventoryAudit {
+export interface InventoryVerification {
   allowedNames: Set<string>;
-  unaudited: ConfiguredToolInfo[];
+  untrusted: ConfiguredToolInfo[];
   replacementErrors: string[];
 }
 
-export function auditToolInventory(
+export function verifyToolInventory(
   tools: ConfiguredToolInfo[],
   options: {
     manifest?: ReadonlyMap<string, AdapterSpec>;
     extensionPath?: string;
     agentDir?: string;
   } = {},
-): InventoryAudit {
+): InventoryVerification {
   const manifest = options.manifest ?? createHostAdapterManifest({ agentDir: options.agentDir });
-  const cache = createAuditCache();
+  const cache = createProvenanceCache();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const allowedNames = new Set<string>();
   const replacementErrors: string[] = [];
 
   for (const name of SRT_ROUTING_BUILTIN_NAMES) {
     const tool = byName.get(name);
-    if (!tool || !isSrtToolRoutingReplacement(tool, options, cache)) {
-      replacementErrors.push(`built-in slot '${name}' is not owned by the SRT tool-routing extension`);
+    if (!tool) {
+      replacementErrors.push(`required SRT replacement for built-in slot '${name}' is missing`);
+    } else if (!isSrtToolRoutingReplacement(tool, options, cache)) {
+      replacementErrors.push(
+        `built-in slot '${name}' is not registered from the trusted SRT tool-routing extension provenance`,
+      );
     } else {
       allowedNames.add(name);
     }
   }
   for (const tool of tools) {
-    if (isAuditedHostAdapter(tool, manifest, cache)) allowedNames.add(tool.name);
+    if (isTrustedHostAdapter(tool, manifest, cache)) allowedNames.add(tool.name);
   }
   return {
     allowedNames,
-    unaudited: tools.filter((tool) => !allowedNames.has(tool.name)),
+    untrusted: tools.filter((tool) => !allowedNames.has(tool.name)),
     replacementErrors,
   };
 }
@@ -261,9 +232,8 @@ export function adapterEffects(
 }
 
 export const hostAdapterInternals = Object.freeze({
-  ADAPTER_SCHEMAS,
-  BUILTIN_SCHEMA_HASHES,
   canonical,
-  packageVersionMatches,
+  canonicalMatches,
+  packageSourceIdentity,
   sourceMatches,
 });

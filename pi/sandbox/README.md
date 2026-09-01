@@ -1,9 +1,12 @@
 # Pi SRT tool routing
 
-Pi, its UI, provider authentication, and audited non-core adapters run on the host. Core file and shell tools run in one SRT process per operation. Docker is available only through a private workspace Docker Sandboxes sidecar broker.
+Pi, its UI, provider authentication, and trusted-provenance non-core adapters run on the host. Core file and shell tools run in one SRT process per operation. Docker is available only through a private workspace Docker Sandboxes sidecar broker. `pi --yolo` is the explicit host-native bypass. Normal launches never fall back to native core tools.
 
 ## Security contract
 
+- Tool authority comes from provenance, not compatibility fingerprints. Every routed built-in slot must come from the canonical user-scoped SRT routing extension. Each allowlisted host adapter must match its canonical user-scoped source path, origin, and base directory. Unknown, missing, or source-spoofed tools remain denied.
+- Tool parameter schemas and host-adapter package versions can change without an admission-list update. The `sbx` release number and commit can also change. Runtime behavior establishes compatibility. The canary verifies routing ownership, daemon health, authentication, diagnostics, SSH-agent settings, policy, MCP, templates, sidecar fields, and the Docker Engine dial. Incompatible Docker behavior blocks sidecar use. Core SRT file and shell routing remains active.
+- Artifact and integrity pins remain. The Docker shell template digest identifies the reviewed sidecar image. Capability protocol versions and controller source digests protect host/guest coherence. The SRT lockfile and verified patch preimages and postimages protect dependency and patch integrity.
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
 - Tool processes receive a generated HOME, temp directory, cache, and empty immutable `DOCKER_CONFIG`. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
 - Routed `PATH` is the controller startup `PATH`, with the generated private Docker client directory prepended. PATH is not a security boundary: SRT filesystem permissions decide whether a discovered program can read, execute, or mutate its target. A command may set its own PATH, but cannot bypass those permissions.
@@ -55,4 +58,14 @@ A root Pi runtime refreshes its opaque controller lease while it runs. After a l
 
 Run `npm --prefix pi/sandbox test` for deterministic controller, policy, host-configuration, and sidecar checks. Run `npm --prefix pi run check:deterministic`, then `./install.sh config`, then `npm --prefix pi run check` for the full repository gate. `./install.sh config` is non-destructive: it must not create a disposable sidecar.
 
-If Docker creation fails, verify the exact reviewed `sbx` version, authenticate only with `sbx --app-name pi-srt login`, and check that the reviewed shell template digest remains available. Template or capability drift is intentionally rejected; reset the validated sidecar only after reviewing the change. Never use `chown` or `chmod` on Homebrew or user tool installations as a sandbox workaround. Do not manually create links; deploy only through `./install.sh config`.
+If Docker creation fails, inspect the required capabilities instead of matching an `sbx` release number:
+
+```sh
+sbx --app-name pi-srt daemon status
+sbx --app-name pi-srt diagnose --json
+sbx --app-name pi-srt policy ls --json
+sbx --app-name pi-srt mcp ls --json
+sbx --app-name pi-srt template ls --json
+```
+
+Authenticate only with `sbx --app-name pi-srt login`. If `sbx` reports a credential-refresh cooldown, wait for the cooldown to expire. Then run the dedicated-app login again. Do not use an unscoped `sbx login`. Make sure that the dedicated app has an allow-all policy and an empty MCP registry. Make sure that the reviewed shell template digest is available. The native canary verifies SSH-agent forwarding, sidecar fields, and the private Docker dial. If template or capability data changes, review the change before you reset the sidecar. Never use `chown` or `chmod` on Homebrew or user tool installations as a sandbox workaround. Do not manually create links. Deploy only through `./install.sh config`.

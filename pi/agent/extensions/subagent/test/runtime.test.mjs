@@ -105,7 +105,7 @@ function baseOptions(overrides = {}) {
 	};
 }
 
-test("filters recursive, parent-workflow, duplicate, and unaudited tools", () => {
+test("filters recursive, parent-workflow, duplicate, and untrusted tools", () => {
 	assert.deepEqual(filterChildTools([
 		"read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage", "read", "unknown_tool",
 	]), ["read", "bash"]);
@@ -253,7 +253,7 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	}
 });
 
-test("passes audited host adapters only through the private post-handshake allowlist", async () => {
+test("passes trusted host adapters only through the private post-handshake allowlist", async () => {
 	const proc = new FakeProcess();
 	let spawnCall;
 	await runSubagent(baseOptions({ activeTools: ["read", "ketch_search", "unknown_tool"] }), {
