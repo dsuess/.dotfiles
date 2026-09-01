@@ -16,8 +16,7 @@ import {
   SANDBOX_LIFECYCLE_EVENT,
   type SandboxLifecycleEvent,
 } from "./events.ts";
-import { SandboxSettingsStore } from "./settings-store.ts";
-import { showSandboxSettings } from "./settings-view.ts";
+import { showSandboxStatus } from "./status-view.ts";
 import {
   createSandboxBashOperations,
   SRT_ROUTING_BUILTIN_NAMES,
@@ -185,7 +184,6 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     const clearCapabilityEnvironment = (): void => {
       for (const name of CAPABILITY_ENV_FIELDS) delete env[name];
     };
-    const settingsStore = new SandboxSettingsStore();
     const manifest = createHostAdapterManifest({ agentDir: dependencies.auditOptions?.agentDir });
     const getClient = (): SandboxClient => {
       if (!client || fatalError) {
@@ -486,18 +484,17 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     });
 
     pi.registerCommand("sandbox", {
-      description: "Inspect or change the shared SRT tool routing sandbox",
+      description: "Show shared SRT tool routing sandbox status",
       handler: async (_args, ctx) => {
         if (!client || fatalError) {
-          ctx.ui.notify(fatalError ?? "SRT tool routing is starting; settings are available after readiness.", fatalError ? "error" : "info");
+          ctx.ui.notify(fatalError ?? "SRT tool routing is starting; status is available after readiness.", fatalError ? "error" : "info");
           return;
         }
-        await showSandboxSettings(
-          ctx,
-          client as any,
-          settingsStore,
-          (event) => emitLifecycle(event, ctx),
-        );
+        try {
+          publishStatus(await showSandboxStatus(ctx, client), ctx);
+        } catch (error) {
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        }
       },
     });
 

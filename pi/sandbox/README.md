@@ -41,11 +41,11 @@ pi-sbx reset --force          # deletes this workspace's sidecar and Docker stat
 pi-sbx prune --force          # removes validated stopped Pi sidecars only
 ```
 
-`reset` and `prune` require an interactive confirmation or `--force`. The command accepts a validated sidecar name for status, stop, and reset. It refuses missing, foreign, ambiguous, or capability-drifted sidecars. The `/sandbox` UI reports routing settings only; use `pi-sbx` for Docker disk management.
+`reset` and `prune` require an interactive confirmation or `--force`. The command accepts a validated sidecar name for status, stop, and reset. It refuses missing, foreign, ambiguous, or capability-drifted sidecars. `/sandbox` is read-only: it reports live controller, broker, workspace, generation, and sidecar status. Use `pi-sbx` for Docker disk management.
 
-## Permissions and settings
+## Controller policy and permissions
 
-Permission prompts are serialized at the controller boundary. A once grant applies to one drained retry, a session grant stays in controller memory, and a persistent grant is atomically written to the resolved Stow source and revalidated when loaded. Missing UI, timeout, cancellation, disconnect, malformed requests, and shutdown deny access.
+The controller derives its fixed policy at startup. `/sandbox` cannot edit grants, mounts, ingress, or persistent settings, and it does not reload the controller or create, reset, or stop a sidecar. Permission prompts are serialized at the controller boundary. A once grant applies to one drained retry and a session grant stays in controller memory. Missing UI, timeout, cancellation, disconnect, malformed requests, and shutdown deny access.
 
 ## Operations and troubleshooting
 
