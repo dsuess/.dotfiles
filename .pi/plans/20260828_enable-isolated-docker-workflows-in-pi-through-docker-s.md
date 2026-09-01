@@ -58,7 +58,7 @@ Simplify or reconnect the existing `/sandbox` status surface so it does not adve
 Acceptance outcome: users can identify which workspace owns disk state, inspect its usage, preserve it with stop, delete one workspace safely, or prune stopped Pi sidecars without exposing arbitrary `sbx` control to model tools.
 
 ### Part D — Document, deploy, and commit the completed contract
-- **Ledger:** {"status":"in_progress","note":"Documenting, deploying through Stow, validating, and staging only Docker work.","evidence":null}
+- **Ledger:** {"status":"completed","note":"Documented, deployed with Stow, staged only implementation files, and committed.","evidence":"Updated pi/sandbox/README.md; ./install.sh config completed and native disposable sidecar canary passed; ~/bin/pi-sbx is a Stow symlink; npm --prefix pi run check passed; git diff --cached --check passed; committed bb071912 with 13 Docker/plan files. Remaining unrelated changes are unstaged."}
 
 Update `pi/sandbox/README.md` with the trust-domain terminology, Docker CLI/plugin scope, one-shot command syntax, lazy persistence, `pi-sbx` examples, destructive-operation behavior, public-registry/no-host-credential limitation, and troubleshooting for `sbx` authentication/version/template drift. The accepted ADR already selects this architecture, so do not add a new ADR or create a domain glossary for this implementation completion.
 
@@ -103,5 +103,5 @@ Acceptance outcome: installed `pi` and `pi-sbx` expose the documented behavior, 
 - ☑ Make the private Docker path explicit and reliable
 - ☑ Support model calls and one-shot leading-bang commands
 - ☑ Add safe persistent-sidecar management with `pi-sbx`
-- ▶ Document, deploy, and commit the completed contract
+- ☑ Document, deploy, and commit the completed contract
 <!-- pi-plan-mode:progress:end -->
