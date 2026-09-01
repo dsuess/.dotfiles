@@ -302,7 +302,13 @@ cmd_config() {
         cd ~/.pi/sandbox
         npm_config_cache=~/.cache/pi-srt/npm npm ci --omit=dev --ignore-scripts
         node apply-srt-workspace-write-patch.mjs
-        node srt-compatibility-canary.mjs --preflight-only
+        if command -v sbx >/dev/null 2>&1; then
+            if ! node srt-compatibility-canary.mjs --preflight-only; then
+                echo "⚠️  sbx (Docker Sandboxes) canary failed — Pi's in-sandbox Docker access will be unavailable until this is resolved. Core SRT tool routing is unaffected." >&2
+            fi
+        else
+            echo "ℹ️  sbx not found — skipping Docker Sandboxes canary. Pi's in-sandbox Docker access will be unavailable; core SRT tool routing is unaffected." >&2
+        fi
     )
 
     if [[ "$PLATFORM" == "Darwin" ]]; then

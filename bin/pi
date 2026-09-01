@@ -47,7 +47,7 @@ real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind
 # controller or sidecar state.
 for argument in "$@"; do
   case "$argument" in
-    -h|--help|--version|--models|--list-models|models|--no-extensions) exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" "$@" ;;
+    -h|--help|--version|--list-models|models|--no-extensions) exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" "$@" ;;
   esac
 done
 

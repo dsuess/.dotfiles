@@ -36,9 +36,12 @@ interface AdapterSpec {
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const SRT_ROUTING_EXTENSION_PATH = path.join(EXTENSION_DIR, "index.ts");
 
+// Pinned against @earendil-works/pi-coding-agent's built-in tool schemas. Recompute with
+// schemaSha256(createXTool(cwd).parameters) after upgrading pi-coding-agent, or every launch
+// will fail tool-inventory verification for the drifted tool.
 const BUILTIN_SCHEMA_HASHES: Readonly<Record<string, string>> = Object.freeze({
   read: "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
-  bash: "456434a5b776beeebb2940d78b1c7b6663add6c6f2d47450c7ad4616ecf7ff3a",
+  bash: "1ad6bb2c22082daa3c896b8b96ee6f799cbe3c6efeca93a3cbefbb4f9965f1fb",
   edit: "55866598f02c5e00ddfcbcae3df78081e3712de09a622bac7a6bc02ef2acc1bc",
   write: "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
   grep: "d281ef46cdcb72d6ec342b248a8b622f99638d193fe93fbc77a532002b7ee4f7",
