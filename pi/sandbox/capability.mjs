@@ -51,5 +51,6 @@ export function validateManifest(manifest, descriptor) {
   return Boolean(manifest && manifest.version === CAPABILITY_VERSION && manifest.workspaceKey === descriptor.workspaceKey &&
     manifest.workspaceRoot === descriptor.workspaceRoot && manifest.runtimeRoot === descriptor.runtimeRoot &&
     manifest.socketPath === descriptor.socketPath && manifest.sourceDigest === descriptor.sourceDigest &&
-    manifest.generation === descriptor.generation && HEX.test(manifest.tokenDigest) && processMatches(manifest.pid, manifest.processStartIdentity));
+    manifest.generation === descriptor.generation && manifest.tokenDigest === createHash("sha256").update(descriptor.token).digest("hex") &&
+    processMatches(manifest.pid, manifest.processStartIdentity));
 }

@@ -72,6 +72,7 @@ export class WorkspaceDockerSidecar {
     this.metadataPath = path.join(this.runtimeRoot, "sidecar.json");
     this.socketPath = path.join(this.brokerRoot, "docker.sock");
     this.server = null;
+    this.socketInode = null;
     this.ready = null;
     this.bridges = new Set();
   }
@@ -88,6 +89,15 @@ export class WorkspaceDockerSidecar {
     if (result.code !== 0) return null;
     let inspect;
     try { inspect = JSON.parse(result.stdout); } catch { throw new Error("sidecar inspect returned invalid JSON"); }
+    if (!inspect.id) {
+      const listed = await this.sbx(["ls", "--json"]);
+      if (listed.code !== 0) throw new Error("sidecar inventory lookup failed");
+      let inventory;
+      try { inventory = JSON.parse(listed.stdout); } catch { throw new Error("sidecar inventory returned invalid JSON"); }
+      const matches = (inventory.sandboxes ?? []).filter((item) => item?.name === this.name && item?.workspaces?.includes(this.workspaceRoot));
+      if (matches.length !== 1 || typeof matches[0].id !== "string" || !matches[0].id) throw new Error("sidecar has no unique stable ID");
+      inspect.id = matches[0].id;
+    }
     return validateSidecarInspect(inspect, this.expected());
   }
 
@@ -133,6 +143,7 @@ export class WorkspaceDockerSidecar {
     const server = net.createServer((client) => void this.bridge(client));
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(this.socketPath, resolve); });
     fs.chmodSync(this.socketPath, 0o600);
+    this.socketInode = fs.lstatSync(this.socketPath).ino;
     this.server = server;
     return this.socketPath;
   }
@@ -177,7 +188,9 @@ export class WorkspaceDockerSidecar {
     for (const { client, child } of this.bridges) { client.destroy(); child.kill("SIGTERM"); }
     this.bridges.clear();
     if (this.server) await new Promise((resolve) => this.server.close(resolve));
-    this.server = null; fs.rmSync(this.socketPath, { force: true });
+    this.server = null;
+    try { if (fs.lstatSync(this.socketPath).ino === this.socketInode) fs.rmSync(this.socketPath); } catch {}
+    this.socketInode = null;
   }
 }
 

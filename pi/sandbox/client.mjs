@@ -1,17 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverRepositoryScope } from "./repository-scope.mjs";
-import { atomicJson, processMatches, readPrivateJson, sourceDigest, validateDescriptor, validateManifest } from "./capability.mjs";
+import { atomicJson, processMatches, processStartIdentity, readPrivateJson, sourceDigest, validateDescriptor, validateManifest } from "./capability.mjs";
 import { encodeFrame, FrameDecoder, makeRequest, validateResponse } from "./protocol.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const controller = path.join(HERE, "controller.mjs");
-const sourceFiles = [controller, path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs")];
+const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs")];
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);
@@ -21,11 +21,40 @@ function stateIsUsable(descriptor) {
   try { const manifest = readPrivateJson(descriptor.manifestPath); const capability = validateDescriptor(readPrivateJson(descriptor.capabilityPath)); const socket = fs.lstatSync(descriptor.socketPath); return validateManifest(manifest, capability) && capability.sourceDigest === descriptor.sourceDigest && capability.workspaceKey === descriptor.workspaceKey && capability.workspaceRoot === descriptor.workspaceRoot && socket.isSocket() && (socket.mode & 0o077) === 0 ? capability : null; } catch { return null; }
 }
 function removeStale(descriptor) { for (const file of [descriptor.socketPath, descriptor.manifestPath, descriptor.capabilityPath]) fs.rmSync(file, { force: true }); }
+function controllerProcesses(output) {
+  const matches = [];
+  for (const line of String(output).split("\n")) {
+    const found = line.match(/^\s*(\d+)\s+.*?\s(\/[^\s]+\/controller\.mjs)\s+([A-Za-z0-9+/=]+)\s*$/);
+    if (!found) continue;
+    try { if (fs.realpathSync.native(found[2]) !== fs.realpathSync.native(controller)) continue; } catch { continue; }
+    try { matches.push({ pid: Number(found[1]), descriptor: validateDescriptor(JSON.parse(Buffer.from(found[3], "base64").toString("utf8"))) }); } catch {}
+  }
+  return matches;
+}
+function removeOrphanControllers(workspaceKey, keepPid = null) {
+  let output = ""; try { output = execFileSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }); } catch { return; }
+  const stopped = [];
+  for (const item of controllerProcesses(output)) {
+    if (item.descriptor.workspaceKey !== workspaceKey || item.pid === keepPid) continue;
+    const identity = processStartIdentity(item.pid);
+    if (!identity || !processMatches(item.pid, identity)) continue;
+    try { process.kill(item.pid, "SIGTERM"); stopped.push({ pid: item.pid, identity }); } catch {}
+  }
+  for (let attempt = 0; attempt < 50 && stopped.some((item) => processMatches(item.pid, item.identity)); attempt += 1) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+  if (stopped.some((item) => processMatches(item.pid, item.identity))) throw new Error("orphaned controller did not stop");
+  return stopped.length;
+}
 function descriptorFor(launchDir) {
   const scope = discoverRepositoryScope({ launchDirectory: launchDir, pathValue: process.env.PATH });
   const runtimeRoot = privateDirectory(privateRoot(scope.workspaceKey)); const brokerRoot = privateDirectory(brokerRootFor(scope.workspaceKey));
   const base = { version: 2, workspaceKey: scope.workspaceKey, workspaceRoot: fs.realpathSync(scope.canonicalWorkspaceRoot), bareCommonDirectory: scope.bareCommonDirectory ? fs.realpathSync(scope.bareCommonDirectory) : null, runtimeRoot, brokerRoot, socketPath: path.join(runtimeRoot, "controller.sock"), dockerSocket: path.join(brokerRoot, "docker.sock"), manifestPath: path.join(runtimeRoot, "manifest.json"), capabilityPath: path.join(runtimeRoot, "capability.json"), sourceDigest: sourceDigest(sourceFiles), generation: 1 };
-  const existing = stateIsUsable(base); if (existing) return existing;
+  const existing = stateIsUsable(base);
+  if (existing) {
+    let pid = null; try { pid = readPrivateJson(base.manifestPath).pid; } catch {}
+    if (removeOrphanControllers(base.workspaceKey, pid) === 0) return existing;
+  }
   try {
     const manifest = readPrivateJson(base.manifestPath);
     // A live controller from a different reviewed source generation is stale,
@@ -39,10 +68,36 @@ function descriptorFor(launchDir) {
       if (processMatches(manifest.pid, manifest.processStartIdentity)) throw new Error("stale controller did not stop");
     }
   } catch (error) { if (error?.message === "stale controller did not stop") throw error; }
+  removeOrphanControllers(base.workspaceKey);
   removeStale(base); return { ...base, token: randomBytes(32).toString("hex") };
 }
 function start(descriptor) { if (stateIsUsable(descriptor)) return; const child = spawn(process.execPath, [controller, Buffer.from(JSON.stringify(descriptor)).toString("base64")], { detached: true, stdio: "ignore", cwd: descriptor.workspaceRoot, env: process.env }); child.unref(); }
-export function beginControllerStartup({ launchDirectory }) { const descriptor = descriptorFor(launchDirectory); start(descriptor); return descriptor; }
+function waitForPublishedState(descriptor) {
+  let ready;
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    ready = stateIsUsable(descriptor); if (ready) return ready;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+  throw new Error("controller did not publish ready state");
+}
+function withStartupLock(workspaceKey, operation) {
+  const runtimeRoot = privateDirectory(privateRoot(workspaceKey)); const lock = path.join(runtimeRoot, "startup.lock");
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      try { return operation(); } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 10_000) { fs.rmSync(lock, { recursive: true, force: true }); continue; } } catch {}
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  throw new Error("timed out waiting for controller startup lock");
+}
+export function beginControllerStartup({ launchDirectory }) {
+  const scope = discoverRepositoryScope({ launchDirectory, pathValue: process.env.PATH });
+  return withStartupLock(scope.workspaceKey, () => { const descriptor = descriptorFor(launchDirectory); start(descriptor); return waitForPublishedState(descriptor); });
+}
 export class ControllerClient {
   constructor(descriptor) {
     this.descriptor = validateDescriptor({ ...descriptor });
@@ -184,3 +239,5 @@ export async function acquireControllerLease({ startup, clientId }) {
   };
 }
 export function stopStartedController(startup) { try { const manifest = readPrivateJson(startup.manifestPath); if (validateManifest(manifest, startup)) process.kill(manifest.pid, "SIGTERM"); } catch {} }
+
+export const clientInternals = Object.freeze({ controllerProcesses });

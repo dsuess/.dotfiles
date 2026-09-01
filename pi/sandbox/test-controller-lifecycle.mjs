@@ -43,6 +43,27 @@ test("controller forwards ordinary secret values but strips control authority", 
   await attached.client.release();
 });
 
+test("controller maps the guest uv cache into generated writable state", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-uv-cache-"));
+  const startup = beginControllerStartup({ launchDirectory: workspace });
+  t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
+  const attached = await acquire(startup, "uv-cache");
+  const chunks = [];
+  let result;
+  try {
+    result = await attached.client.exec(["/bin/bash", "-lc", "mkdir -p \"$UV_CACHE_DIR\" && printf cached > \"$UV_CACHE_DIR/value\" && printf '%s' \"$UV_CACHE_DIR\""], {
+      cwd: workspace, env: { UV_CACHE_DIR: "/root/.cache/uv" },
+      onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); },
+    });
+  } finally {
+    await attached.client.release();
+  }
+  const expected = path.join("/tmp", `pi-srt-${process.getuid()}`, "g", startup.workspaceKey, String(startup.generation), "cache", "uv");
+  assert.equal(result.exitCode, 0);
+  assert.equal(Buffer.concat(chunks).toString(), expected);
+  assert.equal(fs.readFileSync(path.join(expected, "value"), "utf8"), "cached");
+});
+
 test("controller inherits its startup PATH, keeps Docker first, and confines user tools", (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-path-"));
   const workspaceBin = path.join(workspace, "bin");
@@ -107,6 +128,16 @@ test("controller gives Buildx writable state without making Docker configuration
   assert.equal(configResult, "config-protected");
   assert.equal(pluginResult, "plugin-protected");
   await attached.client.release();
+});
+
+test("concurrent startup callers reuse one published controller capability", (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-startup-lock-"));
+  const startups = Array.from({ length: 6 }, () => beginControllerStartup({ launchDirectory: workspace }));
+  t.after(() => { stopStartedController(startups[0]); fs.rmSync(workspace, { recursive: true, force: true }); });
+  assert.equal(new Set(startups.map((item) => item.token)).size, 1);
+  assert.equal(new Set(startups.map((item) => item.sourceDigest)).size, 1);
+  const manifest = JSON.parse(fs.readFileSync(startups[0].manifestPath, "utf8"));
+  assert.ok(manifest.pid > 0);
 });
 
 test("only a root can renew an expired lease without replacing the controller or lease token", async (t) => {

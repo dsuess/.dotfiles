@@ -50,3 +50,17 @@ test("rejects capability and identity drift before it can be reused", (t) => {
   assert.throws(() => validateSidecarInspect({ ...inspect(name, workspace), skills: { shared: true } }, { name, workspaceRoot: workspace, cpus: 2, memory: "4g" }), /shared skills/);
   assert.throws(() => dockerSidecarInternals.safeWorkspaceName("bad"), /workspace key/);
 });
+
+test("resolves stable sidecar ID from dedicated-app inventory when inspect omits it", async (t) => {
+  const item = fixture(t); const name = dockerSidecarInternals.safeWorkspaceName(item.key); const workspace = fs.realpathSync(item.workspace);
+  const withoutId = inspect(name, workspace); delete withoutId.id;
+  const sidecar = new WorkspaceDockerSidecar({
+    workspaceKey: item.key, workspaceRoot: workspace, runtimeRoot: item.runtime, preflight: async () => {},
+    sbx: async (args) => {
+      if (args[0] === "inspect") return { code: 0, stdout: JSON.stringify(withoutId), stderr: "" };
+      if (args[0] === "ls") return { code: 0, stdout: JSON.stringify({ sandboxes: [{ name, id: "inventory-id", workspaces: [workspace] }] }), stderr: "" };
+      throw new Error(`unexpected sbx command: ${args.join(" ")}`);
+    },
+  });
+  assert.equal((await sidecar.inspect()).id, "inventory-id");
+});

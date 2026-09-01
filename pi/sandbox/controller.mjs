@@ -17,19 +17,29 @@ import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamE
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const descriptor = validateDescriptor(JSON.parse(Buffer.from(process.argv[2] ?? "", "base64").toString("utf8")));
+function recordFatal(error) {
+  let diagnostic = error instanceof Error ? error.stack : String(error);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (typeof value === "string" && value.length >= 4 && /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)/i.test(name)) diagnostic = diagnostic.replaceAll(value, "[redacted]");
+  }
+  try { fs.writeFileSync(path.join(descriptor.runtimeRoot, "controller-error.log"), `${diagnostic}\n`, { mode: 0o600 }); } catch {}
+}
+process.on("uncaughtException", (error) => { recordFatal(error); process.exit(1); });
+process.on("unhandledRejection", (error) => { recordFatal(error); process.exit(1); });
 const MAX_OPERATIONS = 8;
 const TERM_GRACE_MS = 1_000;
 const testLeaseTtl = Number(process.env.PI_SRT_TEST_LEASE_TTL_MS);
 const LEASE_TTL_MS = process.env.NODE_TEST_CONTEXT && Number.isSafeInteger(testLeaseTtl) && testLeaseTtl > 0
   ? testLeaseTtl
   : 30_000;
-
 const sourceHelper = path.join(HERE, "operation-helper.mjs");
 for (const directory of [descriptor.runtimeRoot, path.dirname(descriptor.socketPath), descriptor.brokerRoot]) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); }
+fs.rmSync(path.join(descriptor.runtimeRoot, "controller-error.log"), { force: true });
 fs.rmSync(descriptor.socketPath, { force: true });
 const generationRoot = path.join(descriptor.runtimeRoot, `generation-${descriptor.generation}`);
 const toolHomeRoot = path.join("/tmp", `pi-srt-${process.getuid()}`, "g", descriptor.workspaceKey, String(descriptor.generation));
 const buildxConfig = path.join(toolHomeRoot, "buildx");
+const uvCache = path.join(toolHomeRoot, "cache", "uv");
 for (const directory of [generationRoot, toolHomeRoot, path.join(toolHomeRoot, "home"), path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig]) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); }
 const helper = path.join(generationRoot, "operation-helper.mjs");
 fs.rmSync(helper, { force: true });
@@ -59,11 +69,11 @@ const active = new Map();
 const leases = new Map();
 let operationCount = 0;
 function boundedEnvironment(overrides = {}) {
-  const blocked = /^(PI_SRT_|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_|SBX_|DYLD_|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME)$/;
+  const blocked = /^(PI_SRT_|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_|SBX_|DYLD_|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME|UV_CACHE_DIR)$/;
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
-  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: generatedHome, TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), PATH: `${dockerClient.path}:${process.env.PATH ?? ""}`, ...(userToolRuntime.bin ? { UV_TOOL_BIN_DIR: userToolRuntime.bin } : {}), ...(userToolRuntime.toolDir ? { UV_TOOL_DIR: userToolRuntime.toolDir } : {}), ...(userToolRuntime.pythonInstallDir ? { UV_PYTHON_INSTALL_DIR: userToolRuntime.pythonInstallDir } : {}), DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
+  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: generatedHome, TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), UV_CACHE_DIR: uvCache, PATH: `${dockerClient.path}:${process.env.PATH ?? ""}`, ...(userToolRuntime.bin ? { UV_TOOL_BIN_DIR: userToolRuntime.bin } : {}), ...(userToolRuntime.toolDir ? { UV_TOOL_DIR: userToolRuntime.toolDir } : {}), ...(userToolRuntime.pythonInstallDir ? { UV_PYTHON_INSTALL_DIR: userToolRuntime.pythonInstallDir } : {}), DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
 }
 function removeOperation(id, child) { if (active.get(id)?.child === child) { active.delete(id); operationCount -= 1; } }
 async function terminate(operation) {
@@ -145,6 +155,16 @@ async function dispatch(request, socket) {
   return spawnSandbox({ argv: [], cwd: descriptor.workspaceRoot, env: {}, requestId: request.id, socket, timeoutMs: 60_000, maxOutputBytes: 12 * 1024 * 1024, helperRequest: { operation, params: p } });
 }
 const server = net.createServer((socket) => { const decoder = new FrameDecoder(async (value) => { let request; try { request = validateRequest(value); const result = await dispatch(request, socket); socket.write(encodeFrame(makeResponse(request.id, result))); } catch (error) { socket.write(encodeFrame(makeErrorResponse(request?.id ?? 1, error))); } }); socket.on("data", (data) => { try { decoder.push(data); } catch { socket.destroy(); } }); socket.on("close", () => { for (const [id, operation] of active) if (operation.socket === socket) void terminate(operation); }); });
-server.listen(descriptor.socketPath, () => fs.chmodSync(descriptor.socketPath, 0o600));
-function shutdown() { for (const operation of active.values()) void terminate(operation); server.close(); void sidecar.close(); fs.rmSync(descriptor.socketPath, { force: true }); fs.rmSync(descriptor.manifestPath, { force: true }); fs.rmSync(descriptor.capabilityPath, { force: true }); }
+let controllerSocketInode = null;
+server.listen(descriptor.socketPath, () => { fs.chmodSync(descriptor.socketPath, 0o600); controllerSocketInode = fs.lstatSync(descriptor.socketPath).ino; });
+function shutdown() {
+  for (const operation of active.values()) void terminate(operation);
+  server.close(); void sidecar.close();
+  let ownsPublishedState = false;
+  try { ownsPublishedState = JSON.parse(fs.readFileSync(descriptor.manifestPath, "utf8")).pid === process.pid; } catch {}
+  if (ownsPublishedState) {
+    try { if (fs.lstatSync(descriptor.socketPath).ino === controllerSocketInode) fs.rmSync(descriptor.socketPath); } catch {}
+    fs.rmSync(descriptor.manifestPath, { force: true }); fs.rmSync(descriptor.capabilityPath, { force: true });
+  }
+}
 process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
