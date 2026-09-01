@@ -4,7 +4,7 @@ model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 plan_mode_reasoning_effort = "high"
 hide_agent_reasoning = true
-service_tier = "default"
+service_tier = "priority"
 
 notify = ["/Users/dsuess/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
@@ -87,6 +87,21 @@ trust_level = "trusted"
 [projects."/Users/dsuess/src/Video Upscale"]
 trust_level = "trusted"
 
+[projects."/Users/dsuess/Documents/Codex/2026-08-28/can-you-read-https-docs-google"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Documents/Codex/2026-08-28/spreadsheets-plugin-spreadsheets-openai-primary-runtime"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Documents/Codex/2026-08-28/l"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Documents/Codex/2026-08-29/in-x20"]
+trust_level = "trusted"
+
+[projects."/Users/dsuess/Documents/Codex/2026-08-30/can"]
+trust_level = "trusted"
+
 [tui]
 vim_mode_default = true
 
@@ -142,6 +157,9 @@ enabled = true
 [plugins."chrome@openai-bundled"]
 enabled = true
 
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
 [features]
 js_repl = false
 
@@ -162,14 +180,18 @@ NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunc
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.818.41509"
-NODE_REPL_TRUSTED_SERVICES = '{"browser":"/Users/dsuess/.codex/plugins/cache/openai-bundled/browser/26.818.41509/scripts/browser-service.mjs","sky":"@oai/sky/service"}'
+BROWSER_USE_CODEX_APP_VERSION = "26.825.41651"
+NODE_REPL_TRUSTED_SERVICES = '{"browser":"/Users/dsuess/.codex/plugins/cache/openai-bundled/browser/26.825.41651/scripts/browser-service.mjs","sky":"@oai/sky/service"}'
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
 [mcp_servers.computer-use]
 command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
 args = ["mcp"]
 cwd = "."
+enabled = false
+
+[mcp_servers.cua_repl]
+command = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
 enabled = false
 
 [shell_environment_policy.set]

@@ -7,7 +7,7 @@
     excludesfile = ~/.gitignore
     pager = bat --paging=always
 [push]
-    default = simple
+	default = upstream
 	autoSetupRemote = true
 [merge]
     tool = nvimdiff
