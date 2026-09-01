@@ -72,15 +72,22 @@ startup="$(node "$CONTROLLER_CLIENT" preflight --launch-dir "$(pwd -P)" --pi "$r
 
 # In print mode only, a whole prompt beginning with ! is a direct SRT Bash
 # operation. It deliberately bypasses the model, but never the controller.
-print_prompt=""
+print_mode=false
 json_or_rpc=false
 for ((index=0; index < ${#pi_args[@]}; index++)); do
   case "${pi_args[index]}" in
-    --json|--rpc) json_or_rpc=true ;;
-    -p|--print) index=$((index + 1)); print_prompt="${pi_args[index]-}" ;;
+    -p|--print) print_mode=true ;;
+    --mode)
+      index=$((index + 1))
+      [[ "${pi_args[index]-}" == "json" || "${pi_args[index]-}" == "rpc" ]] && json_or_rpc=true
+      ;;
   esac
 done
-if [[ "$json_or_rpc" == false && "$print_prompt" == \!* ]]; then
+print_prompt=""
+if ((${#pi_args[@]})); then
+  print_prompt="${pi_args[${#pi_args[@]}-1]}"
+fi
+if [[ "$print_mode" == true && "$json_or_rpc" == false && "$print_prompt" == \!* ]]; then
   bang_command="${print_prompt#\!}"
   [[ "$bang_command" == \!* ]] && bang_command="${bang_command#\!}"
   [[ -n "$bang_command" ]] || fail "leading ! requires a command"
