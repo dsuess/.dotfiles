@@ -50,6 +50,7 @@ const ROLE_RULES: ReadonlyArray<{ role: SubagentRole; terms: readonly string[] }
 
 const GENERAL_ROLE: SubagentRole = { name: "general", emoji: "🤖" };
 const EXPLICIT_ROLE_DIRECTIVE = /^[ \t]*\[PI SUBAGENT ROLE: (reviewer|planner|worker|scout|general)\][ \t]*(?:\r?\n|$)/i;
+const PARALLEL_PLAN_WORKER_DIRECTIVE = /^[ \t]*\[PARALLEL PLAN WORKER\][ \t]*(?:\r?\n|$)/i;
 const COLLAPSED_ACTIVITY_LIMIT = 5;
 const EXPANDED_ACTIVITY_LIMIT = 50;
 
@@ -69,7 +70,14 @@ export function inferRole(prompt: string): SubagentRole {
 }
 
 export function normalizeTaskSummary(prompt: string): string {
-	return typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
+	if (typeof prompt !== "string") return "";
+	let summary = prompt;
+	while (true) {
+		const directive = EXPLICIT_ROLE_DIRECTIVE.exec(summary)?.[0] ?? PARALLEL_PLAN_WORKER_DIRECTIVE.exec(summary)?.[0];
+		if (!directive) break;
+		summary = summary.slice(directive.length);
+	}
+	return summary.replace(/\s+/g, " ").trim();
 }
 
 function boundedLines(lines: string[], width: number): string[] {
@@ -205,8 +213,9 @@ function statusPresentation(status: string, theme: Theme): string {
 }
 
 export function renderSubagentCall(args: Record<string, any>, theme: Theme) {
-	const prompt = normalizeTaskSummary(args?.prompt ?? "");
-	const role = inferRole(prompt);
+	const rawPrompt = args?.prompt ?? "";
+	const prompt = normalizeTaskSummary(rawPrompt);
+	const role = inferRole(rawPrompt);
 	const model = typeof args?.model === "string" && args.model ? args.model : "inherited model";
 	const thinking = typeof args?.thinkingLevel === "string" ? ` · ${args.thinkingLevel}` : "";
 	return new RenderComponent((width) => {

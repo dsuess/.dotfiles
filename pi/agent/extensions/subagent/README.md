@@ -53,6 +53,6 @@ The below-editor row first accepts a leading, standalone directive of the form `
 4. `🔎 scout` — inspect, investigate, explore, search, find, research, analyze, locate
 5. `🤖 general` — no matching word
 
-Directive and fallback matching are case-insensitive; fallback keyword matching is word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The active row displays role, ordinal, and the provider-qualified selected model before the whitespace-normalized task, so terminal-width truncation shortens the task first. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
+Directive and fallback matching are case-insensitive; fallback keyword matching is word-oriented. Role inference is presentation-only: it does not change the prompt, tools, permissions, or model and makes no extra model call. The active row and conversation tool-call summary omit leading role and parallel-worker protocol directives, then display role, ordinal, and the provider-qualified selected model before the whitespace-normalized task; terminal-width truncation shortens the task first. Live child activity never changes the role or task summary; activity remains available in the normal tool result.
 
 Role icons appear only in the below-editor active-run row. Conversation tool-call and activity lines are plain text, while running, completed, failed, and cancelled result headers retain their status icons.

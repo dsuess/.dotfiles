@@ -33,6 +33,8 @@ for (const [prompt, name, emoji] of roleCases) {
 	assert.deepEqual(uiModule.inferRole(prompt), { name, emoji });
 }
 assert.equal(uiModule.normalizeTaskSummary("  Inspect\n source\t carefully  "), "Inspect source carefully");
+const protocolPrompt = "[PI SUBAGENT ROLE: worker]\n[PARALLEL PLAN WORKER]\nImplement the approved plan";
+assert.equal(uiModule.normalizeTaskSummary(protocolPrompt), "Implement the approved plan");
 
 const widgetCalls = [];
 const fakeUi = { setWidget(...args) { widgetCalls.push(args); } };
@@ -105,6 +107,17 @@ const priorityRow = priorityWidget.render(80)[0];
 assert.match(priorityRow, /🔎.*scout.*subagent #3.*openai-codex\/gpt-5\.6-sol.*Inspect the deliberately/);
 manager.clear();
 
+manager.start("call-protocol", {
+	ordinal: 4,
+	model: "openai-codex/gpt-5.6-sol",
+	prompt: protocolPrompt,
+});
+const protocolWidget = widgetCalls.at(-1)[1]({ requestRender() {} }, theme);
+const protocolRows = protocolWidget.render(120).join("\n");
+assert.match(protocolRows, /Implement the approved plan/);
+assert.doesNotMatch(protocolRows, /PI SUBAGENT ROLE|PARALLEL PLAN WORKER/);
+manager.clear();
+
 const callComponent = uiModule.renderSubagentCall({
 	prompt: "Inspect a very long repository path and report concise findings without changing files ".repeat(4),
 	model: "anthropic/claude-sonnet",
@@ -115,6 +128,10 @@ for (const width of [24, 40, 80]) {
 const callText = callComponent.render(120).join("\n");
 assert.match(callText, /subagent.*scout/);
 assert.doesNotMatch(callText, /🧪|🗺️|🔨|🔎|🤖/, "conversation tool-call row is plain text");
+
+const protocolCallText = uiModule.renderSubagentCall({ prompt: protocolPrompt }, theme).render(120).join("\n");
+assert.match(protocolCallText, /subagent.*worker.*Implement the approved plan/);
+assert.doesNotMatch(protocolCallText, /PI SUBAGENT ROLE|PARALLEL PLAN WORKER/);
 
 const activity = Array.from({ length: 18 }, (_, index) => ({
 	kind: index === 0 ? "thinking" : index % 2 ? "reading" : "searching",
