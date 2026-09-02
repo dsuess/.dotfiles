@@ -1,16 +1,14 @@
 {
   "lastChangelogVersion": "0.84.4",
-  "defaultProvider": "litellm",
-  "defaultModel": "glm-5.2",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-terra",
   "defaultThinkingLevel": "medium",
-  "defaultThinkingProvider": "litellm",
+  "defaultThinkingProvider": "openai-codex",
   "defaultThinkingModel": "gpt-5.6-sol",
   "enabledModels": [
-    "litellm/gpt-5.6-luna",
-    "litellm/gpt-5.6-terra",
-    "litellm/gpt-5.6-sol",
-    "litellm/glm-5.2",
-    "litellm/glm-5.3"
+    "openai-codex/gpt-5.6-luna",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-sol"
   ],
   "editorPaddingX": 1,
   "quietStartup": true,
