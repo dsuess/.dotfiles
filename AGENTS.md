@@ -22,7 +22,7 @@ Always commit a plan document in the same commit as the changes that implement i
 
 - When a controller setting is read from an environment variable, add it to `spawnController()`'s explicit environment allowlist and test that forwarding.
 
-- Herdr workspace labels that derive from a pane CWD must handle `workspace.updated` as well as `workspace.created`, and restore the initial automatic label when the pane leaves a linked worktree.
+- Herdr workspace labels that derive from a pane CWD must use display-only metadata, not `workspace rename`, because a custom workspace name disables Herdr's automatic CWD label updates. Herdr does not emit `workspace.updated` for ordinary shell directory changes; report those from a shell `chpwd`/`precmd` hook and use lifecycle hooks for focus changes.
 
 ## Installation
 

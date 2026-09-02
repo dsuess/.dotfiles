@@ -2,8 +2,11 @@
 'use strict';
 
 const { spawnSync } = require('node:child_process');
-const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+
+const TOKEN = 'cwd_label';
+const SOURCE = 'worktree-label';
 
 function command(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -15,7 +18,7 @@ function command(command, args, options = {}) {
   return result.stdout;
 }
 
-function gitWorktree(cwd, run = command) {
+function gitInfo(cwd, run = command) {
   const root = run('git', ['-C', cwd, 'rev-parse', '--show-toplevel']);
   if (!root) return null;
 
@@ -26,20 +29,35 @@ function gitWorktree(cwd, run = command) {
 
   const resolvedGitDir = path.resolve(checkoutRoot, gitDir.trim());
   const resolvedCommonDir = path.resolve(checkoutRoot, commonDir.trim());
-  if (resolvedGitDir === resolvedCommonDir) return null;
-
-  const checkout = path.basename(checkoutRoot);
-  const commonBase = path.basename(resolvedCommonDir);
-  const repository = commonBase === '.bare' || commonBase === '.git'
-    ? path.basename(path.dirname(resolvedCommonDir))
-    : commonBase;
-  if (!repository || !checkout) return null;
-
-  return { checkoutRoot, label: `${repository} / ${checkout}` };
+  return {
+    checkoutRoot,
+    commonDir: resolvedCommonDir,
+    isLinkedWorktree: resolvedGitDir !== resolvedCommonDir,
+  };
 }
 
-function shouldRename(currentLabel, checkoutRoot, label) {
-  return currentLabel === path.basename(checkoutRoot) || currentLabel === label;
+function repositoryName(commonDir) {
+  const commonBase = path.basename(commonDir);
+  return commonBase === '.bare' || commonBase === '.git'
+    ? path.basename(path.dirname(commonDir))
+    : commonBase;
+}
+
+function fallbackLabel(cwd, home = os.homedir()) {
+  const resolved = path.resolve(cwd);
+  if (resolved === path.resolve(home)) return '~';
+  return path.basename(resolved) || resolved;
+}
+
+function displayLabel(cwd, run = command, home = os.homedir()) {
+  const git = gitInfo(cwd, run);
+  if (!git) return fallbackLabel(cwd, home);
+
+  const checkout = path.basename(git.checkoutRoot);
+  if (!git.isLinkedWorktree) return checkout;
+
+  const repository = repositoryName(git.commonDir);
+  return repository && checkout ? `${repository} / ${checkout}` : checkout;
 }
 
 function parseResponse(output) {
@@ -54,83 +72,37 @@ function herdrCommand(args, run = command, env = process.env) {
   return run(env.HERDR_BIN_PATH || 'herdr', args, { env });
 }
 
-function statePath(env) {
-  return env.HERDR_PLUGIN_STATE_DIR && path.join(env.HERDR_PLUGIN_STATE_DIR, 'workspaces.json');
+function reportMetadata(resource, id, cwd, run = command, env = process.env) {
+  if (!id || !cwd) return false;
+  const label = displayLabel(cwd, run, env.HOME || os.homedir());
+  return herdrCommand([
+    resource, 'report-metadata', id,
+    '--source', SOURCE,
+    '--token', `${TOKEN}=${label}`,
+  ], run, env) !== null;
 }
 
-function readState(env) {
-  const file = statePath(env);
-  if (!file) return {};
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return {};
-  }
+function reportWorkspace(workspace, run = command, env = process.env) {
+  return reportMetadata('workspace', workspace?.workspaceId, workspace?.workspaceCwd, run, env);
 }
 
-function writeState(state, env) {
-  const file = statePath(env);
-  if (!file) return;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(state));
+function reportPane(workspace, run = command, env = process.env) {
+  return reportMetadata('pane', workspace?.paneId, workspace?.workspaceCwd, run, env);
 }
 
-function rememberAutomaticLabel(workspace, run = command, env = process.env) {
-  if (!workspace?.workspaceId || !workspace?.workspaceCwd || !workspace?.workspaceLabel) return;
-  if (workspace.workspaceLabel !== path.basename(workspace.workspaceCwd) || gitWorktree(workspace.workspaceCwd, run)) {
-    return;
-  }
-  const state = readState(env);
-  if (!state[workspace.workspaceId]) {
-    state[workspace.workspaceId] = { label: null, originalLabel: workspace.workspaceLabel };
-    writeState(state, env);
-  }
-}
-
-function renameWorkspace(workspace, run = command, env = process.env) {
-  if (!workspace?.workspaceId || !workspace?.workspaceCwd || !workspace?.workspaceLabel) {
-    return false;
-  }
-
-  const state = readState(env);
-  const managed = state[workspace.workspaceId];
-  const worktree = gitWorktree(workspace.workspaceCwd, run);
-  if (!worktree) {
-    if (!managed || workspace.workspaceLabel !== managed.label) return false;
-    if (herdrCommand(['workspace', 'rename', workspace.workspaceId, managed.originalLabel], run, env) === null) {
-      return false;
-    }
-    delete state[workspace.workspaceId];
-    writeState(state, env);
-    return true;
-  }
-
-  const automatic = shouldRename(workspace.workspaceLabel, worktree.checkoutRoot, worktree.label);
-  const originalAutomatic = managed?.label === null && managed.originalLabel === workspace.workspaceLabel;
-  if (!automatic && managed?.label !== workspace.workspaceLabel && !originalAutomatic) return false;
-  if (workspace.workspaceLabel === worktree.label) {
-    if (!managed) {
-      state[workspace.workspaceId] = { label: worktree.label, originalLabel: path.basename(worktree.checkoutRoot) };
-      writeState(state, env);
-    }
-    return false;
-  }
-  if (herdrCommand(['workspace', 'rename', workspace.workspaceId, worktree.label], run, env) === null) {
-    return false;
-  }
-  state[workspace.workspaceId] = {
-    label: worktree.label,
-    originalLabel: managed?.originalLabel || workspace.workspaceLabel,
+function currentShellWorkspace(_run = command, env = process.env, cwd = process.cwd()) {
+  if (!env.HERDR_WORKSPACE_ID || !env.HERDR_PANE_ID) return null;
+  return {
+    paneId: env.HERDR_PANE_ID,
+    workspaceId: env.HERDR_WORKSPACE_ID,
+    workspaceCwd: cwd,
   };
-  writeState(state, env);
-  return true;
 }
 
 function eventWorkspace(env = process.env) {
   const context = parseResponse(env.HERDR_PLUGIN_CONTEXT_JSON || '{}');
   return {
     workspaceId: context?.workspace_id,
-    workspaceLabel: context?.workspace_label,
     workspaceCwd: context?.workspace_cwd,
   };
 }
@@ -141,35 +113,42 @@ function startupWorkspaces(run = command, env = process.env) {
   if (!Array.isArray(workspaces)) return [];
 
   return workspaces.map((workspace) => {
-    const panes = parseResponse(herdrCommand(['pane', 'list', '--workspace', workspace.workspace_id], run, env))
-      ?.result?.panes;
+    const panes = parseResponse(herdrCommand([
+      'pane', 'list', '--workspace', workspace.workspace_id,
+    ], run, env))?.result?.panes;
     const activePane = Array.isArray(panes) && (panes.find((pane) => pane.focused) || panes[0]);
     return {
       workspaceId: workspace.workspace_id,
-      workspaceLabel: workspace.label,
-      workspaceCwd: activePane?.cwd || activePane?.foreground_cwd,
+      workspaceCwd: activePane?.foreground_cwd || activePane?.cwd,
     };
   });
 }
 
 function main(env = process.env, run = command) {
   if (env.HERDR_PLUGIN_EVENT === 'startup') {
-    for (const workspace of startupWorkspaces(run, env)) renameWorkspace(workspace, run, env);
-    return;
+    return startupWorkspaces(run, env)
+      .map((workspace) => reportWorkspace(workspace, run, env))
+      .every(Boolean);
   }
-  const workspace = eventWorkspace(env);
-  if (env.HERDR_PLUGIN_EVENT === 'workspace.created') rememberAutomaticLabel(workspace, run, env);
-  renameWorkspace(workspace, run, env);
+  const workspace = env.HERDR_PLUGIN_EVENT
+    ? eventWorkspace(env)
+    : currentShellWorkspace(run, env);
+  return env.HERDR_PLUGIN_EVENT
+    ? reportWorkspace(workspace, run, env)
+    : reportWorkspace(workspace, run, env) && reportPane(workspace, run, env);
 }
 
-if (require.main === module) main();
+if (require.main === module && !main()) process.exitCode = 1;
 
 module.exports = {
+  currentShellWorkspace,
+  displayLabel,
   eventWorkspace,
-  gitWorktree,
+  fallbackLabel,
+  gitInfo,
   main,
-  rememberAutomaticLabel,
-  renameWorkspace,
-  shouldRename,
+  reportPane,
+  reportWorkspace,
+  repositoryName,
   startupWorkspaces,
 };

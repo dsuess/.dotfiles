@@ -25,6 +25,6 @@
     "npm:pi-tuicr",
     "packages/ask-user-question"
   ],
-  "hideThinkingBlock": true,
+  "hideThinkingBlock": false,
   "theme": "dark"
 }

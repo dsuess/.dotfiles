@@ -1,8 +1,8 @@
 id = "worktree-label"
 name = "Worktree Label"
-version = "0.1.0"
+version = "0.3.0"
 min_herdr_version = "0.8.2"
-description = "Labels linked Git worktree spaces as repository / checkout"
+description = "Shows dynamic CWD labels with repository context for linked worktrees"
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -13,5 +13,13 @@ on = "workspace.created"
 command = ["node", "index.js"]
 
 [[events]]
-on = "workspace.updated"
+on = "workspace.focused"
+command = ["node", "index.js"]
+
+[[events]]
+on = "tab.focused"
+command = ["node", "index.js"]
+
+[[events]]
+on = "pane.focused"
 command = ["node", "index.js"]

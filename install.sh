@@ -258,6 +258,12 @@ register_herdr_worktree_label_plugin() {
     echo "🧭 Registering Herdr worktree-label plugin..."
     HERDR_SOCKET_PATH="$HOME/.config/herdr/.worktree-label-installer.sock" \
         herdr plugin link "$plugin_root" --enabled
+
+    if herdr server reload-config; then
+        echo "✓ Reloaded Herdr config"
+    else
+        echo "ℹ️  Herdr is not reachable; config and plugin will apply on its next start."
+    fi
 }
 
 cmd_config() {

@@ -64,6 +64,9 @@ if command -v direnv &>/dev/null; then
     eval "$(direnv hook zsh)"
 fi
 
+# Keep Herdr's Space label in sync with shell directory changes.
+source "$HOME/.dotfiles/herdr/plugins/worktree-label/shell.zsh"
+
 # Use zsh's native last-argument widget for both forms of Esc-. that
 # zsh-vi-mode can produce: one viins Meta sequence, or `.` after Esc has
 # already entered normal mode. In normal mode, resume insertion after the
