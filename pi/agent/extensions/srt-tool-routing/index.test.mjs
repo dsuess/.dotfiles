@@ -20,7 +20,10 @@ function fakeClient() {
     policyGeneration: HEX_B,
     destroyCalls: 0,
     releaseCalls: 0,
+    terminalListener: null,
     destroy() { this.destroyCalls += 1; },
+    onTerminal(listener) { this.terminalListener = listener; return () => { this.terminalListener = null; }; },
+    failTransport(message = "controller transport unavailable: peer closed") { this.terminalListener?.(new Error(message)); },
     async release() { this.releaseCalls += 1; },
     async access() {},
     async mkdir() {},
@@ -282,6 +285,28 @@ test("interactive startup publishes starting and queues input and Bash until roo
   assert.deepEqual(harness.active().sort(), ["bash", "read"]);
   assert.equal(lifecycle.at(-1).health, "healthy");
   assert.equal(harness.env.PI_SRT_ROUTING_LEASE, HEX_A);
+});
+
+test("unexpected terminal client failures disable routing without waiting for status polling", async (t) => {
+  const client = fakeClient();
+  const harness = createHarness(t, { client });
+  const lifecycle = [];
+  harness.pi.events.on("srt-tool-routing:lifecycle", (event) => lifecycle.push(event));
+  await harness.emit("session_start", { reason: "startup" });
+  client.failTransport();
+  assert.deepEqual(harness.active(), []);
+  assert.equal(harness.shutdownCalls(), 1);
+  assert.equal(lifecycle.at(-1).health, "failed");
+  assert.match(lifecycle.at(-1).failure, /controller transport unavailable: peer closed/);
+});
+
+test("retired client transport failures do not fail a replacement runtime", async (t) => {
+  const client = fakeClient();
+  const harness = createHarness(t, { client });
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.emit("session_shutdown", { reason: "new" });
+  client.failTransport();
+  assert.equal(harness.shutdownCalls(), 0);
 });
 
 test("root shutdown aborts pending acquisition and releases an acquired lease once", async (t) => {

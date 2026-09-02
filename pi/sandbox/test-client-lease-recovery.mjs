@@ -126,6 +126,74 @@ test("root recovery renews once, retains its lease token, and retries each rejec
   assert.equal(writes.length, 2, "the original write is retried exactly once");
 });
 
+test("protocol permits reviewed bare executables but rejects path-qualified forms", () => {
+  const request = (argv) => ({
+    v: 1, type: "request", id: 1, method: "exec", auth: LEASE,
+    params: { argv, cwd: "/workspace", env: {}, timeoutMs: 100, maxOutputBytes: 1024, policyGeneration: POLICY },
+  });
+  assert.equal(validateRequest(request(["path-fixture", "argument"])).params.argv[0], "path-fixture");
+  assert.equal(validateRequest(request(["/bin/echo", "argument"])).params.argv[0], "/bin/echo");
+  for (const executable of ["./fixture", "dir/fixture", "../fixture", "fixture;echo", "", " fixture"]) {
+    assert.throws(() => validateRequest(request([executable])), (error) => error?.code === "invalid_request");
+  }
+});
+
+test("terminal transport failures reject every pending request and future calls", async (t) => {
+  let requests = 0;
+  const socketPath = await startMockController(t, (_request, socket) => {
+    requests += 1;
+    if (requests === 2) socket.destroy();
+  });
+  const client = new ControllerClient(descriptor(socketPath));
+  await client.ready;
+  const results = await Promise.allSettled([client.status(), client.status(), client.status()]);
+  assert.equal(results.every((result) => result.status === "rejected" && result.reason?.code === "controller_transport"), true);
+  assert.equal(client.pending.size, 0);
+  await assert.rejects(client.status(), (error) => error?.code === "controller_transport");
+});
+
+test("malformed controller frames fail the client without leaking pending requests", async (t) => {
+  const socketPath = await startMockController(t, (_request, socket) => {
+    const frame = Buffer.alloc(5);
+    frame.writeUInt32BE(1, 0);
+    frame[4] = 0xff;
+    socket.write(frame);
+  });
+  const client = new ControllerClient(descriptor(socketPath));
+  await client.ready;
+  await assert.rejects(client.status(), (error) => error?.code === "controller_transport" && /protocol failure/.test(error.message));
+  assert.equal(client.pending.size, 0);
+  await assert.rejects(client.status(), (error) => error?.code === "controller_transport");
+});
+
+test("response deadlines terminate unresponsive controllers and settle siblings", async (t) => {
+  const socketPath = await startMockController(t, () => {});
+  const client = new ControllerClient(descriptor(socketPath));
+  await client.ready;
+  client.deadlineFor = () => 10;
+  const results = await Promise.allSettled([client.status(), client.status()]);
+  assert.equal(results.every((result) => result.status === "rejected" && result.reason?.code === "controller_transport" && /response timeout/.test(result.reason.message)), true);
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.deadlineFor("exec", { timeoutMs: 12 }), 10, "the overridden test watchdog is used for all methods");
+});
+
+test("exec deadlines include the requested operation timeout and transport grace", () => {
+  const client = Object.create(ControllerClient.prototype);
+  assert.equal(client.deadlineFor("exec", { timeoutMs: 12 }), 5_012);
+  assert.equal(client.deadlineFor("fs.readFile", {}), 65_000);
+  assert.equal(client.deadlineFor("status", {}), 10_000);
+});
+
+test("explicit destroy settles an in-flight request", async (t) => {
+  const socketPath = await startMockController(t, () => {});
+  const client = new ControllerClient(descriptor(socketPath));
+  await client.ready;
+  const pending = client.status();
+  client.destroy();
+  await assert.rejects(pending, (error) => error?.code === "controller_transport" && /client destroyed/.test(error.message));
+  assert.equal(client.pending.size, 0);
+});
+
 test("inherited clients and non-lease failures never invoke root renewal", async (t) => {
   let failureCode = null;
   let renewals = 0;

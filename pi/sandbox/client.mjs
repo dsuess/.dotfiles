@@ -15,6 +15,9 @@ const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HE
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);
+const CONTROL_TIMEOUT_MS = 10_000;
+const FILESYSTEM_TIMEOUT_MS = 65_000;
+const TRANSPORT_GRACE_MS = 5_000;
 const brokerRootFor = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "b", key);
 function privateDirectory(directory) { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.chmodSync(directory, 0o700); return directory; }
 function stateIsUsable(descriptor) {
@@ -107,11 +110,21 @@ export class ControllerClient {
     this.renewalAuthority = null;
     this.renewal = null;
     this.leaseEpoch = 0;
+    this.terminalError = null;
+    this.terminalListeners = new Set();
+    this.readySettled = false;
     this.socket = net.createConnection(descriptor.socketPath);
     this.ready = new Promise((resolve, reject) => {
-      this.socket.once("connect", resolve);
-      this.socket.once("error", reject);
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
     });
+    this.socket.once("connect", () => {
+      if (this.terminalError) return;
+      this.readySettled = true;
+      this.resolveReady();
+    });
+    this.socket.on("error", () => this.terminate("socket error"));
+    this.socket.on("close", () => this.terminate("peer closed"));
     const decoder = new FrameDecoder((frame) => {
       const response = validateResponse(frame);
       const item = this.pending.get(response.id);
@@ -120,12 +133,49 @@ export class ControllerClient {
         item.events.push([response.event, Buffer.from(response.data, "base64")]);
         return;
       }
-      this.pending.delete(response.id);
-      response.ok
-        ? item.resolve({ result: response.result, events: item.events })
-        : item.reject(Object.assign(new Error(response.error.message), { code: response.error.code }));
+      this.settle(response.id, response.ok, response.ok
+        ? { result: response.result, events: item.events }
+        : Object.assign(new Error(response.error.message), { code: response.error.code }));
     });
-    this.socket.on("data", (data) => decoder.push(data));
+    this.socket.on("data", (data) => {
+      try { decoder.push(data); } catch { this.terminate("protocol failure"); }
+    });
+  }
+  transportError(reason) {
+    return Object.assign(new Error(`controller transport unavailable: ${reason}`), { code: "controller_transport" });
+  }
+  settle(id, ok, value) {
+    const item = this.pending.get(id);
+    if (!item) return;
+    this.pending.delete(id);
+    clearTimeout(item.timer);
+    ok ? item.resolve(value) : item.reject(value);
+  }
+  terminate(reason) {
+    if (this.terminalError) return this.terminalError;
+    const error = this.transportError(reason);
+    this.terminalError = error;
+    if (!this.readySettled) {
+      this.readySettled = true;
+      this.rejectReady(error);
+    }
+    for (const id of [...this.pending.keys()]) this.settle(id, false, error);
+    try { this.socket.destroy(); } catch {}
+    for (const listener of this.terminalListeners) {
+      try { listener(error); } catch {}
+    }
+    this.terminalListeners.clear();
+    return error;
+  }
+  onTerminal(listener) {
+    if (this.terminalError) listener(this.terminalError);
+    else this.terminalListeners.add(listener);
+    return () => this.terminalListeners.delete(listener);
+  }
+  deadlineFor(method, params) {
+    if (method === "exec") return (params.timeoutMs ?? 3_600_000) + TRANSPORT_GRACE_MS;
+    if (method.startsWith("fs.")) return FILESYSTEM_TIMEOUT_MS;
+    return CONTROL_TIMEOUT_MS;
   }
   configureLeaseRenewal(startup) {
     const authority = validateDescriptor({ ...startup });
@@ -164,10 +214,24 @@ export class ControllerClient {
   }
   async requestOnce(method, params, auth = this.descriptor.token) {
     await this.ready;
+    if (this.terminalError) throw this.terminalError;
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, events: [] });
-      this.socket.write(encodeFrame(makeRequest(id, method, auth, params)));
+      const timer = setTimeout(() => this.terminate(`response timeout for ${method}`), this.deadlineFor(method, params));
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, events: [], timer });
+      let frame;
+      try { frame = encodeFrame(makeRequest(id, method, auth, params)); } catch (error) {
+        this.settle(id, false, error);
+        return;
+      }
+      try {
+        this.socket.write(frame, (error) => {
+          if (error) this.terminate("socket write failure");
+        });
+      } catch {
+        this.terminate("socket write failure");
+      }
     });
   }
   async renewLease(observedEpoch) {
@@ -220,7 +284,7 @@ export class ControllerClient {
   async exec(argv, options) { await this.ready; if (options.signal?.aborted) throw Object.assign(new Error("operation cancelled"), { code: "cancelled" }); const requestId = this.sequence + 1; const abort = () => { void this.request("cancel", { requestId }).catch(() => {}); }; options.signal?.addEventListener("abort", abort, { once: true }); try { const answer = await this.request("exec", { argv, cwd: options.cwd, env: options.env ?? {}, timeoutMs: options.timeoutMs ?? 3600000, maxOutputBytes: options.maxOutputBytes ?? 16777216, policyGeneration: this.policyGeneration }); for (const [stream, data] of answer.events) options.onEvent?.(stream, data); return answer.result; } finally { options.signal?.removeEventListener("abort", abort); } }
   async resetDocker() { return (await this.request("docker.reset", { policyGeneration: this.policyGeneration })).result; }
   async release() { try { await this.request("lease.release", {}); } finally { this.destroy(); } }
-  destroy() { this.socket.destroy(); }
+  destroy() { this.terminate("client destroyed"); }
 }
 async function waitForClient(descriptor) { let last; for (let attempt = 0; attempt < 50; attempt += 1) { try { const client = new ControllerClient(descriptor); await client.ready; return client; } catch (error) { last = error; await new Promise((resolve) => setTimeout(resolve, 20)); } } throw last ?? new Error("controller did not become ready"); }
 export async function acquireControllerLease({ startup, clientId }) {

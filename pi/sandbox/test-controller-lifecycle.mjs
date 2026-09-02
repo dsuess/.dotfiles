@@ -29,6 +29,33 @@ test("controller publishes a private manifest, shares root leases, and frames he
   await second.client.release();
 });
 
+test("controller executes a reviewed PATH fixture by bare executable name", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-path-fixture-"));
+  const fixtureDirectory = path.join(workspace, "fixture-bin");
+  fs.mkdirSync(fixtureDirectory);
+  const fixture = path.join(fixtureDirectory, "path-fixture");
+  fs.writeFileSync(fixture, "#!/bin/sh\nprintf 'fixture:%s' \"$1\"\n");
+  fs.chmodSync(fixture, 0o755);
+  const originalPath = process.env.PATH;
+  let startup;
+  try {
+    process.env.PATH = `${fixtureDirectory}:${originalPath}`;
+    startup = beginControllerStartup({ launchDirectory: workspace });
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
+  const attached = await acquire(startup, "path-fixture");
+  const chunks = [];
+  const result = await attached.client.exec(["path-fixture", "ok"], {
+    cwd: workspace,
+    onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); },
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(Buffer.concat(chunks).toString(), "fixture:ok");
+  await attached.client.release();
+});
+
 test("controller forwards ordinary secret values but strips control authority", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-environment-"));
   const startup = beginControllerStartup({ launchDirectory: workspace });

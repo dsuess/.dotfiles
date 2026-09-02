@@ -61,7 +61,7 @@ interface ExtensionDependencies {
     renewalStartup?: any;
   }) => Promise<{ client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> }; status: any }>;
   acquire?: (options: { startup: any; clientId: string; signal: AbortSignal }) => Promise<{
-    client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> };
+    client: SandboxClient & { destroy?: () => void; release?: () => Promise<void>; onTerminal?: (listener: (error: Error) => void) => () => void; };
     status: any;
     leaseToken: string;
     scope: { workspaceKey: string; canonicalWorkspaceRoot: string };
@@ -168,7 +168,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     if (env.PI_SRT_ROUTING !== "1" && env.PI_SRT_ROUTING_SANDBOX !== "1") return;
 
     const cwd = process.cwd();
-    let client: (SandboxClient & { destroy?: () => void; release?: () => Promise<void> }) | null = null;
+    let client: (SandboxClient & { destroy?: () => void; release?: () => Promise<void>; onTerminal?: (listener: (error: Error) => void) => () => void; }) | null = null;
     let connectedStatus: any = null;
     let fatalError: string | null = null;
     let permittedNames = new Set<string>();
@@ -229,7 +229,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     };
 
     const failClosed = (ctx: ExtensionContext | undefined, reason: string): void => {
-      if (retired) return;
+      if (retired || fatalError) return;
       fatalError = reason;
       const activeClient = client;
       client = null;
@@ -328,6 +328,12 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
           }
           client = connected.client;
           ownsRootLease = !inherited || adoptRootLease;
+          const activeClient = client;
+          activeClient.onTerminal?.((error) => {
+            if (!retired && !fatalError && client === activeClient) {
+              failClosed(lastContext ?? undefined, error.message);
+            }
+          });
           const status = connected.status;
           if (status.workspaceKey !== workspaceKey || status.workspaceRoot !== workspaceRoot ||
               status.health !== "healthy" ||

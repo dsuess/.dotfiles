@@ -72,6 +72,12 @@ function absolutePath(value, label) {
   return candidate;
 }
 
+function executable(value, label) {
+  const candidate = string(value, label, MAX_PATH_BYTES);
+  if (candidate.startsWith("/") || /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(candidate)) return candidate;
+  throw protocolError("invalid_request", `${label} must be absolute or a bare executable name`);
+}
+
 function integer(value, label, minimum, maximum) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw protocolError("invalid_request", `${label} is out of range`);
@@ -126,9 +132,10 @@ function validateExec(params) {
   for (const [index, entry] of params.argv.entries()) {
     argvBytes += Buffer.byteLength(string(entry, `params.argv[${index}]`, 16 * 1024, { empty: true }));
   }
-  if (argvBytes > MAX_ARGV_BYTES || !params.argv[0].startsWith("/")) {
-    throw protocolError("invalid_request", "params.argv is too large or argv[0] is not absolute");
+  if (argvBytes > MAX_ARGV_BYTES) {
+    throw protocolError("invalid_request", "params.argv is too large");
   }
+  executable(params.argv[0], "params.argv[0]");
   absolutePath(params.cwd, "params.cwd");
   integer(params.timeoutMs, "params.timeoutMs", 1, 60 * 60 * 1000);
   integer(params.maxOutputBytes, "params.maxOutputBytes", 1, MAX_OUTPUT_BYTES);
