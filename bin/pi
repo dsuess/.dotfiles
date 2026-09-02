@@ -10,15 +10,22 @@ fail() {
   exit 1
 }
 
+self="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+# Every "pi" this launcher has already exec'd through in this chain (itself
+# included). A host-level wrapper that bounces back into this launcher (e.g.
+# a model-selecting front end living outside ~/.dotfiles) must not be picked
+# as "real" a second time, or find_real_pi()/exec would loop forever.
+chain="${PI_LAUNCHER_CHAIN:-}:$self"
+
 find_real_pi() {
-  local self candidate resolved entry
-  self="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  local candidate resolved entry
   IFS=: read -r -a entries <<<"${PATH:-}"
   for entry in "${entries[@]}"; do
     [[ "$entry" == /* && -x "$entry/pi" ]] || continue
     candidate="$entry/pi"
     resolved="$(/usr/bin/realpath "$candidate" 2>/dev/null || /bin/realpath "$candidate" 2>/dev/null || true)"
-    [[ -n "$resolved" && "$resolved" != "$self" ]] || continue
+    [[ -n "$resolved" ]] || continue
+    case ":$chain:" in *":$resolved:"*) continue ;; esac
     # Never trust a Pi executable supplied by the repository being routed.
     case "$resolved" in
       "$(pwd -P)"/*|"$HOME/.dotfiles"/*) continue ;;
@@ -42,6 +49,7 @@ for argument in "$@"; do
 done
 
 real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind this launcher"
+export PI_LAUNCHER_CHAIN="$chain:$real_pi"
 if [[ "$yolo" == true ]]; then
   printf 'pi: warning: SRT disabled by --yolo\n' >&2
   exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"}

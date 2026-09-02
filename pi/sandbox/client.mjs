@@ -85,13 +85,15 @@ function waitForPublishedState(descriptor) {
 }
 function withStartupLock(workspaceKey, operation) {
   const runtimeRoot = privateDirectory(privateRoot(workspaceKey)); const lock = path.join(runtimeRoot, "startup.lock");
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  const staleMs = 10_000;
+  const deadline = Date.now() + staleMs + 5_000;
+  while (Date.now() < deadline) {
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
       try { return operation(); } finally { fs.rmSync(lock, { recursive: true, force: true }); }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > 10_000) { fs.rmSync(lock, { recursive: true, force: true }); continue; } } catch {}
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) { fs.rmSync(lock, { recursive: true, force: true }); continue; } } catch {}
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
   }
