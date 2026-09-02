@@ -10,7 +10,7 @@ function createHarness({ runChild, env = {} } = {}) {
 	const tools = [];
 	const widgetCalls = [];
 	let activeTools = [
-		"read", "bash", "subagent", "submit_plan", "plan_progress", "complete_plan", "complete_stage",
+		"read", "bash", "subagent", "show_plan", "plan_progress", "complete_plan", "complete_stage",
 	];
 	const pi = {
 		registerTool(definition) { tools.push(definition); },
@@ -95,7 +95,7 @@ test("inherits model, thinking, effective prompt, active tools, and planning mod
 		thinkingLevel: "xhigh",
 		systemPrompt: "prefix\n[PI PLANNING MODE ACTIVE]\nread-only planning",
 		activeTools: [
-			"read", "bash", "subagent", "submit_plan", "plan_progress", "complete_plan", "complete_stage",
+			"read", "bash", "subagent", "show_plan", "plan_progress", "complete_plan", "complete_stage",
 		],
 		cwd: "/workspace/project",
 		planningMode: true,
@@ -139,7 +139,7 @@ test("model and thinking overrides are independent of inherited defaults and res
 		assert.equal(request.model, "anthropic/claude-sonnet");
 		assert.equal(request.thinkingLevel, "xhigh");
 		assert.deepEqual(request.activeTools, [
-			"read", "bash", "subagent", "submit_plan", "plan_progress", "complete_plan", "complete_stage",
+			"read", "bash", "subagent", "show_plan", "plan_progress", "complete_plan", "complete_stage",
 		]);
 		assert.equal(request.planningMode, true);
 	});

@@ -27,10 +27,10 @@ export function getExecutionToolNames(state, allToolNames) {
 	const available = new Set(allToolNames);
 	const missing = state.originalActiveTools.filter((name) => !available.has(name));
 	const active = state.originalActiveTools.filter((name) => available.has(name));
-	for (const name of ["plan_progress", state.mode === "executing_staged" ? "complete_stage" : "complete_plan"]) {
+	for (const name of ["plan_progress", state.execution?.mode === "staged" ? "complete_stage" : "complete_plan"]) {
 		if (available.has(name) && !active.includes(name)) active.push(name);
 	}
-	if (state.mode === "executing_staged" && state.currentStageId === null && available.has("complete_plan") && !active.includes("complete_plan")) active.push("complete_plan");
+	if (state.execution?.mode === "staged" && state.currentStageId === null && available.has("complete_plan") && !active.includes("complete_plan")) active.push("complete_plan");
 	return { active, missing };
 }
 

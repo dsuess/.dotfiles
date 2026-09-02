@@ -36,7 +36,7 @@ export const HOST_ADAPTER_NAMES = Object.freeze([
   "plan_progress",
   "complete_plan",
   "complete_stage",
-  "submit_plan",
+  "show_plan",
   "subagent",
   "ketch_search",
   "ketch_scrape",
@@ -83,7 +83,7 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
   const ketchDir = path.join(agentDir, "npm", "node_modules", "pi-ketch");
   const specs: AdapterSpec[] = [];
 
-  for (const name of ["submit_plan", "plan_progress", "complete_plan", "complete_stage"]) {
+  for (const name of ["show_plan", "plan_progress", "complete_plan", "complete_stage"]) {
     specs.push({
       name,
       source: "auto",

@@ -11,7 +11,7 @@ import {
 	approveExecution,
 	createInitialState,
 	enterPlanning,
-	submitPlan,
+	showPlan,
 } from "../state.js";
 import { PART_MINIMAL_PLAN } from "./fixtures.mjs";
 import { createPiJiti } from "../../../../test-helpers.mjs";
@@ -37,7 +37,7 @@ test("Part IDs drive plan_progress while status remains managed metadata", async
 			markdown: PART_MINIMAL_PLAN,
 		});
 		let state = enterPlanning(createInitialState(), ["read"]).state;
-		state = submitPlan(state, {
+		state = showPlan(state, {
 			path: stored.path,
 			slug: stored.slug,
 			hash: stored.hash,
@@ -96,7 +96,7 @@ test("accepted progress transitions atomically synchronize widget and saved Part
 		});
 		let state = enterPlanning(createInitialState(), ["read"]).state;
 		const tasks = getDocumentProgressTasks(stored.document);
-		state = submitPlan(state, {
+		state = showPlan(state, {
 			path: stored.path,
 			slug: stored.slug,
 			hash: stored.hash,

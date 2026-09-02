@@ -51,6 +51,10 @@ import {
 	acceptFastOptimization,
 	approveExecution,
 	beginFastOptimization,
+	hasPendingApproval,
+	isActiveExecution,
+	isPlanning,
+	isStagedExecution,
 	completeWorkflow,
 	createInitialState,
 	enterPlanning,
@@ -64,12 +68,11 @@ import {
 	resumeExecution,
 	restoreFastOptimization,
 	restoreLatestState,
-	submitPlan,
+	showPlan,
 } from "./state.js";
 import type { PlanModeState, TransitionResult } from "./state.ts";
 import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-review.ts";
 
-const GATED_MODES = new Set(["planning", "approval"]);
 const MAX_INVALID_SUBMISSIONS = 3;
 const MAX_VALIDATION_DETAIL_ROWS = 12;
 const SRT_ROUTING_VERIFY_TOOLS_EVENT = "srt-tool-routing:verify-tools";
@@ -77,7 +80,7 @@ const SRT_ROUTING_BEFORE_USER_BASH_EVENT = "srt-tool-routing:before-user-bash";
 const SRT_ROUTING_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 function isGated(state: PlanModeState): boolean {
-	return GATED_MODES.has(state.mode);
+	return isPlanning(state);
 }
 
 interface ValidationDetailRow {
@@ -241,8 +244,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	function planningToolNames(): string[] {
 		const names = getPlanningToolNames(allToolNames(), { fastOptimization: state.optimization !== null });
-		return state.mode === "planning" && state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS
-			? names.filter((name) => name !== "submit_plan")
+		return isPlanning(state) && state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS
+			? names.filter((name) => name !== "show_plan")
 			: names;
 	}
 
@@ -280,11 +283,9 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			feedbackPending: hasDurableFeedbackPending(state),
 		});
 		if (!ctx.hasUI) return;
-		if (state.mode === "planning") {
+		if (isPlanning(state)) {
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "plan:planning"));
-		} else if (state.mode === "approval") {
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", "plan:approval"));
-		} else if (state.mode === "executing_all" || state.mode === "executing_staged") {
+		} else if (isActiveExecution(state)) {
 			const completed = Object.values(state.ledger).filter((item) => item.status === "completed").length;
 			const total = Object.keys(state.ledger).length;
 			const paused = state.execution?.paused ? ":paused" : "";
@@ -305,8 +306,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	}
 
 	function refreshWorkflowUI(ctx: ExtensionContext): void {
-		if (state.mode === "executing_all" || state.mode === "executing_staged") applyExecutionTools(ctx);
-		else if (state.mode === "completed" || state.mode === "blocked") restoreOriginalTools(ctx);
+		if (isActiveExecution(state)) applyExecutionTools(ctx);
+		else if (state.outcome === "completed" || state.outcome === "blocked") restoreOriginalTools(ctx);
 		updateStatus(ctx);
 	}
 
@@ -320,7 +321,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	async function startPlanning(ctx: ExtensionContext, goal: string): Promise<void> {
 		initializeModelRouting(ctx);
-		if (state.mode === "planning") {
+		if (isPlanning(state)) {
 			applyPlanningGate();
 			await applyModelProfile(ctx, modelRouting?.planning, "planning");
 			if (goal) pi.sendUserMessage(`Planning goal: ${goal}`);
@@ -381,21 +382,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				await stopPlanning(ctx);
 				return;
 			}
-			if (state.mode === "approval") {
-				if (ctx.hasUI) ctx.ui.notify(
-					state.approval?.consumed
-						? "This plan was already handed off for implementation in this session. Use /plan off to start a new planning run."
-						: "A plan is awaiting approval. Use /plan-actions to reopen its actions or /plan off.",
-					"info",
-				);
-				return;
-			}
+
 			await startPlanning(ctx, value);
 		},
 	});
 
 	async function readApprovedPlan(ctx: ExtensionContext): Promise<string> {
-		if (!state.plan) throw new Error("No approved plan is active");
+		if (!state.plan) throw new Error("No candidate plan is active");
 		try {
 			const markdown = await readFile(state.plan.path, "utf8");
 			const hash = createHash("sha256").update(markdown, "utf8").digest("hex");
@@ -470,7 +463,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		try {
 			approvedMarkdown = await readApprovedPlan(ctx);
 		} catch (error) {
-			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}`, "error");
 			return;
 		}
 		const transition = approveExecution(state, nonce, mode) as TransitionResult;
@@ -492,7 +485,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		try {
 			sourceMarkdown = await readApprovedPlan(ctx);
 		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			if (ctx.hasUI) ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}`, "error");
 			return;
 		}
 		const parsed = parsePlanDocument(sourceMarkdown);
@@ -512,23 +505,23 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		pi.sendUserMessage(buildFastOptimizationPrompt(state, sourceMarkdown));
 	}
 
-	async function requestPlanChange(ctx: ExtensionContext, nonce: string, text: string): Promise<void> {
+	async function requestPlanDiscuss(ctx: ExtensionContext, nonce: string, text: string): Promise<void> {
 		try {
 			await readApprovedPlan(ctx);
 		} catch (error) {
-			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}`, "error");
 			return;
 		}
 		if (state.counters.reviewRounds >= 10 && ctx.hasUI) {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
 			if (!confirmed) return;
 		}
-		const result = requestRevision(state, nonce, "change") as TransitionResult;
+		const result = requestRevision(state, nonce, "discuss") as TransitionResult;
 		if (!result.ok) { ctx.ui.notify(result.error.message, "warning"); return; }
 		commitTransition(result);
 		applyPlanningGate();
 		updateStatus(ctx);
-		pi.sendUserMessage(`Revise the saved plan at ${state.plan?.path}. Apply this exact user feedback:\n\n${text}\n\nRe-read the current plan, use grill-with-docs for any newly exposed decision, and submit the complete revised canonical plan with submit_plan. Do not implement.`);
+		pi.sendUserMessage(`Revise the saved plan at ${state.plan?.path}. Apply this exact user feedback:\n\n${text}\n\nRe-read the current plan, use grill-with-docs for any newly exposed decision, and submit the complete revised canonical plan with show_plan. Do not implement.`);
 	}
 
 	async function requestPlanReview(ctx: ExtensionContext, nonce: string): Promise<boolean> {
@@ -541,7 +534,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		try {
 			validatedPlan = await readApprovedPlan(ctx);
 		} catch (error) {
-			ctx.ui.notify(`The approved plan is unavailable: ${formatStoreError(error)}`, "error");
+			ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}`, "error");
 			return false;
 		}
 		const review = await (dependencies.runPlanReview ?? runTuicrPlanReview)(ctx, state.plan.path, validatedPlan);
@@ -555,13 +548,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		commitTransition(result);
 		applyPlanningGate();
 		updateStatus(ctx);
-		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\nPlan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr. Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Respond with one visible resolution block per comment in the supplied original order. In each block, reproduce the exact comment content as a Markdown blockquote, prefixing every line of a multi-line comment with \"> \", and put \`**Resolution:**\` immediately below it. Use this shape:\n\n> Exact user question or comment\n\n**Resolution:** Grounded answer, reconciliation, and plan impact.\n\nThe quoted user text—not an anchor, stable ID, or opaque hash—is the visible label. Stable IDs may support internal inventory checks only: do not present an ID-only bullet or hash-led answer. Inventory and explicitly answer every user question, including natural-language interrogatives and requests for a choice. Ground each resolution in repository evidence, a stated assumption, or a user decision, and say whether it changes the plan. Never silently convert an answerable question into plan text. Batch every user-owned decision that remains open through the normal collect-then-batch clarification workflow. Do not submit while any question or required user decision is open; remain in planning mode until the complete discussion closes.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nBefore submit_plan, provide a final complete resolution block for every comment. After every question has an explicit answer or agreed resolution, submit one complete revised canonical plan through submit_plan exactly once. Do not edit the saved plan with ordinary mutation tools and do not implement.`);
+		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\nPlan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr. Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Respond with one visible resolution block per comment in the supplied original order. In each block, reproduce the exact comment content as a Markdown blockquote, prefixing every line of a multi-line comment with \"> \", and put \`**Resolution:**\` immediately below it. Use this shape:\n\n> Exact user question or comment\n\n**Resolution:** Grounded answer, reconciliation, and plan impact.\n\nThe quoted user text—not an anchor, stable ID, or opaque hash—is the visible label. Stable IDs may support internal inventory checks only: do not present an ID-only bullet or hash-led answer. Inventory and explicitly answer every user question, including natural-language interrogatives and requests for a choice. Ground each resolution in repository evidence, a stated assumption, or a user decision, and say whether it changes the plan. Never silently convert an answerable question into plan text. Batch every user-owned decision that remains open through the normal collect-then-batch clarification workflow. Do not submit while any question or required user decision is open; remain in planning mode until the complete discussion closes.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nBefore show_plan, provide a final complete resolution block for every comment. After every question has an explicit answer or agreed resolution, continue the planning discussion and call show_plan only when the complete revised candidate is ready. Do not edit the saved plan with ordinary mutation tools and do not implement.`);
 		return true;
 	}
 
 	async function openPlanActions(args: string | undefined, ctx: ExtensionContext): Promise<void> {
 		const supplied = args?.trim();
-		if (state.mode !== "approval" || !state.approval || state.approval.consumed || (supplied && supplied !== state.approval.nonce)) {
+		if (!hasPendingApproval(state) || (supplied && supplied !== state.approval.nonce)) {
 			if (ctx.hasUI) ctx.ui.notify("No matching plan approval is pending.", "warning");
 			return;
 		}
@@ -583,13 +576,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				await startFastOptimization(ctx, nonce);
 				return;
 			}
-			if (choice.action === "change") { await requestPlanChange(ctx, nonce, choice.text); return; }
+			if (choice.action === "discuss") { await requestPlanDiscuss(ctx, nonce, choice.text); return; }
 			if (choice.action === "review" && await requestPlanReview(ctx, nonce)) return;
 		}
 	}
 
 	pi.registerCommand("plan-actions", {
-		description: "Open actions for the currently submitted plan",
+		description: "Open actions for the currently shown plan",
 		handler: async (args, ctx) => {
 			await openPlanActions(args, ctx);
 		},
@@ -597,7 +590,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	async function openStageActions(args: string | undefined, ctx: ExtensionContext): Promise<void> {
 			const supplied = args?.trim();
-			if (state.mode !== "executing_staged" || !state.checkpoint || (supplied && supplied !== state.checkpoint.nonce)) {
+			if (!isStagedExecution(state) || !state.checkpoint || (supplied && supplied !== state.checkpoint.nonce)) {
 				if (ctx.hasUI) ctx.ui.notify("No matching stage checkpoint is pending.", "warning");
 				return;
 			}
@@ -650,7 +643,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					next.blockedReason = blockedReason?.trim() || null;
 					next.testEvidence = state.completedStages.flatMap((stage) => stage.tests.map((command) => ({ command, result: "passed" as const, summary: stage.summary })));
 					commitState(next); restoreOriginalTools(ctx); updateStatus(ctx);
-					ctx.ui.notify("Approved plan execution completed.", "info");
+					ctx.ui.notify("Candidate plan execution completed.", "info");
 					return;
 				}
 				const result = resolveStageCheckpoint(state, nonce, "continue") as TransitionResult;
@@ -671,14 +664,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	pi.registerCommand("plan-resume", {
 		description: "Resume a paused approved-plan execution",
 		handler: async (_args, ctx) => {
-			if ((state.mode !== "executing_all" && state.mode !== "executing_staged") || !state.execution?.paused) {
+			if (!isActiveExecution(state) || !state.execution?.paused) {
 				if (ctx.hasUI) ctx.ui.notify("No paused plan execution is available in this session.", "warning");
 				return;
 			}
 			const result = resumeExecution(state) as TransitionResult;
 			if (!result.ok) return;
 			commitTransition(result); applyExecutionTools(ctx); updateStatus(ctx);
-			pi.sendUserMessage(state.mode === "executing_staged" ? buildStageInstruction(state) : "Resume the approved plan from the current ledger. Continue until complete_plan or a declared stopping criterion.");
+			pi.sendUserMessage(isStagedExecution(state) ? buildStageInstruction(state) : "Resume the candidate plan from the current ledger. Continue until complete_plan or a declared stopping criterion.");
 		},
 	});
 
@@ -690,13 +683,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	});
 
 	pi.registerTool({
-		name: "submit_plan",
-		label: "Submit Plan",
+		name: "show_plan",
+		label: "Show Plan",
 		description:
 			"Validate and atomically save a complete canonical planning-mode Markdown document under the current project's .pi/plans directory, then request user approval.",
 		promptSnippet: "Submit the complete validated planning document for approval",
 		promptGuidelines: [
-			"Use submit_plan only as the final action in Pi planning mode, and include the entire canonical Markdown document.",
+			"Use show_plan only as the final action in Pi planning mode, and include the entire canonical Markdown document.",
 		],
 		parameters: Type.Object({
 			intent: Type.String({ description: "Short intent used to derive the safe plan filename", minLength: 1, maxLength: 16_384 }),
@@ -706,13 +699,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (state.mode !== "planning") {
 				return {
-					content: [{ type: "text", text: `submit_plan is unavailable while workflow mode is ${state.mode}.` }],
+					content: [{ type: "text", text: `show_plan is unavailable while workflow mode is ${state.mode}.` }],
 					details: { accepted: false, mode: state.mode },
 				};
 			}
 			if (state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS) {
 				return {
-					content: [{ type: "text", text: "Three submissions failed. Wait for new user input before retrying submit_plan." }],
+					content: [{ type: "text", text: "Three submissions failed. Wait for new user input before retrying show_plan." }],
 					details: { accepted: false, retryLimitReached: true },
 				};
 			}
@@ -775,7 +768,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				};
 				const result = (optimizing
 					? acceptFastOptimization(state, submission)
-					: submitPlan(state, submission)) as TransitionResult;
+					: showPlan(state, submission)) as TransitionResult;
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
 				approvedPlanMarkdown = stored.markdown;
@@ -889,8 +882,20 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 
 	pi.on("user_bash", async (event) => evaluatePlanningUserBash(event.command));
 
-	pi.on("input", async (event) => {
-		if (event.source === "extension" || state.mode !== "planning" || state.counters.invalidSubmissions === 0) return;
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension" || !isPlanning(state)) return;
+		// Any ordinary prompt after a candidate is shown is an open discussion,
+		// not a forced resubmission. It consumes only the decision nonce.
+		if (hasPendingApproval(state)) {
+			const discussion = requestRevision(state, state.approval!.nonce, "discuss") as TransitionResult;
+			if (discussion.ok) {
+				commitTransition(discussion);
+				applyPlanningGate();
+				updateStatus(ctx);
+			}
+			return;
+		}
+		if (state.counters.invalidSubmissions === 0) return;
 		const result = resetInvalidSubmissions(state) as TransitionResult;
 		if (result.ok && result.state !== state) {
 			commitTransition(result);
@@ -898,17 +903,23 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 	});
 
+	pi.on("session_before_compact", async (event) => {
+		// The user explicitly controls /compact; defer only automatic compaction
+		// while the candidate action is awaiting a decision.
+		if (event.reason !== "manual" && hasPendingApproval(state)) return { cancel: true };
+	});
+
 	pi.on("before_agent_start", async (event) => {
 		if (isGated(state)) {
 			applyPlanningGate();
-			if (state.mode === "planning") return { systemPrompt: `${event.systemPrompt}\n\n${state.optimization ? "Fast optimization is active. Follow its dedicated source-preserving prompt." : buildPlanningPrompt(state)}` };
+			if (isPlanning(state)) return { systemPrompt: `${event.systemPrompt}\n\n${state.optimization ? "Fast optimization is active. Follow its dedicated source-preserving prompt." : buildPlanningPrompt(state)}` };
 			return;
 		}
-		if (state.mode === "executing_all" || state.mode === "executing_staged") applyExecutionTools();
+		if (isActiveExecution(state)) applyExecutionTools();
 	});
 
 	async function presentPendingWorkflowDecision(ctx: ExtensionContext): Promise<boolean> {
-		if (ctx.hasUI && !presentingApproval && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented) {
+		if (ctx.hasUI && !presentingApproval && hasPendingApproval(state) && !state.approval.presented) {
 			const nonce = state.approval.nonce;
 			const next = structuredClone(state);
 			next.approval!.presented = true;
@@ -921,7 +932,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			}
 			return true;
 		}
-		if (ctx.hasUI && !presentingCheckpoint && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented) {
+		if (ctx.hasUI && !presentingCheckpoint && isStagedExecution(state) && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented) {
 			const nonce = state.checkpoint.nonce;
 			const next = structuredClone(state);
 			next.checkpoint!.presented = true;
@@ -940,7 +951,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	let handlingEarlyIdle = false;
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (await presentPendingWorkflowDecision(ctx)) return;
-		if (state.mode === "planning" && state.optimization && !ctx.hasPendingMessages()) {
+		if (isPlanning(state) && state.optimization && !ctx.hasPendingMessages()) {
 			const restored = restoreFastOptimization(state) as TransitionResult;
 			if (restored.ok) {
 				commitTransition(restored);
@@ -950,8 +961,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			}
 			return;
 		}
-		if (handlingEarlyIdle || (state.mode !== "executing_all" && state.mode !== "executing_staged") || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
-		const relevant = state.mode === "executing_staged"
+		if (handlingEarlyIdle || !isActiveExecution(state) || state.execution?.paused || state.checkpoint || ctx.hasPendingMessages()) return;
+		const relevant = isStagedExecution(state)
 			? Object.entries(state.ledger).filter(([id]) => getStageTaskIds(state, state.currentStageId).includes(id))
 			: Object.entries(state.ledger);
 		if (relevant.length > 0 && relevant.every(([, item]) => item.status === "completed" || item.status === "blocked")) {
@@ -973,14 +984,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			if (!retry && next.execution) next.execution.paused = true;
 			next.lastAction = retry ? "early_idle_retry" : "early_idle_paused";
 			commitState(next); updateStatus(ctx);
-			if (retry) pi.sendUserMessage(state.mode === "executing_staged" ? buildStageInstruction(state) : "Reconcile the approved plan ledger and continue execution. Call complete_plan only after all tasks and tests are terminal.");
+			if (retry) pi.sendUserMessage(isStagedExecution(state) ? buildStageInstruction(state) : "Reconcile the candidate plan ledger and continue execution. Call complete_plan only after all tasks and tests are terminal.");
 		} finally {
 			handlingEarlyIdle = false;
 		}
 	});
 
 	pi.on("context", async (event) => {
-		if (state.mode === "planning") return;
+		if (isPlanning(state)) return;
 		const messages = event.messages.filter((message) =>
 			!(message.role === "custom" && "customType" in message && message.customType === PLAN_MODE_CONTEXT_TYPE));
 		if (executionContract && state.execution?.runId === executionContract.runId) {
@@ -1003,7 +1014,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 		const parsed = parsePlanDocument(durableMarkdown);
 		if (!parsed.ok) {
-			if (ctx.hasUI) ctx.ui.notify("Plan progress titles could not be restored from the durable approved plan.", "error");
+			if (ctx.hasUI) ctx.ui.notify("Plan progress titles could not be restored from the durable candidate plan.", "error");
 			return;
 		}
 		const tasks = getDocumentProgressTasks(parsed.document).map(({ id, title }) => ({ id, title }));
@@ -1017,7 +1028,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	}
 
 	async function backfillExecutionProgressReport(ctx: ExtensionContext): Promise<void> {
-		if (!state.plan || (state.mode !== "executing_all" && state.mode !== "executing_staged")) return;
+		if (!state.plan || !isActiveExecution(state)) return;
 		const approvedMarkdown = executionContract?.approvedMarkdown ?? approvedPlanMarkdown;
 		if (!approvedMarkdown) return;
 		try {
@@ -1050,11 +1061,12 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		);
 		state = restoreLatestState(branch) as PlanModeState;
 		executionContract = restoreExecutionContract(branch, state);
-		rejectedExecutionRestore = (state.mode === "executing_all" || state.mode === "executing_staged") && executionContract === null;
+		rejectedExecutionRestore = (isActiveExecution(state)) && executionContract === null;
 		if (rejectedExecutionRestore) {
 			const next = structuredClone(state);
-			next.mode = "blocked";
-			next.execution = null;
+			next.mode = "normal";
+			next.outcome = "blocked";
+			if (next.execution) next.execution.active = false;
 			next.blockedReason = "Execution restoration stopped: the active run has no matching canonical in-place execution contract.";
 			next.lastAction = "unsupported_execution_contract";
 			state = next;
@@ -1077,14 +1089,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		await restoreTaskMetadata(ctx);
 		await backfillExecutionProgressReport(ctx);
 		const inheritedChildPlanning = process.env.PI_SUBAGENT_PLANNING === "1";
-		if (honorFlag && !hasPersistedWorkflow && (pi.getFlag("plan") === true || inheritedChildPlanning) && state.mode === "off") {
+		if (honorFlag && !hasPersistedWorkflow && (pi.getFlag("plan") === true || inheritedChildPlanning) && state.mode === "normal") {
 			const result = enterPlanning(state, snapshotOriginalTools()) as TransitionResult;
 			if (result.ok) commitTransition(result);
 		}
 		if (isGated(state)) applyPlanningGate();
-		else if (state.mode === "executing_all" || state.mode === "executing_staged") applyExecutionTools(ctx);
-		else if (state.originalActiveTools.length > 0 && ["completed", "blocked"].includes(state.mode)) restoreOriginalTools(ctx);
-		else if (state.mode === "off" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
+		else if (isActiveExecution(state)) applyExecutionTools(ctx);
+		else if (state.originalActiveTools.length > 0 && ["completed", "blocked"].includes(state.outcome ?? "")) restoreOriginalTools(ctx);
+		else if (state.mode === "normal" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
 		else hideWorkflowTools();
 		initializeModelRouting(ctx);
 		if (isGated(state)) {
@@ -1093,8 +1105,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			await applyModelProfile(ctx, modelRouting.inference, "inference");
 		}
 		updateStatus(ctx);
-		const pendingApproval = ctx.hasUI && state.mode === "approval" && state.approval && !state.approval.consumed && !state.approval.presented;
-		const pendingCheckpoint = ctx.hasUI && state.mode === "executing_staged" && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented;
+		const pendingApproval = ctx.hasUI && hasPendingApproval(state) && !state.approval.presented;
+		const pendingCheckpoint = ctx.hasUI && isStagedExecution(state) && state.checkpoint && !state.checkpoint.consumed && !state.checkpoint.presented;
 		if (pendingApproval || pendingCheckpoint) {
 			queueMicrotask(() => {
 				presentPendingWorkflowDecision(ctx).catch((error) => {

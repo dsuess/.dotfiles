@@ -159,7 +159,7 @@ assert.equal(queued.some(({ message }) => message === "/plan"), false, "palette 
 let states = appended.filter((entry) => entry.customType === "plan-mode-state");
 assert.equal(states.at(-1)?.data.mode, "planning", "palette Plan selection enters planning immediately");
 assert.equal(activeTools.includes("edit"), false, "planning selection gates mutation tools");
-assert.equal(activeTools.includes("submit_plan"), true, "planning selection enables submit_plan");
+assert.equal(activeTools.includes("show_plan"), true, "planning selection enables show_plan");
 assertPlanningFooter("direct planning entry");
 assert.ok(footerRenderRequests > 0, "workflow changes request a footer render");
 for (const width of [0, 1, 9, 10, 11, 24, 80]) {
@@ -178,7 +178,7 @@ assert.equal(queued.some(({ message }) => message === "/plan"), false, "direct t
 assertNormalFooter("direct planning exit");
 
 const planningState = stateModule.enterPlanning(stateModule.createInitialState(), originalActiveTools).state;
-const approvalState = stateModule.submitPlan(planningState, {
+const approvalState = stateModule.showPlan(planningState, {
 	path: "/project/.pi/plans/palette.md",
 	slug: "palette",
 	hash: "hash",

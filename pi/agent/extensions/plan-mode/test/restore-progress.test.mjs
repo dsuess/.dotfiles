@@ -10,7 +10,7 @@ import {
 	approveExecution,
 	createInitialState,
 	enterPlanning,
-	submitPlan,
+	showPlan,
 } from "../state.js";
 import { PART_PLAN } from "./fixtures.mjs";
 import { createPiJiti } from "../../../../test-helpers.mjs";
@@ -28,7 +28,7 @@ test("restored current execution reconstructs Part titles and backfills its miss
 		const hash = createHash("sha256").update(PART_PLAN, "utf8").digest("hex");
 
 		let state = enterPlanning(createInitialState(), ["read", "bash"]).state;
-		state = submitPlan(state, {
+		state = showPlan(state, {
 			path: planPath,
 			slug: "older",
 			hash,

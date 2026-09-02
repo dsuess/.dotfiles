@@ -51,6 +51,7 @@ describe("discussion fork runtime", () => {
     ]);
     expect(CHILD_TOOL_EXCLUSIONS).toContain("ask_user_question");
     expect(CHILD_TOOL_EXCLUSIONS).toContain("subagent");
+    expect(CHILD_TOOL_EXCLUSIONS).toContain("show_plan");
     expect(CHILD_TOOL_EXCLUSIONS).toContain("complete_plan");
   });
 
@@ -112,7 +113,7 @@ describe("discussion fork runtime", () => {
         cwd: process.cwd(),
         model: { provider: "provider", id: "model" },
         thinkingLevel: "high",
-        activeTools: ["read", "edit", "ask_user_question", "subagent", "submit_plan"],
+        activeTools: ["read", "edit", "ask_user_question", "subagent", "show_plan"],
         projectTrusted: true,
         tui,
         thread,

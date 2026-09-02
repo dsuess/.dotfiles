@@ -33,7 +33,7 @@ Each invocation starts an ephemeral `pi --mode json --print --no-session` run. I
 - model and thinking level, unless explicitly overridden; and
 - active tool allowlist, in its existing order.
 
-The inherited tools exclude `subagent` and parent-session workflow tools (`submit_plan`, plan progress/completion tools, and stage completion). The caller cannot supply or broaden tools. Extension discovery remains enabled so inherited discoverable custom tools can load; unavailable dynamic or SDK-only tools fail rather than causing Pi to enable defaults.
+The inherited tools exclude `subagent` and parent-session workflow tools (`show_plan`, plan progress/completion tools, and stage completion). The caller cannot supply or broaden tools. Extension discovery remains enabled so inherited discoverable custom tools can load; unavailable dynamic or SDK-only tools fail rather than causing Pi to enable defaults.
 
 The inherited system prompt is transferred through a mode-`0600` temporary file, and the delegated task is written only to child stdin. Parent session environment identifiers are removed. Prompt state is deleted after success, failure, or cancellation.
 

@@ -10,7 +10,7 @@ concepts do not exist.
 
 - For any non-trivial task, use Pi's integrated planning mode before editing:
   enter it with `/plan <goal>` (or `--plan` at startup), investigate, and submit
-  the plan with `submit_plan`. Treat its saved `.pi/plans/` document and
+  the plan with `show_plan`. Treat its saved `.pi/plans/` document and
   persistent ledger as the sole plan record.
 - Never self-roll a plan file with `write`, `edit`, or Bash. In particular, do
   not create `./plans/` or choose a plan-file path yourself. If integrated plan

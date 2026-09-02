@@ -115,7 +115,11 @@ async function createHarness({
 			async editor() { return editorValues[editorIndex++]; }, async confirm() { return confirmValues[confirmIndex++] ?? false; }, async input() { return undefined; },
 		},
 	};
-	async function emit(name, event = {}) { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); }
+	async function emit(name, event = {}) {
+		let result;
+		for (const handler of handlers.get(name) ?? []) result = await handler(event, ctx);
+		return result;
+	}
 	await emit("session_start", { reason: "startup" });
 	return {
 		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, reviewInvocations, workflowStates, ctx, emit,
@@ -133,7 +137,7 @@ async function enterThrough(harness, entry) {
 }
 
 async function submit(harness, markdown = PART_PLAN) {
-	return harness.tools.get("submit_plan").execute("submit", {
+	return harness.tools.get("show_plan").execute("submit", {
 		intent: "Make approval reliable", title: "Add Reliable Cache Invalidation", markdown,
 	}, undefined, undefined, harness.ctx);
 }
@@ -158,6 +162,24 @@ for (const entry of ["command", "flag", "keyboard", "palette"]) {
 	});
 }
 
+test("candidate stays in planning, defers automatic compaction, and ordinary input starts discussion", async () => {
+	const harness = await createHarness({ actions: ["cancel"] });
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.equal((await harness.emit("session_before_compact", { reason: "threshold" })).cancel, true);
+		assert.equal(await harness.emit("session_before_compact", { reason: "manual" }), undefined);
+		await harness.emit("agent_settled");
+		const dialogs = harness.timeline.filter((item) => item.type === "dialog").length;
+		await harness.emit("input", { source: "user", text: "Explain the trade-off first." });
+		assert.equal(harness.latestState().mode, "planning");
+		assert.equal(harness.latestState().approval, null);
+		await harness.emit("agent_settled");
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, dialogs);
+	} finally { await harness.cleanup(); }
+});
+
 test("Escape keeps approval pending and manual reopening remains available", async () => {
 	const harness = await createHarness({ actions: ["cancel", "cancel"] });
 	try {
@@ -175,7 +197,7 @@ test("ordinary startup restores the off state without exposing workflow tools", 
 	const harness = await createHarness();
 	try {
 		assert.equal(harness.latestState(), undefined);
-		assert.equal(harness.getActiveTools().includes("submit_plan"), false);
+		assert.equal(harness.getActiveTools().includes("show_plan"), false);
 		assert.equal(harness.getActiveTools().includes("plan_progress"), false);
 	} finally { await harness.cleanup(); }
 });
@@ -187,7 +209,7 @@ test("canonical in-place execution restores its isolated context", async () => {
 		await submit(harness);
 		await harness.emit("agent_settled");
 		await harness.emit("session_tree");
-		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.latestState().mode, "normal");
 		assert.equal(harness.getActiveTools().includes("plan_progress"), true);
 		const boundary = { role: "custom", ...harness.sentMessages[0].message, timestamp: 2 };
 		const context = await harness.handlers.get("context")[0]({ messages: [
@@ -204,7 +226,7 @@ test("unsupported execution restoration blocks and removes planning context", as
 	const harness = await createHarness();
 	try {
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
-		const approval = stateModule.submitPlan(planning, {
+		const approval = stateModule.showPlan(planning, {
 			path: path.join(harness.cwd, ".pi/plans/unsupported.md"), slug: "unsupported", hash: "hash", title: "Unsupported", intent: "Unsupported", approvalNonce: "approval",
 			stages: [{ id: "A", description: "Only", taskIds: ["A"] }],
 			tasks: [{ id: "A", title: "Only task", status: "pending" }],
@@ -215,7 +237,8 @@ test("unsupported execution restoration blocks and removes planning context", as
 			data: stateModule.approveExecution(approval, "approval", "all").state,
 		});
 		await harness.emit("session_tree");
-		assert.equal(harness.latestState().mode, "blocked");
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.latestState().outcome, "blocked");
 		assert.match(harness.latestState().blockedReason, /no matching canonical in-place execution contract/);
 		const context = await harness.handlers.get("context")[0]({
 			messages: [{ role: "user", content: "planning context", timestamp: 1 }],
@@ -246,7 +269,7 @@ test("completing a validated plan publishes the completed workflow state without
 			tests: ["npm test"],
 		}, undefined, undefined, harness.ctx);
 		assert.deepEqual(harness.workflowStates.at(-1), {
-			mode: "completed",
+			mode: "normal",
 			feedbackPending: false,
 		});
 	} finally { await harness.cleanup(); }
@@ -256,7 +279,7 @@ test("ordinary PlanStore errors remain concise when they have no validation rows
 	const harness = await createHarness();
 	try {
 		await enterThrough(harness, "command");
-		const rejected = await harness.tools.get("submit_plan").execute("submit", {
+		const rejected = await harness.tools.get("show_plan").execute("submit", {
 			intent: "Make approval reliable",
 			title: "Wrong title",
 			markdown: PART_PLAN,
@@ -291,14 +314,13 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		const optimized = await submit(harness, PART_PARALLEL_PLAN);
 		assert.equal(optimized.details.accepted, true);
 		assert.equal(optimized.details.fast, true);
-		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.latestState().mode, "normal");
 		assert.equal(harness.latestState().approval, null);
 		assert.equal(harness.latestState().execution.strategy, "parallel");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
 		const contract = harness.entries.filter((entry) => entry.customType === "plan-mode-execution").at(-1).data;
 		assert.equal(contract.executionStrategy, "parallel");
-		const settings = JSON.parse(await readFile(path.join(os.homedir(), ".pi/agent/settings.json"), "utf8"));
-		assert.equal(contract.workerModel, `${settings.defaultProvider}/${settings.defaultModel}`);
+		assert.match(contract.workerModel, /^openai-codex\//);
 		assert.equal(contract.workerThinkingLevel, "high");
 		assert.equal(harness.sentMessages.length, 1);
 		assert.match(harness.sentMessages[0].message.content, /one sibling tool batch/i);
@@ -399,7 +421,7 @@ test("a corrected fast revision executes once after one invalid submission", asy
 		assert.equal(rejected.details.attempts, 1);
 		assert.equal(corrected.details.accepted, true);
 		assert.equal(corrected.details.fast, true);
-		assert.equal(harness.latestState().mode, "executing_all");
+		assert.equal(harness.latestState().mode, "normal");
 		assert.equal(harness.latestState().counters.invalidSubmissions, 0);
 		assert.equal(harness.latestState().execution.strategy, "parallel");
 		assert.equal(harness.sentMessages.length, 1);
@@ -436,7 +458,7 @@ test("three invalid fast revisions restore the original approval without executi
 			line: 27,
 			message: "Worker worker-a owns more than one Part",
 		}]);
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().optimization, null);
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.latestState().plan.hash, source.hash);
@@ -456,7 +478,7 @@ test("an optimizer that ends before submission restores the original approval", 
 		await enterThrough(harness, "command"); await submit(harness, PART_PLAN); await harness.emit("agent_settled");
 		assert.equal(harness.latestState().mode, "planning");
 		await harness.emit("agent_settled");
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.latestState().approval.presented, false);
 		assert.equal(harness.latestState().optimization, null);
@@ -467,7 +489,7 @@ test("fast approval leaves the source approval pending when subagent support is 
 	const harness = await createHarness({ actions: ["fast"] });
 	try {
 		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.sentUserMessages.length, 0);
 		assert.equal(harness.notifications.some(({ message }) => /requires subagent/.test(message)), true);
@@ -519,17 +541,17 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.match(prompt, /prefixing every line of a multi-line comment with "> "/i);
 		assert.match(prompt, /The quoted user text—not an anchor, stable ID, or opaque hash—is the visible label/i);
 		assert.match(prompt, /do not present an ID-only bullet or hash-led answer/i);
-		assert.match(prompt, /Before submit_plan, provide a final complete resolution block for every comment/i);
+		assert.match(prompt, /Before show_plan, provide a final complete resolution block for every comment/i);
 		assert.match(prompt, /"kind": "range"/);
 		assert.match(prompt, /types are advisory context/i);
 		assert.match(prompt, /explicitly answer every user question/i);
 		assert.match(prompt, /Do not submit while any question or required user decision is open/i);
 		assert.match(prompt, /After every question has an explicit answer or agreed resolution/i);
 		assert.match(prompt, /collect-then-batch clarification workflow/i);
-		assert.match(prompt, /submit_plan exactly once/i);
+		assert.match(prompt, /call show_plan only when the complete revised candidate is ready/i);
 		const serializedComments = prompt.slice(
 			prompt.indexOf("Comments (JSON):\n") + "Comments (JSON):\n".length,
-			prompt.indexOf("\n\nBefore submit_plan, provide a final complete resolution block for every comment."),
+			prompt.indexOf("\n\nBefore show_plan, provide a final complete resolution block for every comment."),
 		);
 		assert.deepEqual(JSON.parse(serializedComments), comments, "the planner receives every exact comment in order");
 		assert.doesNotMatch(prompt, /genuinely unresolved decision|resolve every \?|cleaned edited draft|direct edits present/i);
@@ -537,7 +559,7 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		const revised = PART_PLAN.replace("Exercise successful and failed writes", "Exercise, document, and compare successful and failed writes");
 		const resubmitted = await submit(harness, revised);
 		assert.equal(resubmitted.details.accepted, true);
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().plan.revision, 2);
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.latestState().counters.reviewRounds, 1);
@@ -548,7 +570,7 @@ test("RPC approval omits the TUI-only Review action", async () => {
 	const harness = await createHarness({ mode: "rpc", actions: ["review"] });
 	try {
 		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.reviewInvocations.length, 0);
 	} finally { await harness.cleanup(); }
@@ -569,7 +591,7 @@ test("review confirmation beyond ten rounds leaves approval pending until explic
 		await writeFile(planPath, PART_PLAN, "utf8");
 		const hash = createHash("sha256").update(PART_PLAN).digest("hex");
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
-		const approval = stateModule.submitPlan(planning, {
+		const approval = stateModule.showPlan(planning, {
 			path: planPath, slug: "late", hash, title: "Late", intent: "Late", approvalNonce: "approval",
 			stages: [{ id: "1", description: "Only", taskIds: ["1"] }],
 			tasks: [{ id: "1", title: "Only task", status: "pending" }],
@@ -579,7 +601,7 @@ test("review confirmation beyond ten rounds leaves approval pending until explic
 		harness.entries.push({ type: "custom", customType: "plan-mode-state", data: approval });
 		await harness.emit("session_tree");
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
-		assert.equal(harness.latestState().mode, "approval");
+		assert.equal(harness.latestState().mode, "planning");
 		assert.equal(harness.latestState().counters.reviewRounds, 10);
 		assert.equal(harness.reviewInvocations.length, 0);
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
@@ -614,7 +636,7 @@ for (const mode of ["print", "json"]) {
 			const result = await submit(harness); await harness.emit("agent_settled");
 			assert.equal(result.details.accepted, true);
 			assert.equal(harness.timeline.some((item) => item.type === "dialog"), false);
-			assert.equal(harness.latestState().mode, "approval");
+			assert.equal(harness.latestState().mode, "planning");
 			assert.equal(harness.sentMessages.length, 0);
 		} finally { await harness.cleanup(); }
 	});
@@ -624,7 +646,7 @@ test("restored unpresented approval opens without requiring another agent turn",
 	const harness = await createHarness({ actions: ["cancel"] });
 	try {
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
-		const approval = stateModule.submitPlan(planning, {
+		const approval = stateModule.showPlan(planning, {
 			path: path.join(harness.cwd, ".pi/plans/restored.md"), slug: "restored", hash: "hash", title: "Restored", intent: "Restored", approvalNonce: "approval",
 			stages: [{ id: "1", description: "Only", taskIds: ["1"] }],
 			tasks: [{ id: "1", title: "Only task", status: "pending" }],
@@ -642,7 +664,7 @@ test("mandatory staged checkpoints open from state without synthetic commands", 
 	const harness = await createHarness({ actions: ["cancel", "cancel"] });
 	try {
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash", "edit", "write"]).state;
-		const approval = stateModule.submitPlan(planning, {
+		const approval = stateModule.showPlan(planning, {
 			path: path.join(harness.cwd, ".pi/plans/staged.md"), slug: "staged", hash: "hash", title: "Staged", intent: "Staged", approvalNonce: "approval",
 			stages: [{ id: "1", description: "First", taskIds: ["1"] }, { id: "2", description: "Second", taskIds: ["2"] }],
 			tasks: [{ id: "1", title: "First task", status: "pending" }, { id: "2", title: "Second task", status: "pending" }],
@@ -706,8 +728,8 @@ test("the context hook retains post-compaction execution messages without exposi
 });
 
 for (const [action, entry, expectedMode, completionTool] of [
-	["run", "keyboard", "executing_all", "complete_plan"],
-	["staged", "palette", "executing_staged", "complete_stage"],
+	["run", "keyboard", "normal", "complete_plan"],
+	["staged", "palette", "normal", "complete_stage"],
 ]) {
 	test(`${action} starts isolated in-place execution from a direct planning entry`, async () => {
 		const harness = await createHarness({ actions: [action] });

@@ -13,9 +13,7 @@ A global Pi extension for read-oriented planning, explicit approval, clean imple
 - `/plan-stage-actions` — reopen the active staged checkpoint.
 - `/plan-resume` — resume a paused implementation session.
 
-State transitions are persisted as non-context custom session entries:
-
-`off → planning → approval → executing_all | executing_staged → completed | blocked`
+State has exactly two tool-access modes: `planning` and `normal`. A candidate plan, approval nonce, active all/staged execution, paused checkpoint, and completed/blocked outcome are independent persisted fields. `show_plan` leaves the session in `planning`; only an implementation action restores normal implementation tools.
 
 ## Model profiles
 
@@ -27,7 +25,7 @@ A `/model` choice or Ctrl+P cycle persists only the active mode's global pair an
 
 ## Planning gate
 
-Planning and approval expose only registered inspection/research/question tools plus `submit_plan`. Unknown custom tools and implementation workflow tools are hidden. Direct mutation tools are blocked again at `tool_call` as defense in depth.
+Planning exposes only registered inspection/research/question tools plus `show_plan`. Unknown custom tools and implementation workflow tools are hidden. Direct mutation tools are blocked again at `tool_call` as defense in depth.
 
 Bash and user `!`/`!!` commands use a **known-mutator denylist**. Redirects and recognized filesystem, Git, package-manager, process/service, archive, download, and editor mutations are rejected, including common wrappers, chains, substitutions, and nested `sh -c` forms. Unclassified commands are deliberately allowed. This is fail-open and is not a security boundary.
 
@@ -112,6 +110,10 @@ Regression checks preserve failed-write values and the public interface. New-fea
 
 A documentation-only or investigative plan uses the same `Context` and `Approach` shape but may omit both optional sections when no file map or meaningful verification applies.
 
+## Candidate lifecycle
+
+The planner may inspect, answer, and ask questions across any number of turns. It calls `show_plan` only when every blocker is resolved and the complete candidate is ready; ending a turn never requires a plan display. Showing persists and renders one candidate, then opens one decision dialog while status remains `[PLANNING]`. **Discuss** clears the pending nonce and sends open-ended feedback: the planner can answer or investigate without re-showing a plan, and calls `show_plan` later only for a ready revision. Any ordinary user input while a candidate is pending has the same discussion effect. Automatic threshold/overflow compaction is deferred while that decision waits; manual `/compact` remains available.
+
 ## Approval actions
 
 The complete saved plan is rendered as a durable transcript block, then the action dialog opens directly after the planning turn settles without injecting a `/plan-actions` user message. The dialog offers:
@@ -119,7 +121,7 @@ The complete saved plan is rendered as a durable transcript block, then the acti
 - **Implement plan** — execute all stages without ordinary stage pauses.
 - **Implement (fast)** — create a source-equivalent parallel revision, then start it without another approval dialog.
 - **Implement in stages** — hard pause after every derived stage (one Part per stage).
-- **Change** — send exact free-form revision feedback while remaining gated.
+- **Discuss** — send exact free-form revision feedback while remaining gated.
 - **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
 **Implement plan** remains first and is the default action. Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
@@ -128,7 +130,7 @@ The fast action reads and hash-checks the approved source before it starts. It r
 
 Before the extension writes a fast revision, it compares the title, Context, answers, Approach preamble, Critical Files, and Verification. For each source Part, mapped Part bodies must join to the same normalized text. The source Part order stays unchanged. Within those safety constraints, the optimizer minimizes critical-path waves: it places each Part in the earliest wave allowed by a concrete predecessor output and does not treat source order, shared context, eventual integration, or general caution as dependencies. Keeping a source Part verbatim preserves scope; it does not require sequential execution. The optimizer may split a broad Part only through an exact source-preserving partition that unlocks useful concurrency. A rejected fast submission returns bounded, machine-readable validator rows and model-visible stable codes with available line and message context, so the optimizer can correct the schedule or mapping on its next attempt. If the optimizer stops, fails validation three times, or reaches its retry limit, the extension restores the original unconsumed approval. It never executes the source plan on this failure path.
 
-Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--file`, `--theme`, and `review` CLI interfaces, gives each round private data/cache/state storage, and copies the user's normal tuicr configuration into that isolated round. Plan review installs a Catppuccin Mocha theme and compact Markdown syntax theme in that private configuration. Because tuicr models file annotation as an all-added diff, addition backgrounds remain on the Mocha base instead of tinting the full plan green. Its dim foreground also matches the base to visually hide tuicr's unavoidable line-number digits; the empty gutter remains, and other dim text can be hidden in this disposable review session. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `submit_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Change** is the supported fallback.
+Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--file`, `--theme`, and `review` CLI interfaces, gives each round private data/cache/state storage, and copies the user's normal tuicr configuration into that isolated round. Plan review installs a Catppuccin Mocha theme and compact Markdown syntax theme in that private configuration. Because tuicr models file annotation as an all-added diff, addition backgrounds remain on the Mocha base instead of tinting the full plan green. Its dim foreground also matches the base to visually hide tuicr's unavoidable line-number digits; the empty gutter remains, and other dim text can be hidden in this disposable review session. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `show_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Discuss** is the supported fallback.
 
 Saved review-, file-, line-, and range-level comments are returned as one structured planner turn with stable IDs, anchors, side, lifecycle state, content, and optional advisory types. Types do not create a directive/question protocol. The planner acknowledges and reconciles every comment against repository evidence in the supplied original order. Its visible response uses one block per comment:
 
@@ -138,7 +140,7 @@ Saved review-, file-, line-, and range-level comments are returned as one struct
 **Resolution:** Grounded answer, reconciliation, and plan impact.
 ```
 
-Every line of a multi-line comment remains quoted, and `**Resolution:**` follows the quote directly. The quoted user text, not an anchor, stable ID, or opaque hash, is the visible label; IDs remain available only for internal coverage checks, never as an ID-only bullet or hash-led answer. The planner inventories and explicitly answers every user question—including natural-language interrogatives and requests for a choice—and states whether each resolution changes the plan. A resolution is grounded in repository evidence, a stated assumption, or a user decision; an answerable question is never silently folded into plan text. Any user-owned decision that remains open is batched through the normal clarification workflow, keeps planning active, and blocks `submit_plan` until the complete discussion closes. Before submission, every supplied comment must have a final complete resolution block. Once every question has an explicit answer or agreed resolution, the planner resubmits one complete canonical revision through `submit_plan` without implementing. Applicable user decisions are recorded in the plan's `Questions & Answers` section; the immutable canonical-plan boundary remains unchanged.
+Every line of a multi-line comment remains quoted, and `**Resolution:**` follows the quote directly. The quoted user text, not an anchor, stable ID, or opaque hash, is the visible label; IDs remain available only for internal coverage checks, never as an ID-only bullet or hash-led answer. The planner inventories and explicitly answers every user question—including natural-language interrogatives and requests for a choice—and states whether each resolution changes the plan. A resolution is grounded in repository evidence, a stated assumption, or a user decision; an answerable question is never silently folded into plan text. Any user-owned decision that remains open is batched through the normal clarification workflow, keeps planning active, and blocks `show_plan` until the complete discussion closes. Before submission, every supplied comment must have a final complete resolution block. Once every question has an explicit answer or agreed resolution, the planner resubmits one complete canonical revision through `show_plan` without implementing. Applicable user decisions are recorded in the plan's `Questions & Answers` section; the immutable canonical-plan boundary remains unchanged.
 
 ## Execution and ledger
 
@@ -165,7 +167,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 - Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; unsupported execution records stop safely. Every refresh emits `plan-mode:workflow-state` with the persisted mode and `feedbackPending`, including restored completed sessions and the `complete_plan` transition.
 - After an agent turn settles—or immediately after restoring an idle branch—any unconsumed approval or mandatory checkpoint whose persisted `presented` flag is false opens through the current TUI or RPC context, regardless of whether planning began by command, flag, shortcut, or palette.
 - A decision is marked presented before the extension awaits input, preventing duplicate dialogs. Escape leaves it pending, and `/plan-actions` or `/plan-stage-actions` reopens it manually.
-- TUI mode uses full renderers and structured dialogs. During planning and approval, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
+- TUI mode uses full renderers and structured dialogs. During planning, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
 - RPC uses host select/editor primitives and omits the TUI-only tuicr Review action.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
 - Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the Part report from the durable approved plan and ledger.

@@ -94,7 +94,7 @@ test("trusted host effects are explicit source-controlled data", () => {
   assert.match(effects.plan_progress.join(" "), /plan\/ledger persistence/);
   assert.deepEqual(Object.keys(effects).sort(), [
     "ask_user_question", "complete_plan", "complete_stage", "ketch_code", "ketch_crawl",
-    "ketch_docs", "ketch_scrape", "ketch_search", "plan_progress", "subagent", "submit_plan",
+    "ketch_docs", "ketch_scrape", "ketch_search", "plan_progress", "subagent", "show_plan",
   ].sort());
 });
 

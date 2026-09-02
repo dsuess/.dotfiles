@@ -1,29 +1,20 @@
-export const PLAN_MODE_STATE_VERSION = 1;
+export const PLAN_MODE_STATE_VERSION = 2;
 export const PLAN_MODE_STATE_ENTRY = "plan-mode-state";
 
-export const WORKFLOW_MODES = Object.freeze([
-	"off",
-	"planning",
-	"approval",
-	"executing_all",
-	"executing_staged",
-	"completed",
-	"blocked",
-]);
+export const WORKFLOW_MODES = Object.freeze(["planning", "normal"]);
+export const WORKFLOW_OUTCOMES = Object.freeze(["completed", "blocked"]);
 
 export const TASK_STATUSES = Object.freeze(["pending", "in_progress", "completed", "blocked"]);
 
+// Modes gate tool access only. Candidate decisions, execution, pauses, and outcomes
+// are independent state so a shown candidate remains conversational planning.
 export const LEGAL_MODE_TRANSITIONS = Object.freeze({
-	off: Object.freeze(["planning"]),
-	planning: Object.freeze(["off", "approval", "blocked"]),
-	approval: Object.freeze(["off", "planning", "executing_all", "executing_staged", "blocked"]),
-	executing_all: Object.freeze(["completed", "blocked"]),
-	executing_staged: Object.freeze(["completed", "blocked"]),
-	completed: Object.freeze(["planning"]),
-	blocked: Object.freeze(["planning"]),
+	planning: Object.freeze(["normal"]),
+	normal: Object.freeze(["planning"]),
 });
 
 const MODE_SET = new Set(WORKFLOW_MODES);
+const OUTCOME_SET = new Set(WORKFLOW_OUTCOMES);
 const STATUS_SET = new Set(TASK_STATUSES);
 
 function clone(value) {
@@ -33,7 +24,8 @@ function clone(value) {
 export function createInitialState() {
 	return {
 		version: PLAN_MODE_STATE_VERSION,
-		mode: "off",
+		mode: "normal",
+		outcome: null,
 		originalActiveTools: [],
 		plan: null,
 		approval: null,
@@ -61,8 +53,8 @@ function success(state) {
 
 export function hasDurableFeedbackPending(state) {
 	return Boolean(
-		(state?.mode === "approval" && state.approval && state.approval.consumed !== true)
-		|| (state?.mode === "executing_staged" && state.checkpoint && state.checkpoint.consumed !== true),
+		(state?.mode === "planning" && state.approval && state.approval.consumed !== true)
+		|| (isStagedExecution(state) && state.checkpoint && state.checkpoint.consumed !== true),
 	);
 }
 
@@ -77,6 +69,11 @@ function apply(state, action, mutate) {
 	return success(next);
 }
 
+export function isPlanning(state) { return state?.mode === "planning"; }
+export function isActiveExecution(state) { return state?.mode === "normal" && state.execution?.active === true; }
+export function isStagedExecution(state) { return isActiveExecution(state) && state.execution?.mode === "staged"; }
+export function hasPendingApproval(state) { return isPlanning(state) && state?.approval && state.approval.consumed !== true; }
+
 function requireMode(state, allowed, action) {
 	if (allowed.includes(state.mode)) return null;
 	return rejection(
@@ -87,7 +84,7 @@ function requireMode(state, allowed, action) {
 }
 
 function requireApproval(state, nonce, action) {
-	const invalidMode = requireMode(state, ["approval"], action);
+	const invalidMode = requireMode(state, ["planning"], action);
 	if (invalidMode) return invalidMode;
 	if (!state.approval || state.approval.consumed) {
 		return rejection(state, "approval_consumed", "The approval action has already been consumed");
@@ -102,7 +99,7 @@ function requireApproval(state, nonce, action) {
 }
 
 export function enterPlanning(state, activeTools) {
-	const invalidMode = requireMode(state, ["off", "completed", "blocked"], "enterPlanning");
+	const invalidMode = requireMode(state, ["normal"], "enterPlanning");
 	if (invalidMode) return invalidMode;
 	if (!Array.isArray(activeTools) || activeTools.some((name) => typeof name !== "string" || !name)) {
 		return rejection(state, "invalid_tools", "activeTools must be an array of non-empty tool names");
@@ -125,14 +122,15 @@ export function enterPlanning(state, activeTools) {
 		next.parallelWorkers = [];
 		next.counters = { invalidSubmissions: 0, reviewRounds: 0, recoveryAttempts: 0 };
 		next.blockedReason = null;
+		next.outcome = null;
 	});
 }
 
 export function exitPlanning(state) {
-	const invalidMode = requireMode(state, ["planning", "approval"], "exitPlanning");
+	const invalidMode = requireMode(state, ["planning"], "exitPlanning");
 	if (invalidMode) return invalidMode;
 	return apply(state, "exit_planning", (next) => {
-		next.mode = "off";
+		next.mode = "normal";
 		next.approval = null;
 		next.optimization = null;
 		next.execution = null;
@@ -159,8 +157,8 @@ export function resetInvalidSubmissions(state) {
 	});
 }
 
-export function submitPlan(state, submission) {
-	const invalidMode = requireMode(state, ["planning"], "submitPlan");
+export function showPlan(state, submission) {
+	const invalidMode = requireMode(state, ["planning"], "showPlan");
 	if (invalidMode) return invalidMode;
 	const requiredStrings = ["path", "slug", "hash", "title", "intent", "approvalNonce"];
 	for (const key of requiredStrings) {
@@ -223,8 +221,9 @@ export function submitPlan(state, submission) {
 	}
 	const priorRevision = state.plan?.path === submission.path ? state.plan.revision : 0;
 	const revision = priorRevision + 1;
-	return apply(state, "submit_plan", (next) => {
-		next.mode = "approval";
+	return apply(state, "show_plan", (next) => {
+		next.mode = "planning";
+		next.outcome = null;
 		next.plan = {
 			path: submission.path,
 			slug: submission.slug,
@@ -285,7 +284,7 @@ export function restoreFastOptimization(state) {
 		return rejection(state, "stale_fast_optimization", "Fast optimization no longer matches its approved source plan");
 	}
 	return apply(state, "restore_fast_optimization", (next) => {
-		next.mode = "approval";
+		next.mode = "planning";
 		next.approval = { ...clone(optimization.sourceApproval), consumed: false, presented: false };
 		next.optimization = null;
 		next.counters.invalidSubmissions = 0;
@@ -299,7 +298,7 @@ export function acceptFastOptimization(state, submission) {
 	if (!optimization || !state.plan || state.plan.hash !== optimization.sourceHash || state.plan.revision !== optimization.sourceRevision) {
 		return rejection(state, "stale_fast_optimization", "Fast optimization no longer matches its approved source plan");
 	}
-	const submitted = submitPlan(state, { ...submission, executionStrategy: "parallel" });
+	const submitted = showPlan(state, { ...submission, executionStrategy: "parallel" });
 	if (!submitted.ok) return submitted;
 	const approved = approveExecution(submitted.state, submission.approvalNonce, "all");
 	if (!approved.ok) return approved;
@@ -311,11 +310,11 @@ export function acceptFastOptimization(state, submission) {
 	});
 }
 
-export function requestRevision(state, nonce, source = "change") {
+export function requestRevision(state, nonce, source = "discuss") {
 	const approvalError = requireApproval(state, nonce, "requestRevision");
 	if (approvalError) return approvalError;
-	if (source !== "change" && source !== "review") {
-		return rejection(state, "invalid_revision_source", "Revision source must be change or review");
+	if (source !== "discuss" && source !== "review") {
+		return rejection(state, "invalid_revision_source", "Revision source must be discuss or review");
 	}
 	return apply(state, `request_${source}`, (next) => {
 		next.mode = "planning";
@@ -332,7 +331,8 @@ export function approveExecution(state, nonce, executionMode) {
 		return rejection(state, "invalid_execution_mode", "Execution mode must be all or staged");
 	}
 	return apply(state, `approve_${executionMode}`, (next) => {
-		next.mode = executionMode === "all" ? "executing_all" : "executing_staged";
+		next.mode = "normal";
+		next.outcome = null;
 		next.approval.consumed = true;
 		next.execution = {
 			mode: executionMode,
@@ -341,6 +341,7 @@ export function approveExecution(state, nonce, executionMode) {
 			parentSessionPath: null,
 			runId: null,
 			paused: false,
+			active: true,
 		};
 		next.currentStageId = next.plan.stageIds[0] ?? null;
 		next.checkpoint = null;
@@ -355,16 +356,17 @@ export function getStageTaskIds(state, stageId) {
 }
 
 export function recordTaskProgress(state, update) {
-	const invalidMode = requireMode(state, ["executing_all", "executing_staged"], "recordTaskProgress");
+	if (!isActiveExecution(state)) return rejection(state, "invalid_transition", "recordTaskProgress is not allowed without active execution");
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	const itemId = update?.itemId ?? update?.taskId;
 	const current = state.ledger[itemId];
 	if (!current) return rejection(state, "unknown_task", `Unknown plan item: ${itemId ?? ""}`);
 	if (!STATUS_SET.has(update?.status)) return rejection(state, "invalid_status", "Plan-item status is invalid");
-	if (state.mode === "executing_staged" && !getStageTaskIds(state, state.currentStageId).includes(itemId)) {
+	if (isStagedExecution(state) && !getStageTaskIds(state, state.currentStageId).includes(itemId)) {
 		return rejection(state, "future_stage", `Plan item ${itemId} is outside current execution stage ${state.currentStageId}`);
 	}
-	if (state.mode === "executing_all" && state.plan?.executionStrategy === "standard") {
+	if (isActiveExecution(state) && state.plan?.executionStrategy === "standard") {
 		const itemStageIndex = state.plan.stages.findIndex((stage) => stage.taskIds.includes(itemId));
 		const unfinishedPrior = state.plan.stages
 			.slice(0, Math.max(itemStageIndex, 0))
@@ -374,7 +376,7 @@ export function recordTaskProgress(state, update) {
 			return rejection(state, "future_stage", `Plan item ${itemId} cannot begin before earlier Parts are terminal: ${unfinishedPrior.join(", ")}`);
 		}
 	}
-	if (state.mode === "executing_all" && state.plan?.executionStrategy === "parallel" && update.status === "in_progress") {
+	if (isActiveExecution(state) && state.plan?.executionStrategy === "parallel" && update.status === "in_progress") {
 		const stage = state.plan.stages.find((candidate) => candidate.taskIds.includes(itemId));
 		const schedule = stage?.parallelExecution;
 		if (!schedule) return rejection(state, "missing_parallel_schedule", `Plan item ${itemId} has no parallel execution assignment`);
@@ -418,7 +420,8 @@ export function recordTaskProgress(state, update) {
 }
 
 export function recordStageCheckpoint(state, payload) {
-	const invalidMode = requireMode(state, ["executing_staged"], "recordStageCheckpoint");
+	if (!isStagedExecution(state)) return rejection(state, "invalid_transition", "recordStageCheckpoint requires staged execution");
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	if (state.checkpoint && !state.checkpoint.consumed) return rejection(state, "checkpoint_pending", "A stage checkpoint is already pending");
 	if (payload?.stageId !== state.currentStageId) return rejection(state, "stage_order", `Expected current stage ${state.currentStageId}`);
@@ -443,7 +446,8 @@ export function recordStageCheckpoint(state, payload) {
 }
 
 export function resolveStageCheckpoint(state, nonce, action) {
-	const invalidMode = requireMode(state, ["executing_staged"], "resolveStageCheckpoint");
+	if (!isStagedExecution(state)) return rejection(state, "invalid_transition", "resolveStageCheckpoint requires staged execution");
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	if (!state.checkpoint || state.checkpoint.consumed || state.checkpoint.nonce !== nonce) {
 		return rejection(state, "stale_checkpoint", "The stage checkpoint token is stale");
@@ -465,30 +469,33 @@ export function resolveStageCheckpoint(state, nonce, action) {
 }
 
 export function resumeExecution(state) {
-	const invalidMode = requireMode(state, ["executing_all", "executing_staged"], "resumeExecution");
+	if (!isActiveExecution(state)) return rejection(state, "invalid_transition", "resumeExecution is not allowed without active execution");
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	if (!state.execution?.paused) return success(state);
 	return apply(state, "resume_execution", (next) => { next.execution.paused = false; });
 }
 
 export function blockWorkflow(state, reason) {
-	const invalidMode = requireMode(
-		state,
-		["planning", "approval", "executing_all", "executing_staged"],
-		"blockWorkflow",
-	);
+	if (!isPlanning(state) && !isActiveExecution(state)) {
+		return rejection(state, "invalid_transition", "blockWorkflow is not allowed without planning or active execution");
+	}
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	if (typeof reason !== "string" || !reason.trim()) {
 		return rejection(state, "missing_reason", "A blocking reason is required");
 	}
 	return apply(state, "block_workflow", (next) => {
-		next.mode = "blocked";
+		next.mode = "normal";
+		next.outcome = "blocked";
+		if (next.execution) next.execution.active = false;
 		next.blockedReason = reason.trim();
 	});
 }
 
 export function completeWorkflow(state, options = {}) {
-	const invalidMode = requireMode(state, ["executing_all", "executing_staged"], "completeWorkflow");
+	if (!isActiveExecution(state)) return rejection(state, "invalid_transition", "completeWorkflow is not allowed without active execution");
+	const invalidMode = null;
 	if (invalidMode) return invalidMode;
 	const acceptedStatuses = options.allowBlocked === true ? ["completed", "blocked"] : ["completed"];
 	const nonterminal = Object.entries(state.ledger).filter(([, item]) => !acceptedStatuses.includes(item.status));
@@ -500,7 +507,9 @@ export function completeWorkflow(state, options = {}) {
 		);
 	}
 	return apply(state, "complete_workflow", (next) => {
-		next.mode = "completed";
+		next.mode = "normal";
+		next.outcome = "completed";
+		if (next.execution) next.execution.active = false;
 		next.currentStageId = null;
 		next.checkpoint = null;
 		next.blockedReason = null;
@@ -510,44 +519,51 @@ export function completeWorkflow(state, options = {}) {
 export function isPlanModeState(value) {
 	if (!value || typeof value !== "object" || value.version !== PLAN_MODE_STATE_VERSION) return false;
 	if (!MODE_SET.has(value.mode) || !Array.isArray(value.originalActiveTools)) return false;
+	if (value.outcome !== null && !OUTCOME_SET.has(value.outcome)) return false;
 	if (!value.counters || typeof value.counters.invalidSubmissions !== "number") return false;
 	if (!value.ledger || typeof value.ledger !== "object" || Array.isArray(value.ledger)) return false;
 	return Object.values(value.ledger).every((item) => item && STATUS_SET.has(item.status));
 }
 
-export function migrateState(value) {
-	if (!isPlanModeState(value)) return null;
+function normalizeState(value) {
 	const migrated = { ...createInitialState(), ...clone(value) };
 	migrated.counters = { ...createInitialState().counters, ...value.counters };
-	if (migrated.execution) migrated.execution = { runId: null, paused: false, ...migrated.execution };
+	if (migrated.execution) migrated.execution = { runId: null, paused: false, active: false, ...migrated.execution };
 	if (migrated.approval) migrated.approval = { presented: false, ...migrated.approval };
 	if (migrated.checkpoint) migrated.checkpoint = { presented: false, ...migrated.checkpoint };
-	if (migrated.plan && !Array.isArray(migrated.plan.stages)) {
-		migrated.plan.stages = (migrated.plan.stageIds ?? []).map((id) => ({
-			id,
-			description: `Stage ${id}`,
-			taskIds: (migrated.plan.taskIds ?? []).filter((taskId) => taskId.startsWith(`${id}.`)),
-		}));
-	}
+	if (migrated.plan && !Array.isArray(migrated.plan.stages)) migrated.plan.stages = (migrated.plan.stageIds ?? []).map((id) => ({ id, description: `Stage ${id}`, taskIds: (migrated.plan.taskIds ?? []).filter((taskId) => taskId.startsWith(`${id}.`)) }));
 	if (migrated.plan && !Array.isArray(migrated.plan.tasks)) migrated.plan.tasks = [];
-		if (migrated.plan && !["standard", "parallel"].includes(migrated.plan.executionStrategy)) migrated.plan.executionStrategy = "standard";
+	if (migrated.plan && !["standard", "parallel"].includes(migrated.plan.executionStrategy)) migrated.plan.executionStrategy = "standard";
 	if (migrated.execution && !["standard", "parallel"].includes(migrated.execution.strategy)) migrated.execution.strategy = migrated.plan?.executionStrategy ?? "standard";
-	if (!migrated.optimization) migrated.optimization = null;
-	if (migrated.optimization) {
-		const optimization = migrated.optimization;
-		const matchingSource = migrated.mode === "planning" && migrated.plan &&
-			migrated.plan.hash === optimization.sourceHash && migrated.plan.revision === optimization.sourceRevision &&
-			optimization.sourceApproval?.nonce && optimization.sourceApproval?.planHash === optimization.sourceHash &&
-			optimization.sourceApproval?.revision === optimization.sourceRevision;
-		if (!matchingSource) {
-			migrated.mode = "blocked";
-			migrated.approval = null;
-			migrated.optimization = null;
-			migrated.blockedReason = "Fast optimization state is stale and cannot safely restore its source approval.";
-			migrated.lastAction = "stale_fast_optimization";
-		}
-	}
 	return migrated;
+}
+
+export function migrateState(value) {
+	if (!value || typeof value !== "object") return null;
+	if (value.version === PLAN_MODE_STATE_VERSION) {
+		if (!isPlanModeState(value)) return null;
+		const current = normalizeState(value);
+		if (current.optimization) {
+			const o = current.optimization;
+			const valid = current.mode === "planning" && current.plan && current.plan.hash === o.sourceHash && current.plan.revision === o.sourceRevision && o.sourceApproval?.nonce && o.sourceApproval?.planHash === o.sourceHash && o.sourceApproval?.revision === o.sourceRevision;
+			if (!valid) { current.mode = "normal"; current.outcome = "blocked"; current.approval = null; current.optimization = null; current.blockedReason = "Fast optimization state is stale and cannot safely restore its source approval."; current.lastAction = "stale_fast_optimization"; }
+		}
+		return current;
+	}
+	if (value.version !== 1 || !["off", "planning", "approval", "executing_all", "executing_staged", "completed", "blocked"].includes(value.mode)) return null;
+	const migrated = normalizeState(value);
+	migrated.version = PLAN_MODE_STATE_VERSION;
+	if (value.mode === "planning" || value.mode === "approval") migrated.mode = "planning";
+	else migrated.mode = "normal";
+	migrated.outcome = value.mode === "completed" ? "completed" : value.mode === "blocked" ? "blocked" : null;
+	if (migrated.execution) migrated.execution.active = value.mode === "executing_all" || value.mode === "executing_staged";
+	if (value.mode === "executing_all" || value.mode === "executing_staged") migrated.execution = { ...migrated.execution, mode: value.mode === "executing_staged" ? "staged" : "all", active: true };
+	if (migrated.optimization) {
+		const o = migrated.optimization;
+		const valid = migrated.mode === "planning" && migrated.plan && migrated.plan.hash === o.sourceHash && migrated.plan.revision === o.sourceRevision && o.sourceApproval?.nonce && o.sourceApproval?.planHash === o.sourceHash && o.sourceApproval?.revision === o.sourceRevision;
+		if (!valid) { migrated.mode = "normal"; migrated.outcome = "blocked"; migrated.approval = null; migrated.optimization = null; migrated.blockedReason = "Fast optimization state is stale and cannot safely restore its source approval."; migrated.lastAction = "stale_fast_optimization"; }
+	}
+	return isPlanModeState(migrated) ? migrated : null;
 }
 
 export function restoreLatestState(branchEntries, customType = PLAN_MODE_STATE_ENTRY) {
@@ -560,3 +576,4 @@ export function restoreLatestState(branchEntries, customType = PLAN_MODE_STATE_E
 	}
 	return createInitialState();
 }
+

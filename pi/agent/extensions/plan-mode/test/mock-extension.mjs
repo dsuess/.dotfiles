@@ -104,8 +104,8 @@ const ctx = {
 
 try {
 	for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
-	assert.equal(tools.has("submit_plan"), true);
-	assert.equal(activeTools.includes("submit_plan"), false, "workflow tools start hidden");
+	assert.equal(tools.has("show_plan"), true);
+	assert.equal(activeTools.includes("show_plan"), false, "workflow tools start hidden");
 	assert.equal(activeModel.id, "gpt-5.6-terra", "normal session startup applies the implementation default");
 
 	await commands.get("plan").handler("", ctx);
@@ -138,7 +138,7 @@ try {
 	const blocked = await handlers.get("tool_call")[0]({ toolName: "edit", input: {}, toolCallId: "edit-1" }, ctx);
 	assert.equal(blocked.block, true);
 
-	const submitted = await tools.get("submit_plan").execute("submit-1", {
+	const submitted = await tools.get("show_plan").execute("submit-1", {
 		intent: "Add reliable cache invalidation", title: "Add Reliable Cache Invalidation", markdown: PART_PLAN_WITH_QUESTIONS,
 	}, undefined, undefined, ctx);
 	assert.equal(submitted.details.accepted, true);

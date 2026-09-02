@@ -15,10 +15,10 @@ import {
 } from "../execution-helpers.js";
 
 const state = {
-	mode: "executing_staged",
+	mode: "normal",
 	originalActiveTools: ["read", "subagent", "missing"],
 	currentStageId: "2",
-	execution: { mode: "staged", runId: "run-2" },
+	execution: { mode: "staged", active: true, runId: "run-2" },
 	plan: { path: "/project/.pi/plans/approved.md", hash: "plan-hash" },
 };
 const contract = {
@@ -65,7 +65,7 @@ test("restores exact original tools plus mode-specific workflow tools", () => {
 		active: ["read", "subagent", "plan_progress", "complete_stage"],
 		missing: ["missing"],
 	});
-	assert.deepEqual(getExecutionToolNames({ ...state, mode: "executing_all" }, ["read", "plan_progress", "complete_plan"]).active, ["read", "plan_progress", "complete_plan"]);
+	assert.deepEqual(getExecutionToolNames({ ...state, execution: { ...state.execution, mode: "all" } }, ["read", "plan_progress", "complete_plan"]).active, ["read", "plan_progress", "complete_plan"]);
 });
 
 test("in-place kickoff is self-contained and staged instructions enforce a hard boundary", () => {
@@ -107,9 +107,9 @@ Change only the test boundary. Accept when the regression test passes.
 | 1 | worker-b | B | B | — | test boundary |
 `;
 	const parallelState = {
-		mode: "executing_all",
+		mode: "normal",
 		originalActiveTools: ["read", "subagent"],
-		execution: { mode: "all", strategy: "parallel", runId: "parallel-run" },
+		execution: { mode: "all", active: true, strategy: "parallel", runId: "parallel-run" },
 		ledger: {
 			A: { status: "pending", note: null, evidence: null },
 			B: { status: "pending", note: null, evidence: null },

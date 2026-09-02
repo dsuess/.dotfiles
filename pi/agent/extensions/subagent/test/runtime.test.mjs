@@ -107,15 +107,21 @@ function baseOptions(overrides = {}) {
 
 test("filters recursive, parent-workflow, duplicate, and untrusted tools", () => {
 	assert.deepEqual(filterChildTools([
-		"read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage", "read", "unknown_tool",
+		"read", "subagent", "bash", "show_plan", "plan_progress", "complete_plan", "complete_stage", "read", "unknown_tool",
 	]), ["read", "bash"]);
 });
 
 test("planning inheritance requires both the active workflow marker and effective planning prompt", () => {
 	const prompt = "prefix\n[PI PLANNING MODE ACTIVE]\nplanning rules";
-	assert.equal(isInheritedPlanningMode(["read", "subagent", "submit_plan"], prompt), true);
+	assert.equal(isInheritedPlanningMode(["read", "subagent", "show_plan"], prompt), true);
 	assert.equal(isInheritedPlanningMode(["read", "subagent"], prompt), false);
-	assert.equal(isInheritedPlanningMode(["read", "submit_plan"], "ordinary prompt"), false);
+	assert.equal(isInheritedPlanningMode(["read", "show_plan"], "ordinary prompt"), false);
+});
+
+test("fails closed for a legacy submit_plan capability", () => {
+	const prompt = "prefix\n[PI PLANNING MODE ACTIVE]\nplanning rules";
+	assert.deepEqual(filterChildTools(["read", "submit_plan"]), ["read"]);
+	assert.equal(isInheritedPlanningMode(["read", "submit_plan"], prompt), false);
 });
 
 test("incremental JSONL parsing handles split, multiple, trailing, malformed, and non-event records", () => {
@@ -186,7 +192,7 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 	};
 	try {
 		const result = await runSubagent(baseOptions({
-			activeTools: ["read", "subagent", "bash", "submit_plan", "plan_progress", "complete_plan", "complete_stage"],
+			activeTools: ["read", "subagent", "bash", "show_plan", "plan_progress", "complete_plan", "complete_stage"],
 			planningMode: true,
 		}), {
 			piCommand: "/fake/pi",
@@ -274,7 +280,7 @@ test("passes trusted host adapters only through the private post-handshake allow
 test("keeps native built-ins disabled when no child capability is inherited", async () => {
 	const proc = new FakeProcess();
 	let args;
-	await runSubagent(baseOptions({ activeTools: ["subagent", "submit_plan", "plan_progress"] }), {
+	await runSubagent(baseOptions({ activeTools: ["subagent", "show_plan", "plan_progress"] }), {
 		spawnImpl(_command, childArgs) {
 			args = childArgs;
 			queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));

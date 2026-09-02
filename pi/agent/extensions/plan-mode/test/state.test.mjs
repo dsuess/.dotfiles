@@ -22,7 +22,7 @@ import {
 	restoreFastOptimization,
 	resumeExecution,
 	restoreLatestState,
-	submitPlan,
+	showPlan,
 } from "../state.js";
 
 function submission(overrides = {}) {
@@ -47,13 +47,8 @@ function submission(overrides = {}) {
 
 test("publishes the versioned legal mode-transition contract", () => {
 	assert.deepEqual(LEGAL_MODE_TRANSITIONS, {
-		off: ["planning"],
-		planning: ["off", "approval", "blocked"],
-		approval: ["off", "planning", "executing_all", "executing_staged", "blocked"],
-		executing_all: ["completed", "blocked"],
-		executing_staged: ["completed", "blocked"],
-		completed: ["planning"],
-		blocked: ["planning"],
+		planning: ["normal"],
+		normal: ["planning"],
 	});
 });
 
@@ -64,7 +59,7 @@ function planningState() {
 }
 
 function approvalState(overrides = {}) {
-	const result = submitPlan(planningState(), submission(overrides));
+	const result = showPlan(planningState(), submission(overrides));
 	assert.equal(result.ok, true);
 	return result.state;
 }
@@ -75,11 +70,11 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 	assert.equal(planning.ok, true);
 	assert.equal(planning.state.mode, "planning");
 	assert.deepEqual(planning.state.originalActiveTools, ["read", "custom", "read"]);
-	assert.equal(initial.mode, "off", "transitions must not mutate their input");
+	assert.equal(initial.mode, "normal", "transitions must not mutate their input");
 
-	const approved = submitPlan(planning.state, submission());
+	const approved = showPlan(planning.state, submission());
 	assert.equal(approved.ok, true);
-	assert.equal(approved.state.mode, "approval");
+	assert.equal(approved.state.mode, "planning");
 	assert.equal(approved.state.plan.revision, 1);
 	assert.deepEqual(Object.keys(approved.state.ledger), ["1", "2"]);
 	assert.deepEqual(approved.state.plan.tasks, [
@@ -90,7 +85,7 @@ test("workflow follows legal off -> planning -> approval -> execution transition
 
 	const executing = approveExecution(approved.state, "nonce-1", "staged");
 	assert.equal(executing.ok, true);
-	assert.equal(executing.state.mode, "executing_staged");
+	assert.equal(executing.state.mode, "normal");
 	assert.equal(executing.state.currentStageId, "1");
 });
 
@@ -159,7 +154,7 @@ test("fast optimization retains a recoverable approval and hands off directly to
 	assert.deepEqual(optimizing.state.optimization.sourcePartIds, ["A"]);
 	const restored = restoreFastOptimization(optimizing.state);
 	assert.equal(restored.ok, true);
-	assert.equal(restored.state.mode, "approval");
+	assert.equal(restored.state.mode, "planning");
 	assert.equal(restored.state.approval.nonce, "nonce-1");
 	assert.equal(restored.state.approval.presented, false);
 
@@ -173,7 +168,7 @@ test("fast optimization retains a recoverable approval and hands off directly to
 		tasks: [{ id: "A", title: "Optimized Part", status: "pending" }],
 	}));
 	assert.equal(accepted.ok, true);
-	assert.equal(accepted.state.mode, "executing_all");
+	assert.equal(accepted.state.mode, "normal");
 	assert.equal(accepted.state.approval, null);
 	assert.equal(accepted.state.optimization, null);
 	assert.equal(accepted.state.execution.strategy, "parallel");
@@ -189,7 +184,7 @@ test("rejects duplicate, stale, and out-of-order actions deterministically", () 
 	assert.equal(duplicate.error.code, "invalid_transition");
 	assert.strictEqual(duplicate.state, first.state);
 
-	const approval = submitPlan(first.state, submission()).state;
+	const approval = showPlan(first.state, submission()).state;
 	const stale = approveExecution(approval, "older-nonce", "all");
 	assert.equal(stale.ok, false);
 	assert.equal(stale.error.code, "stale_approval");
@@ -214,7 +209,7 @@ test("change/review returns to planning and increments revision only after valid
 	assert.equal(invalid.state.counters.invalidSubmissions, 1);
 	assert.equal(invalid.state.plan.revision, 1);
 
-	const revised = submitPlan(invalid.state, submission({ hash: "def456", approvalNonce: "nonce-2" }));
+	const revised = showPlan(invalid.state, submission({ hash: "def456", approvalNonce: "nonce-2" }));
 	assert.equal(revised.ok, true);
 	assert.equal(revised.state.plan.revision, 2);
 	assert.equal(revised.state.counters.invalidSubmissions, 0);
@@ -224,7 +219,7 @@ test("exit retains the saved reference while a new planning run starts a fresh a
 	const approval = approvalState();
 	const exited = exitPlanning(approval);
 	assert.equal(exited.ok, true);
-	assert.equal(exited.state.mode, "off");
+	assert.equal(exited.state.mode, "normal");
 	assert.equal(exited.state.plan.path, "/project/.pi/plans/cache.md");
 	assert.deepEqual(exited.state.originalActiveTools, ["read", "bash", "custom_tool"]);
 
@@ -303,7 +298,7 @@ test("completion requires every ledger task to be completed", () => {
 	for (const item of Object.values(done.ledger)) item.status = "completed";
 	const completed = completeWorkflow(done);
 	assert.equal(completed.ok, true);
-	assert.equal(completed.state.mode, "completed");
+	assert.equal(completed.state.mode, "normal");
 });
 
 test("blocking requires a reason and is legal only from active workflow modes", () => {
@@ -311,7 +306,7 @@ test("blocking requires a reason and is legal only from active workflow modes", 
 	assert.equal(blockWorkflow(planning, "").error.code, "missing_reason");
 	const blocked = blockWorkflow(planning, "Missing required API access");
 	assert.equal(blocked.ok, true);
-	assert.equal(blocked.state.mode, "blocked");
+	assert.equal(blocked.state.mode, "normal");
 	assert.equal(blocked.state.blockedReason, "Missing required API access");
 	assert.equal(blockWorkflow(blocked.state, "again").error.code, "invalid_transition");
 });
@@ -319,7 +314,7 @@ test("blocking requires a reason and is legal only from active workflow modes", 
 test("restore uses only the latest valid state on the supplied active branch", () => {
 	const older = planningState();
 	const active = approvalState();
-	const abandoned = { ...active, mode: "completed", lastAction: "abandoned" };
+	const abandoned = { ...active, mode: "normal", outcome: "completed", lastAction: "abandoned" };
 	const branch = [
 		{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: older },
 		{ type: "message", message: { role: "user", content: "branch point" } },
@@ -327,11 +322,11 @@ test("restore uses only the latest valid state on the supplied active branch", (
 		{ type: "custom", customType: "other-extension", data: abandoned },
 	];
 	const restored = restoreLatestState(branch);
-	assert.equal(restored.mode, "approval");
+	assert.equal(restored.mode, "planning");
 	assert.equal(restored.plan.hash, "abc123");
 
 	const abandonedBranch = [branch[0], { type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: abandoned }];
-	assert.equal(restoreLatestState(abandonedBranch).mode, "completed");
+	assert.equal(restoreLatestState(abandonedBranch).mode, "normal");
 });
 
 
@@ -340,7 +335,7 @@ test("restore blocks stale fast optimization records instead of reusing their ap
 	const optimizing = beginFastOptimization(approvalState(), "nonce-1", ["A", "B"]).state;
 	optimizing.optimization.sourceHash = "stale-source";
 	const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: optimizing }]);
-	assert.equal(restored.mode, "blocked");
+	assert.equal(restored.mode, "normal");
 	assert.equal(restored.optimization, null);
 	assert.equal(restored.approval, null);
 	assert.match(restored.blockedReason, /stale/);
@@ -353,5 +348,22 @@ test("restore ignores malformed or unsupported state entries", () => {
 		{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: { version: 99, mode: "planning" } },
 	];
 	assert.equal(restoreLatestState(branch).mode, "planning");
-	assert.equal(restoreLatestState([]).mode, "off");
+	assert.equal(restoreLatestState([]).mode, "normal");
+});
+
+test("migrates every legacy workflow mode into one of the two tool modes", () => {
+	const base = showPlan(enterPlanning(createInitialState(), ["read"]).state, submission()).state;
+	for (const legacyMode of ["off", "planning", "approval", "executing_all", "executing_staged", "completed", "blocked"]) {
+		const legacy = structuredClone(base);
+		legacy.version = 1;
+		legacy.mode = legacyMode;
+		delete legacy.outcome;
+		if (legacyMode.startsWith("executing_")) legacy.execution = { mode: legacyMode === "executing_staged" ? "staged" : "all", strategy: "standard", startedAt: null, parentSessionPath: null, runId: null, paused: false };
+		const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: legacy }]);
+		assert.ok(["planning", "normal"].includes(restored.mode), legacyMode);
+		if (legacyMode === "approval") assert.equal(restored.approval?.nonce, "nonce-1");
+		if (legacyMode === "executing_staged") assert.equal(restored.execution?.mode, "staged");
+		if (legacyMode === "completed") assert.equal(restored.outcome, "completed");
+		if (legacyMode === "blocked") assert.equal(restored.outcome, "blocked");
+	}
 });

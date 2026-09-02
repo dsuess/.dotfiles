@@ -10,25 +10,25 @@ import {
 
 const registered = [
 	"read", "bash", "edit", "write", "grep", "find", "ls", "custom_mutator",
-	"ketch_search", "ask_user_question", "submit_plan", "plan_progress",
+	"ketch_search", "ask_user_question", "show_plan", "plan_progress",
 ];
 
 test("snapshots the exact pre-planning tool sequence except workflow-only tools", () => {
 	assert.deepEqual(
-		snapshotActiveTools(["custom_mutator", "read", "submit_plan", "read", "plan_progress"]),
+		snapshotActiveTools(["custom_mutator", "read", "show_plan", "read", "plan_progress"]),
 		["custom_mutator", "read", "read"],
 	);
 });
 
 test("planning activates only known inspection, research, question, and submission tools", () => {
 	assert.deepEqual(getPlanningToolNames(registered), [
-		"read", "grep", "find", "ls", "bash", "ketch_search", "ask_user_question", "submit_plan",
+		"read", "grep", "find", "ls", "bash", "ketch_search", "ask_user_question", "show_plan",
 	]);
 });
 
 test("fast optimization removes questions while retaining read-only inspection and submission", () => {
 	assert.deepEqual(getPlanningToolNames(registered, { fastOptimization: true }), [
-		"read", "grep", "find", "ls", "bash", "ketch_search", "submit_plan",
+		"read", "grep", "find", "ls", "bash", "ketch_search", "show_plan",
 	]);
 	assert.match(
 		evaluatePlanningToolCall("ask_user_question", {}, registered, { fastOptimization: true }),

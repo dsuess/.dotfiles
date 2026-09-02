@@ -32,7 +32,7 @@ export const DISCUSSION_RESOLUTION_ENTRY = "rpiv:ask-user-question:discussion-re
 export const CHILD_TOOL_EXCLUSIONS = new Set([
   "ask_user_question",
   "subagent",
-  "submit_plan",
+  "show_plan",
   "plan_progress",
   "complete_plan",
   "complete_stage",
@@ -400,7 +400,7 @@ export async function runDiscussionFork(
     files = await makeSecurePromptFile(request.cwd, request.systemPrompt);
     const capabilities = splitChildCapabilities(request.activeTools, { excluded: CHILD_TOOL_EXCLUSIONS });
     const planningMode =
-      request.activeTools.includes("submit_plan") &&
+      request.activeTools.includes("show_plan") &&
       /\[PI PLANNING MODE ACTIVE\]/.test(request.systemPrompt);
     const args = [
       "--session",

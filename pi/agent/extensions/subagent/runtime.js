@@ -9,7 +9,7 @@ import {
 
 const EXCLUDED_CHILD_TOOLS = new Set([
 	"subagent",
-	"submit_plan",
+	"show_plan",
 	"plan_progress",
 	"complete_plan",
 	"complete_stage",
@@ -154,7 +154,7 @@ export function filterChildTools(activeTools = []) {
 }
 
 export function isInheritedPlanningMode(activeTools = [], systemPrompt = "") {
-	return activeTools.includes("submit_plan") && /\[PI PLANNING MODE ACTIVE\]/.test(systemPrompt);
+	return activeTools.includes("show_plan") && /\[PI PLANNING MODE ACTIVE\]/.test(systemPrompt);
 }
 
 export function createJsonlParser({ onEvent, onMalformed } = {}) {

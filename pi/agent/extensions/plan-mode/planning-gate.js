@@ -1,6 +1,6 @@
 import { analyzeBashMutation } from "./bash-policy.js";
 
-export const WORKFLOW_TOOLS = new Set(["submit_plan", "plan_progress", "complete_plan", "complete_stage"]);
+export const WORKFLOW_TOOLS = new Set(["show_plan", "plan_progress", "complete_plan", "complete_stage"]);
 export const INSPECTION_TOOLS = Object.freeze([
 	"read",
 	"grep",
@@ -34,7 +34,7 @@ export function getPlanningToolNames(allToolNames, options = {}) {
 	const inspectionTools = options.fastOptimization === true
 		? INSPECTION_TOOLS.filter((name) => name !== "ask_user_question")
 		: INSPECTION_TOOLS;
-	return [...inspectionTools, "submit_plan"].filter((name) => available.has(name));
+	return [...inspectionTools, "show_plan"].filter((name) => available.has(name));
 }
 
 export function getRestorableTools(snapshot, allToolNames) {

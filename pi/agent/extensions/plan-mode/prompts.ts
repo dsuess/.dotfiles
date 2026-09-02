@@ -5,7 +5,7 @@ export const PLAN_MODE_CONTEXT_TYPE = "plan-mode-planning-context";
 export function buildPlanningPrompt(state: PlanModeState): string {
 	const retryGuidance =
 		state.counters.invalidSubmissions >= 3
-			? "Three submissions have failed. Do not call submit_plan again until the user provides new input."
+			? "Three submissions have failed. Do not call show_plan again until the user provides new input."
 			: `Invalid submission attempts in this planning round: ${state.counters.invalidSubmissions}/3.`;
 
 	return `[PI PLANNING MODE ACTIVE]
@@ -19,7 +19,7 @@ Planning workflow:
 5. Sharpen vague terms and explicitly flag documentation/code conflicts.
 6. The skill normally writes CONTEXT.md and ADRs inline. Do not do that in planning mode; record each warranted documentation change as a plan task instead.
 7. Do not implement, edit documentation, change configuration, or perform any non-plan mutation.
-8. Finish only by calling submit_plan with the intent, exact H1 title, and the complete canonical Markdown. Do not merely print the plan as prose.
+8. Continue planning across as many turns as needed. Call show_plan only when all blockers are resolved and the complete candidate is ready for a user decision. Do not print a full plan as a substitute, and do not call it merely because a turn is ending.
 
 Canonical Markdown contract:
 - Start with one non-empty H1 title that is concise and action-oriented.
@@ -42,7 +42,7 @@ export function buildFastOptimizationPrompt(state: PlanModeState, sourceMarkdown
 	return `[PI FAST PLAN OPTIMIZATION ACTIVE]
 You are optimizing an already approved canonical plan for safe parallel execution. Do not ask questions, implement, edit files, change configuration, or request user approval. Repository inspection is allowed only to identify dependencies and exclusive mutation boundaries.
 
-You may only split existing source Parts into ordered optimized Parts and add the required Parallel Execution schedule. Do not combine source Parts. Do not add, remove, reorder, or rewrite approved requirements. Keep the title, Context, answered Questions & Answers, Approach preamble, Critical Files, and Verification unchanged. For each source Part, concatenate the bodies of its mapped optimized Parts in source order so that the normalized text is exactly the source body. Preserve source text verbatim when a split is unnecessary, but do not confuse source preservation with sequential execution: unchanged Parts should still share a wave when they are independent. Split a broad source Part when repository evidence supports an exact source-preserving partition that unlocks useful concurrency. If submit_plan rejects a candidate, use its returned validator codes and line/message details to correct the schedule or mapping; do not rewrite approved content to work around an error.
+You may only split existing source Parts into ordered optimized Parts and add the required Parallel Execution schedule. Do not combine source Parts. Do not add, remove, reorder, or rewrite approved requirements. Keep the title, Context, answered Questions & Answers, Approach preamble, Critical Files, and Verification unchanged. For each source Part, concatenate the bodies of its mapped optimized Parts in source order so that the normalized text is exactly the source body. Preserve source text verbatim when a split is unnecessary, but do not confuse source preservation with sequential execution: unchanged Parts should still share a wave when they are independent. Split a broad source Part when repository evidence supports an exact source-preserving partition that unlocks useful concurrency. If show_plan rejects a candidate, use its returned validator codes and line/message details to correct the schedule or mapping; do not rewrite approved content to work around an error.
 
 After safety and source equivalence, your objective is to minimize the critical-path wave count and maximize useful workers in each wave. Assign every Part to the earliest wave permitted by hard dependencies. A hard dependency exists only when a worker cannot begin safely until it consumes a concrete artifact, contract, generated output, or decision produced by the predecessor. Source-plan order, shared background, implementation-before-testing convention, eventual integration, and general caution are not by themselves dependencies. Inspect the repository to resolve uncertainty; do not add speculative dependency edges merely to be conservative. Before submission, audit every dependency and every single-worker wave: remove an edge unless you can identify the concrete predecessor output it requires, and collapse the Part into an earlier wave whenever ownership remains exclusive.
 
@@ -51,7 +51,7 @@ The optimized document must include ## Parallel Execution after Approach and bef
 |---|---|---|---|---|---|
 Waves start at 1, are contiguous and ordered. Workers and Parts are unique. Dependencies name only Parts in earlier waves. Ownership names an exclusive mutation boundary; sibling ownership must not overlap. Use — when a Part has no dependencies. Assign one worker per optimized Part and put all safe, independent workers in the same earliest wave. Sequential waves are valid only for hard dependencies, not as a mirror of source Part order.
 
-Finish only by calling submit_plan with the complete optimized Markdown. Its successful submission starts execution directly; there is no second approval dialog.
+Call show_plan only when the complete optimized candidate is ready. Its successful presentation starts execution directly; there is no second approval dialog.
 
 Source approval: hash ${optimization?.sourceHash ?? "unknown"}, revision ${optimization?.sourceRevision ?? "unknown"}, source Parts ${optimization?.sourcePartIds.join(", ") ?? "unknown"}.
 
