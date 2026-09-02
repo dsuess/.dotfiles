@@ -1,0 +1,13 @@
+id = "worktree-label"
+name = "Worktree Label"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Labels linked Git worktree spaces as repository / checkout"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["node", "index.js"]
+
+[[events]]
+on = "workspace.created"
+command = ["node", "index.js"]

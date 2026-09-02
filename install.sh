@@ -240,6 +240,26 @@ deploy_ketch_config() {
     stow ketch -t "$config_dir"
 }
 
+register_herdr_worktree_label_plugin() {
+    local plugin_root="$SCRIPT_DIR/herdr/plugins/worktree-label"
+    local missing=()
+    local tool
+
+    for tool in herdr node git; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if ((${#missing[@]})); then
+        echo "❌ Cannot register the Herdr worktree-label plugin; missing: ${missing[*]}" >&2
+        return 1
+    fi
+
+    # Register offline so an old running server cannot block config deployment.
+    # The next server start reads the registry and runs the startup hook.
+    echo "🧭 Registering Herdr worktree-label plugin..."
+    HERDR_SOCKET_PATH="$HOME/.config/herdr/.worktree-label-installer.sock" \
+        herdr plugin link "$plugin_root" --enabled
+}
+
 cmd_config() {
     ensure_stow   # Linux: make `stow` available (vendored); no-op on macOS
 
@@ -268,6 +288,7 @@ cmd_config() {
     stow pi -t ~/.pi/
     stow uv -t ~/.config/uv
     stow herdr -t ~/.config/herdr
+    register_herdr_worktree_label_plugin
     deploy_ketch_config
 
     # Install npm dependencies for pi extensions that need them (skip if no npm)
