@@ -60,7 +60,16 @@ if (args[0] === 'workspace' && args[1] === 'list') {
 }
 `);
   fs.chmodSync(executable, 0o755);
-  return { calls, executable, env: { FAKE_CALLS: calls, FAKE_PANES: JSON.stringify(panes), FAKE_WORKSPACES: JSON.stringify(workspaces) } };
+  return {
+    calls,
+    executable,
+    env: {
+      FAKE_CALLS: calls,
+      FAKE_PANES: JSON.stringify(panes),
+      FAKE_WORKSPACES: JSON.stringify(workspaces),
+      HERDR_PLUGIN_STATE_DIR: path.join(root, 'state'),
+    },
+  };
 }
 
 function pluginProcess(env) {
@@ -130,6 +139,37 @@ test('renames only automatic labels and tolerates Git failures', () => {
   assert.equal(plugin.gitWorktree(root, () => null), null);
 });
 
+test('restores the original label after leaving a managed worktree', (t) => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'worktree-label-state '));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const root = '/tmp/visonic/dev';
+  let inWorktree = true;
+  const commands = [];
+  const run = (command, args) => {
+    if (command !== 'git') {
+      commands.push(args);
+      return response({ type: 'ok' });
+    }
+    if (!inWorktree) return null;
+    if (args.includes('--show-toplevel')) return `${root}\n`;
+    if (args.includes('--git-dir')) return '/tmp/visonic/.bare/worktrees/dev\n';
+    return '/tmp/visonic/.bare\n';
+  };
+  const env = { HERDR_BIN_PATH: 'fake-herdr', HERDR_PLUGIN_STATE_DIR: stateDir };
+  const workspace = { workspaceId: 'w1', workspaceLabel: 'home', workspaceCwd: root };
+
+  inWorktree = false;
+  plugin.rememberAutomaticLabel({ ...workspace, workspaceCwd: '/tmp/home' }, run, env);
+  inWorktree = true;
+  assert.equal(plugin.renameWorkspace(workspace, run, env), true);
+  inWorktree = false;
+  assert.equal(plugin.renameWorkspace({ ...workspace, workspaceLabel: 'visonic / dev', workspaceCwd: '/tmp' }, run, env), true);
+  assert.deepEqual(commands, [
+    ['workspace', 'rename', 'w1', 'visonic / dev'],
+    ['workspace', 'rename', 'w1', 'home'],
+  ]);
+});
+
 test('startup enumerates active panes and event hooks prefer workspace context', (t) => {
   const fixture = makeFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
@@ -168,5 +208,42 @@ test('startup enumerates active panes and event hooks prefer workspace context',
   assert.deepEqual(calls(fake.calls), [
     ['workspace', 'rename', 'w-dev', 'visonic / dev'],
     ['workspace', 'rename', 'w-feature', 'visonic / feature'],
+  ]);
+
+  pluginProcess({
+    ...fake.env,
+    HERDR_BIN_PATH: fake.executable,
+    HERDR_PLUGIN_EVENT: 'workspace.created',
+    HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+      workspace_id: 'w-live',
+      workspace_label: 'home',
+      workspace_cwd: '/tmp/home',
+    }),
+  });
+  pluginProcess({
+    ...fake.env,
+    HERDR_BIN_PATH: fake.executable,
+    HERDR_PLUGIN_EVENT: 'workspace.updated',
+    HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+      workspace_id: 'w-live',
+      workspace_label: 'home',
+      workspace_cwd: feature,
+    }),
+  });
+  pluginProcess({
+    ...fake.env,
+    HERDR_BIN_PATH: fake.executable,
+    HERDR_PLUGIN_EVENT: 'workspace.updated',
+    HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+      workspace_id: 'w-live',
+      workspace_label: 'visonic / feature',
+      workspace_cwd: '/tmp',
+    }),
+  });
+  assert.deepEqual(calls(fake.calls), [
+    ['workspace', 'rename', 'w-dev', 'visonic / dev'],
+    ['workspace', 'rename', 'w-feature', 'visonic / feature'],
+    ['workspace', 'rename', 'w-live', 'visonic / feature'],
+    ['workspace', 'rename', 'w-live', 'home'],
   ]);
 });

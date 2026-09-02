@@ -11,3 +11,7 @@ command = ["node", "index.js"]
 [[events]]
 on = "workspace.created"
 command = ["node", "index.js"]
+
+[[events]]
+on = "workspace.updated"
+command = ["node", "index.js"]

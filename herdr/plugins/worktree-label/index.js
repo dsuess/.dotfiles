@@ -2,6 +2,7 @@
 'use strict';
 
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 function command(command, args, options = {}) {
@@ -53,18 +54,76 @@ function herdrCommand(args, run = command, env = process.env) {
   return run(env.HERDR_BIN_PATH || 'herdr', args, { env });
 }
 
+function statePath(env) {
+  return env.HERDR_PLUGIN_STATE_DIR && path.join(env.HERDR_PLUGIN_STATE_DIR, 'workspaces.json');
+}
+
+function readState(env) {
+  const file = statePath(env);
+  if (!file) return {};
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeState(state, env) {
+  const file = statePath(env);
+  if (!file) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(state));
+}
+
+function rememberAutomaticLabel(workspace, run = command, env = process.env) {
+  if (!workspace?.workspaceId || !workspace?.workspaceCwd || !workspace?.workspaceLabel) return;
+  if (workspace.workspaceLabel !== path.basename(workspace.workspaceCwd) || gitWorktree(workspace.workspaceCwd, run)) {
+    return;
+  }
+  const state = readState(env);
+  if (!state[workspace.workspaceId]) {
+    state[workspace.workspaceId] = { label: null, originalLabel: workspace.workspaceLabel };
+    writeState(state, env);
+  }
+}
+
 function renameWorkspace(workspace, run = command, env = process.env) {
   if (!workspace?.workspaceId || !workspace?.workspaceCwd || !workspace?.workspaceLabel) {
     return false;
   }
 
+  const state = readState(env);
+  const managed = state[workspace.workspaceId];
   const worktree = gitWorktree(workspace.workspaceCwd, run);
-  if (!worktree || !shouldRename(workspace.workspaceLabel, worktree.checkoutRoot, worktree.label)) {
+  if (!worktree) {
+    if (!managed || workspace.workspaceLabel !== managed.label) return false;
+    if (herdrCommand(['workspace', 'rename', workspace.workspaceId, managed.originalLabel], run, env) === null) {
+      return false;
+    }
+    delete state[workspace.workspaceId];
+    writeState(state, env);
+    return true;
+  }
+
+  const automatic = shouldRename(workspace.workspaceLabel, worktree.checkoutRoot, worktree.label);
+  const originalAutomatic = managed?.label === null && managed.originalLabel === workspace.workspaceLabel;
+  if (!automatic && managed?.label !== workspace.workspaceLabel && !originalAutomatic) return false;
+  if (workspace.workspaceLabel === worktree.label) {
+    if (!managed) {
+      state[workspace.workspaceId] = { label: worktree.label, originalLabel: path.basename(worktree.checkoutRoot) };
+      writeState(state, env);
+    }
     return false;
   }
-  if (workspace.workspaceLabel === worktree.label) return false;
-
-  return herdrCommand(['workspace', 'rename', workspace.workspaceId, worktree.label], run, env) !== null;
+  if (herdrCommand(['workspace', 'rename', workspace.workspaceId, worktree.label], run, env) === null) {
+    return false;
+  }
+  state[workspace.workspaceId] = {
+    label: worktree.label,
+    originalLabel: managed?.originalLabel || workspace.workspaceLabel,
+  };
+  writeState(state, env);
+  return true;
 }
 
 function eventWorkspace(env = process.env) {
@@ -98,7 +157,9 @@ function main(env = process.env, run = command) {
     for (const workspace of startupWorkspaces(run, env)) renameWorkspace(workspace, run, env);
     return;
   }
-  renameWorkspace(eventWorkspace(env), run, env);
+  const workspace = eventWorkspace(env);
+  if (env.HERDR_PLUGIN_EVENT === 'workspace.created') rememberAutomaticLabel(workspace, run, env);
+  renameWorkspace(workspace, run, env);
 }
 
 if (require.main === module) main();
@@ -107,6 +168,7 @@ module.exports = {
   eventWorkspace,
   gitWorktree,
   main,
+  rememberAutomaticLabel,
   renameWorkspace,
   shouldRename,
   startupWorkspaces,

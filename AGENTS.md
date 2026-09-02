@@ -22,6 +22,8 @@ Always commit a plan document in the same commit as the changes that implement i
 
 - When a controller setting is read from an environment variable, add it to `spawnController()`'s explicit environment allowlist and test that forwarding.
 
+- Herdr workspace labels that derive from a pane CWD must handle `workspace.updated` as well as `workspace.created`, and restore the initial automatic label when the pane leaves a linked worktree.
+
 ## Installation
 
 ```bash
