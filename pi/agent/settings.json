@@ -1,17 +1,19 @@
 {
   "lastChangelogVersion": "0.84.4",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-terra",
+  "defaultProvider": "litellm",
+  "defaultModel": "glm-5.2",
   "defaultThinkingLevel": "medium",
-  "defaultThinkingProvider": "openai-codex",
-  "defaultThinkingModel": "gpt-5.6-sol",
+  "defaultThinkingProvider": "litellm",
+  "defaultThinkingModel": "gpt-5.6-terra",
   "enabledModels": [
-    "openai-codex/gpt-5.6-luna",
-    "openai-codex/gpt-5.6-terra",
-    "openai-codex/gpt-5.6-sol"
+    "litellm/gpt-5.6-luna",
+    "litellm/gpt-5.6-terra",
+    "litellm/gpt-5.6-sol",
+    "litellm/glm-5.2"
   ],
   "editorPaddingX": 1,
   "quietStartup": true,
+  "treeFilterMode": "user-only",
   "skills": [
     "~/.agents/skills"
   ],
@@ -25,6 +27,6 @@
     "npm:pi-tuicr",
     "packages/ask-user-question"
   ],
-  "hideThinkingBlock": false,
+  "hideThinkingBlock": true,
   "theme": "dark"
 }
