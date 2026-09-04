@@ -225,6 +225,17 @@ cmd_software() {
     fi
 }
 
+# A conflicting local file must not prevent unrelated packages from deploying.
+# Keep Stow's diagnostic, but leave that target untouched and continue.
+stow_or_warn() {
+    if stow "$@"; then
+        return 0
+    fi
+
+    echo "⚠️  Stow failed for '$*'; continuing with remaining config packages." >&2
+    return 0
+}
+
 deploy_ketch_config() {
     local legacy_dir="$HOME/.config/ketch"
     local config_dir="$legacy_dir"
@@ -235,9 +246,9 @@ deploy_ketch_config() {
         mkdir -p "$config_dir"
         # Ketch follows os.UserConfigDir on macOS. Remove the obsolete managed
         # ~/.config placement with Stow before deploying to the native path.
-        stow -D ketch -t "$legacy_dir"
+        stow_or_warn -D ketch -t "$legacy_dir"
     fi
-    stow ketch -t "$config_dir"
+    stow_or_warn ketch -t "$config_dir"
 }
 
 register_herdr_worktree_label_plugin() {
@@ -278,22 +289,22 @@ cmd_config() {
     mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.pi/agent
 
     echo "🔗 Stowing configs..."
-    stow zsh -t ~
-    stow bash -t ~
-    stow git -t ~
-    stow tmux -t ~
-    stow nvim -t ~/.config/nvim
-    stow oh-my-zsh -t ~
-    stow bin -t ~/bin/
-    stow claude -t ~/.claude/
+    stow_or_warn zsh -t ~
+    stow_or_warn bash -t ~
+    stow_or_warn git -t ~
+    stow_or_warn tmux -t ~
+    stow_or_warn nvim -t ~/.config/nvim
+    stow_or_warn oh-my-zsh -t ~
+    stow_or_warn bin -t ~/bin/
+    stow_or_warn claude -t ~/.claude/
     # Claude uses ~/.claude/skills; Codex, OpenCode, and Pi use ~/.agents/skills.
-    stow agents -t ~/.claude/
-    stow agents -t ~/.agents/
-    stow opencode -t ~/.config/opencode/
-    stow codex -t ~/.codex/
-    stow pi -t ~/.pi/
-    stow uv -t ~/.config/uv
-    stow herdr -t ~/.config/herdr
+    stow_or_warn agents -t ~/.claude/
+    stow_or_warn agents -t ~/.agents/
+    stow_or_warn opencode -t ~/.config/opencode/
+    stow_or_warn codex -t ~/.codex/
+    stow_or_warn pi -t ~/.pi/
+    stow_or_warn uv -t ~/.config/uv
+    stow_or_warn herdr -t ~/.config/herdr
     register_herdr_worktree_label_plugin
     deploy_ketch_config
 
@@ -341,9 +352,9 @@ cmd_config() {
     if [[ "$PLATFORM" == "Darwin" ]]; then
         configure_macos_keyboard
 
-        stow ghostty -t ~/.config/ghostty
-        stow zed -t ~/.config/zed
-        stow "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
+        stow_or_warn ghostty -t ~/.config/ghostty
+        stow_or_warn zed -t ~/.config/zed
+        stow_or_warn "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
 
         [[ -d "$OBSIDIAN_DOCS" ]] && sync_obsidian "$OBSIDIAN_DOCS"
     fi
