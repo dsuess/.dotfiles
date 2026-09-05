@@ -16,6 +16,7 @@ Pi, its UI, provider authentication, and trusted-provenance non-core adapters ru
 - Only the configured signing-key exception may be granted from SSH storage. Hard-link handling is path-based.
 - IP egress is unrestricted. Unix-socket access is limited to the exact private Docker broker socket and reviewed system exceptions.
 - Workspace writes are allow-only. A workspace below the real home directory remains writable; controller and broker state are never granted. Installed tool roots, including `/opt/homebrew`, `/usr/local`, `~/.local/bin`, `~/.local/share/uv/tools`, and `~/.local/share/uv/python`, are read-only. The uv credentials directory remains denied.
+- `config.json` is a checked-in, versioned startup configuration for explicitly shared tool-plane directories. Its initial grant is read-only `~/.agents`; `readWrite` is empty. The trusted host validates exact schema, existing directories, canonical uniqueness, workspace/controller overlap, and protected credential/runtime roots before SRT starts. A grant preserves its configured lexical path as well as its canonical target, so a Stow symlink remains traversable without granting an unbounded target. Grants never create Docker sidecar mounts, PATH entries, generated-HOME files, or environment forwarding.
 
 ## Docker sidecar
 
@@ -49,7 +50,7 @@ pi-sbx prune --force          # removes validated stopped Pi sidecars only
 
 ## Controller policy and permissions
 
-The controller derives its fixed policy at startup. `/sandbox` cannot edit grants, mounts, ingress, or persistent settings, and it does not reload the controller or create, reset, or stop a sidecar. Permission prompts are serialized at the controller boundary. A once grant applies to one drained retry and a session grant stays in controller memory. Missing UI, timeout, cancellation, disconnect, malformed requests, and shutdown deny access.
+The controller derives one fixed policy at startup, incorporating the validated `config.json` shared-path grants. A configuration change applies only on a later normal Pi launch, whose controller source/configuration identity retires a stale controller; there is no live policy reload. `/sandbox` cannot read or edit configuration, edit grants, mounts, or ingress, and it does not reload the controller or create, reset, or stop a sidecar. It reports only effective canonical grant paths and read-only versus read-write access. Permission prompts are serialized at the controller boundary. A once grant applies to one drained retry and a session grant stays in controller memory. Missing UI, timeout, cancellation, disconnect, malformed requests, and shutdown deny access.
 
 ## Operations and troubleshooting
 

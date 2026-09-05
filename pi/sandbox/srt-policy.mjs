@@ -30,7 +30,7 @@ function aliases(value) {
   return [...out];
 }
 function assertGrant(pathname, home, workspace, controllerRoot) {
-  if (within(pathname, controllerRoot) || pathname === "/" || pathname === home || within(pathname, path.join(home, ".ssh"))) throw new Error("grant overlaps protected root");
+  if (within(pathname, controllerRoot) || within(controllerRoot, pathname) || pathname === "/" || pathname === home || within(pathname, path.join(home, ".ssh"))) throw new Error("grant overlaps protected root");
   if (within(pathname, home)) {
     const first = path.relative(home, pathname).split(path.sep)[0];
     if (FORBIDDEN_HOME.has(first)) throw new Error("grant overlaps credential root");
@@ -72,9 +72,12 @@ export function buildSrtPolicy(options) {
   }
   for (const grant of options.grants ?? []) {
     const resolved = existing(grant.path, "filesystem grant");
+    const lexical = path.resolve(grant.path);
+    assertGrant(lexical, home, workspaceRoot, controllerRoot);
     assertGrant(resolved, home, workspaceRoot, controllerRoot);
-    if (grant.access === "ro") reads.add(resolved);
-    else if (grant.access === "rw") writes.add(resolved);
+    const grantAliases = aliases(lexical);
+    if (grant.access === "ro") grantAliases.forEach((item) => reads.add(item));
+    else if (grant.access === "rw") grantAliases.forEach((item) => { reads.add(item); writes.add(item); });
     else throw new Error("filesystem grant access is invalid");
   }
   const socketPaths = [dockerSocket];

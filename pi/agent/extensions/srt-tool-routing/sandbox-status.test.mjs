@@ -27,6 +27,7 @@ function controllerStatus(overrides = {}) {
     sidecarId: null,
     dockerHealthy: false,
     pendingRestart: false,
+    filesystemGrants: [{ path: "/physical/shared-skills", access: "ro" }, { path: "/physical/scratch", access: "rw" }],
     ...overrides,
   };
 }
@@ -98,6 +99,7 @@ test("/sandbox reports live controller state without settings or lifecycle mutat
   assert.match(message, /Attached clients: 1/);
   assert.match(message, /Policy generation: b{12}/);
   assert.match(message, /Runtime generation: a{12}/);
+  assert.match(message, /Filesystem grants:\n  read-only: \/physical\/shared-skills\n  read-write: \/physical\/scratch/);
   assert.match(message, /Broker: healthy/);
   assert.match(message, /Sidecar: not created/);
   assert.match(message, /Docker: not created/);

@@ -12,6 +12,14 @@ function generation(value: unknown): string {
   return typeof value === "string" && value ? value.slice(0, 12) : "unknown";
 }
 
+function filesystemGrants(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) return ["Filesystem grants: none"];
+  const grants = value
+    .filter((grant): grant is { path: string; access: string } => Boolean(grant && typeof grant.path === "string" && ["ro", "rw"].includes(grant.access)))
+    .map((grant) => `  ${grant.access === "rw" ? "read-write" : "read-only"}: ${grant.path}`);
+  return grants.length ? ["Filesystem grants:", ...grants] : ["Filesystem grants: none"];
+}
+
 export function formatSandboxStatus(status: any): string {
   const hasSidecar = typeof status?.sidecarId === "string" && status.sidecarId.length > 0;
   return [
@@ -20,6 +28,7 @@ export function formatSandboxStatus(status: any): string {
     `Attached clients: ${Number.isInteger(status?.attachedRoots) ? status.attachedRoots : 0}`,
     `Policy generation: ${generation(status?.policyGeneration)}`,
     `Runtime generation: ${generation(status?.runtimeGeneration)}`,
+    ...filesystemGrants(status?.filesystemGrants),
     `Broker: ${status?.brokerHealthy === true ? "healthy" : "unavailable"}`,
     `Sidecar: ${hasSidecar ? status.sidecarId.slice(0, 12) : "not created"}`,
     `Docker: ${hasSidecar || status?.dockerHealthy === true ? (status?.dockerHealthy === true ? "healthy" : "unhealthy") : "not created"}`,

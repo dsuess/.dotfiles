@@ -19,6 +19,7 @@ test("controller publishes a private manifest, shares root leases, and frames he
   const second = await acquire(startup, "second");
   assert.equal(first.status.workspaceRoot, fs.realpathSync(workspace));
   assert.equal(first.status.sidecarId, null, "readiness must not create a Docker sidecar");
+  assert.deepEqual(first.status.filesystemGrants, [{ path: fs.realpathSync(path.join(os.homedir(), ".agents")), access: "ro" }]);
   const manifest = JSON.parse(fs.readFileSync(startup.manifestPath, "utf8"));
   assert.match(manifest.tokenDigest, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(manifest).includes(startup.token), false, "manifest never persists the token");

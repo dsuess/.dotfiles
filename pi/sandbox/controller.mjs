@@ -12,6 +12,7 @@ import { buildSrtPolicy } from "./srt-policy.mjs";
 import { WorkspaceDockerSidecar } from "./docker-sidecar.mjs";
 import { materializeDockerClientEnvironment, resolveDockerClientTools } from "./docker-client-env.mjs";
 import { resolveHostReadManifest, resolveUserToolRuntime } from "./host-configuration.mjs";
+import { loadFilesystemGrants } from "./filesystem-grants.mjs";
 import { atomicJson, manifestFor, validateDescriptor } from "./capability.mjs";
 import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamEvent, validateRequest } from "./protocol.mjs";
 
@@ -60,7 +61,8 @@ const dockerClient = materializeDockerClientEnvironment(generationRoot, resolveD
 applySrtWorkspaceWritePatch();
 const sidecar = new WorkspaceDockerSidecar({ workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, runtimeRoot: descriptor.runtimeRoot, brokerRoot: descriptor.brokerRoot });
 await sidecar.startBroker(); // Sidecar creation stays lazy: bridge() calls ensure on first Docker use.
-const policy = buildSrtPolicy({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest, grants: [] });
+const filesystemGrants = loadFilesystemGrants({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, controllerRoot: descriptor.runtimeRoot });
+const policy = buildSrtPolicy({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest, grants: filesystemGrants });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -143,7 +145,7 @@ async function dispatch(request, socket) {
     return { leaseToken: p.leaseToken, expiresAt };
   }
   validateLease(request);
-  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, policyGeneration: policy.generation, runtimeGeneration: String(descriptor.generation).padStart(64, "0"), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
+  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, policyGeneration: policy.generation, runtimeGeneration: String(descriptor.generation).padStart(64, "0"), filesystemGrants: filesystemGrants.map(({ canonicalPath, access }) => ({ path: canonicalPath, access })), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
   if (request.method === "lease.heartbeat") return { ok: true };
   if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: activeLeaseCount() === 0 }; }
   if (request.method === "cancel") return { cancelled: await terminate(active.get(p.requestId)) };
