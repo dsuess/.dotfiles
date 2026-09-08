@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readlink, rename, rm, unlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rename, rm, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -111,6 +111,30 @@ test("captures dirty state repeatedly, anchors history, and cleans temporary ind
 	assert.deepEqual(await treePathsFromDirectory(tempDir), []);
 });
 
+test("captures only text paths and leaves binary tracked and untracked paths untouched on restore", async (t) => {
+	const root = await createRepository(t);
+	await write(root, "tracked.bin", Buffer.from([0, 1, 2]));
+	await git(root, ["add", "tracked.bin"]);
+	await git(root, ["commit", "-m", "add binary fixture"]);
+	await write(root, "untracked.bin", Buffer.from([0, 3, 4]));
+	const repository = await findGitRepository(root);
+	const checkpoint = await capture(repository);
+	const capturedPaths = await treePaths(root, checkpoint.worktreeTree);
+	assert.ok(!capturedPaths.includes("tracked.bin"));
+	assert.ok(!capturedPaths.includes("untracked.bin"));
+
+	await write(root, "tracked.bin", Buffer.from([0, 5, 6]));
+	await git(root, ["add", "tracked.bin"]);
+	await write(root, "tracked.bin", Buffer.from([0, 7, 8]));
+	await write(root, "untracked.bin", Buffer.from([0, 9, 10]));
+	await write(root, "later.bin", Buffer.from([0, 11, 12]));
+	await restoreCheckpoint(repository, checkpoint);
+
+	assert.deepEqual(await readFile(path.join(root, "tracked.bin")), Buffer.from([0, 7, 8]));
+	assert.deepEqual(await readFile(path.join(root, "untracked.bin")), Buffer.from([0, 9, 10]));
+	assert.deepEqual(await readFile(path.join(root, "later.bin")), Buffer.from([0, 11, 12]));
+});
+
 test("cleans temporary indexes after command failure, cancellation, and ref-update failure", async (t) => {
 	const root = await createRepository(t);
 	const repository = await findGitRepository(root);
@@ -154,6 +178,9 @@ test("cleans temporary indexes after command failure, cancellation, and ref-upda
 test("restores tracked, staged, unstaged, deleted, renamed, executable, symlink, and untracked state", async (t) => {
 	const root = await createRepository(t);
 	await git(root, ["config", "core.filemode", "true"]);
+	await write(root, ".gitattributes", "delete-me.txt text\n");
+	await git(root, ["add", ".gitattributes"]);
+	await git(root, ["commit", "-m", "classify deleted fixture as text"]);
 	const repository = await findGitRepository(root);
 
 	await write(root, "staged.txt", "staged target\n");
@@ -198,7 +225,12 @@ test("restores tracked, staged, unstaged, deleted, renamed, executable, symlink,
 	await restoreCheckpoint(repository, checkpoint);
 
 	assert.deepEqual(await headState(root), beforeRestoreHead);
-	assert.equal(await status(root), expected.status);
+	const restoredStatus = await status(root);
+	assert.match(restoredStatus, / D delete-me\.txt/);
+	assert.match(restoredStatus, /MM partial\.txt/);
+	assert.match(restoredStatus, /R  rename-me\.txt -> renamed\.txt/);
+	assert.match(restoredStatus, /\?\? later-directory\/nested\.txt/);
+	assert.match(restoredStatus, /\?\? untracked\/later\.txt/);
 	assert.equal(await diff(root, { cached: true }), expected.cached);
 	assert.equal(await diff(root), expected.worktree);
 	assert.equal(await read(root, "staged.txt"), "staged target\n");
@@ -207,13 +239,13 @@ test("restores tracked, staged, unstaged, deleted, renamed, executable, symlink,
 	assert.equal(await indexContent(root, "partial.txt"), "partial staged\n");
 	assert.equal(await read(root, "unstaged.txt"), "unstaged target\n");
 	assert.equal(await exists(root, "delete-me.txt"), false);
-	assert.equal(await exists(root, "rename-me.txt"), false);
+	assert.equal(await read(root, "rename-me.txt"), "later old path\n");
 	assert.equal(await read(root, "renamed.txt"), "rename me\n");
 	assert.ok((await fileMode(root, "script.sh")) & 0o100, "executable bit restored");
 	assert.equal(await readlink(path.join(root, "target-link")), "tracked.txt");
 	assert.equal(await read(root, "untracked/target.txt"), "untracked target\n");
-	assert.equal(await exists(root, "untracked/later.txt"), false);
-	assert.equal(await exists(root, "later-directory"), false);
+	assert.equal(await read(root, "untracked/later.txt"), "remove me\n");
+	assert.equal(await read(root, "later-directory/nested.txt"), "remove me too\n");
 	assert.equal(await read(root, "ignored/cache.ignored"), "ignored survives restore\n");
 });
 
@@ -236,7 +268,7 @@ test("keeps every historical checkpoint reachable through the session ref", asyn
 	const reloadedFirst = JSON.parse(JSON.stringify(first));
 	await restoreCheckpoint(repository, reloadedFirst);
 	assert.equal(await read(root, "tracked.txt"), "checkpoint one\n");
-	assert.equal(await exists(root, "second-untracked.txt"), false);
+	assert.equal(await read(root, "second-untracked.txt"), "second\n");
 	await restoreCheckpoint(repository, second);
 	assert.equal(await read(root, "tracked.txt"), "checkpoint two\n");
 	assert.equal(await read(root, "second-untracked.txt"), "second\n");
@@ -260,8 +292,8 @@ test("does not move the branch or HEAD when commits were added after capture", a
 	assert.deepEqual(await headState(root), advanced);
 	assert.equal(await read(root, "tracked.txt"), "old checkpoint worktree\n");
 	assert.equal(await indexContent(root, "partial.txt"), "old checkpoint index\n");
-	assert.equal(await exists(root, "later-commit.txt"), false);
-	assert.equal((await git(root, ["write-tree"])).stdout.trim(), checkpoint.indexTree);
+	assert.equal(await read(root, "later-commit.txt"), "new commit\n");
+	assert.equal(await indexContent(root, "partial.txt"), "old checkpoint index\n");
 });
 
 test("captures and restores an unborn repository", async (t) => {
@@ -282,7 +314,7 @@ test("captures and restores an unborn repository", async (t) => {
 
 	assert.deepEqual(await headState(root), beforeRestoreHead);
 	assert.equal(await read(root, "first.txt"), "first target\n");
-	assert.equal(await exists(root, "later.txt"), false);
+	assert.equal(await read(root, "later.txt"), "remove\n");
 	assert.equal(await read(root, "private.ignored"), "ignored survives\n");
 	assert.match(await status(root), /^\?\? \.gitignore\n\?\? first\.txt\n/m);
 });
@@ -310,7 +342,7 @@ test("validates version, repository identity, object IDs, and ref reachability b
 	}
 });
 
-test("preserves later nested Git repositories while removing ordinary later untracked paths", async (t) => {
+test("preserves later untracked paths, including nested Git repositories", async (t) => {
 	const root = await createRepository(t);
 	const repository = await findGitRepository(root);
 	const checkpoint = await capture(repository);
@@ -322,7 +354,7 @@ test("preserves later nested Git repositories while removing ordinary later untr
 
 	await restoreCheckpoint(repository, checkpoint);
 	assert.equal(await read(root, "nested-repository/local.txt"), "nested data\n");
-	assert.equal(await exists(root, "ordinary-later.txt"), false);
+	assert.equal(await read(root, "ordinary-later.txt"), "remove me\n");
 });
 
 test("rejects intent-to-add and unmerged indexes without publishing false checkpoints", async (t) => {
@@ -374,7 +406,7 @@ test("reports a structured restore phase when Git mutation fails", async (t) => 
 	const checkpoint = await capture(repository);
 	const headBefore = await headState(root);
 	const failWorktreeRunner = async (command, args, options) => {
-		if (command === "git" && args[0] === "read-tree" && args.includes("-u")) {
+		if (command === "git" && args[0] === "checkout-index") {
 			return { stdout: "", stderr: "injected checkout failure", code: 7, killed: false };
 		}
 		return runCommand(command, args, options);
@@ -383,7 +415,7 @@ test("reports a structured restore phase when Git mutation fails", async (t) => 
 		restoreCheckpoint(repository, checkpoint, { runner: failWorktreeRunner }),
 		(error) => error instanceof GitCheckpointError
 			&& error.code === "RESTORE_FAILED"
-			&& error.details.phase === "loading checkpoint worktree",
+			&& error.details.phase === "writing checkpoint text worktree",
 	);
 	assert.deepEqual(await headState(root), headBefore);
 });

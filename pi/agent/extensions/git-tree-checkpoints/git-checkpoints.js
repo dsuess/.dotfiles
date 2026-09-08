@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { randomUUID as nodeRandomUUID } from "node:crypto";
-import { realpath, rm } from "node:fs/promises";
+import { lstat, open, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const CHECKPOINT_VERSION = 1;
+export const CHECKPOINT_VERSION = 2;
+const LEGACY_CHECKPOINT_VERSION = 1;
 const REF_PREFIX = "refs/pi/checkpoints";
 const CHECKPOINT_IDENTITY = {
 	name: "Pi Code Checkpoints",
@@ -204,8 +205,127 @@ function captureTime(now) {
 	return date.toISOString();
 }
 
+function nulPaths(output) {
+	return output.split("\0").filter(Boolean);
+}
+
+async function gitPaths(repository, args, runner, signal) {
+	return nulPaths((await runGit(repository.root, args, { runner, signal })).stdout);
+}
+
+async function isTextPath(root, relativePath) {
+	let handle;
+	try {
+		const stat = await lstat(path.join(root, relativePath));
+		if (stat.isSymbolicLink()) return true;
+		if (!stat.isFile()) return false;
+		handle = await open(path.join(root, relativePath), "r");
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		const buffer = Buffer.allocUnsafe(64 * 1024);
+		let position = 0;
+		while (true) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+			if (bytesRead === 0) break;
+			const chunk = buffer.subarray(0, bytesRead);
+			if (chunk.includes(0)) return false;
+			decoder.decode(chunk, { stream: true });
+			position += bytesRead;
+		}
+		decoder.decode();
+		return true;
+	} catch (error) {
+		if (error?.code === "ENOENT") return false;
+		throw error;
+	} finally {
+		await handle?.close();
+	}
+}
+
+function batches(items, size = 256) {
+	const out = [];
+	for (let index = 0; index < items.length; index += size) out.push(items.slice(index, index + size));
+	return out;
+}
+
+async function removeIndexPaths(repository, paths, runner, signal, env) {
+	for (const batch of batches(paths)) {
+		if (batch.length) await runGit(repository.root, ["rm", "--cached", "--ignore-unmatch", "--", ...batch], { runner, signal, env });
+	}
+}
+
+async function addWorktreePaths(repository, paths, runner, signal, env) {
+	for (const batch of batches(paths)) {
+		if (batch.length) await runGit(repository.root, ["add", "-A", "--", ...batch], { runner, signal, env });
+	}
+}
+
+async function treePaths(repository, tree, runner, signal) {
+	return gitPaths(repository, ["ls-tree", "-r", "-z", "--name-only", tree], runner, signal);
+}
+
+function parseAttributeOutput(output) {
+	const fields = output.split("\0");
+	const attributes = new Map();
+	for (let index = 0; index + 2 < fields.length; index += 3) {
+		if (fields[index]) attributes.set(fields[index], fields[index + 2]);
+	}
+	return attributes;
+}
+
+async function textAttributes(repository, paths, runner, signal) {
+	const attributes = new Map();
+	for (const batch of batches(paths)) {
+		if (!batch.length) continue;
+		const result = await runGit(repository.root, ["check-attr", "-z", "text", "--", ...batch], { runner, signal });
+		for (const [filePath, value] of parseAttributeOutput(result.stdout)) attributes.set(filePath, value);
+	}
+	return attributes;
+}
+
+async function checkpointTextPaths(repository, runner, signal) {
+	const [tracked, untracked] = await Promise.all([
+		gitPaths(repository, ["ls-files", "-z", "--cached"], runner, signal),
+		gitPaths(repository, ["ls-files", "-z", "--others", "--exclude-standard"], runner, signal),
+	]);
+	const trackedPaths = new Set(tracked);
+	const candidates = [...new Set([...tracked, ...untracked])];
+	const attributes = await textAttributes(repository, candidates, runner, signal);
+	const textPaths = [];
+	for (const filePath of candidates) {
+		const attribute = attributes.get(filePath);
+		if (attribute === "unset") continue;
+		if (attribute === "set" || await isTextPath(repository.root, filePath)) textPaths.push(filePath);
+	}
+	return {
+		textPaths,
+		trackedTextPaths: textPaths.filter((filePath) => trackedPaths.has(filePath)),
+	};
+}
+
+function requireTextPathList(value, field) {
+	if (!Array.isArray(value) || value.some((filePath) => typeof filePath !== "string"
+		|| !filePath || filePath.includes("\0") || path.isAbsolute(filePath)
+		|| filePath.split(/[\\/]/).includes(".."))) {
+		throw new GitCheckpointError("INVALID_CHECKPOINT", `Checkpoint ${field} must be a safe path list`, { field });
+	}
+	return [...new Set(value)];
+}
+
+async function indexEntries(repository, indexPath, runner, signal) {
+	const output = (await runGit(repository.root, ["ls-files", "-s", "-z"], {
+		runner, signal, env: { GIT_INDEX_FILE: indexPath },
+	})).stdout;
+	return output.split("\0").filter(Boolean).map((record) => {
+		const match = record.match(/^(\d+) ([0-9a-f]{40,64}) (\d)\t(.+)$/s);
+		if (!match || match[3] !== "0") {
+			throw new GitCheckpointError("INVALID_CHECKPOINT", "Checkpoint index contains an unsupported entry");
+		}
+		return { mode: match[1], oid: match[2], path: match[4] };
+	});
+}
+
 /**
- * Capture the real index and tracked + non-ignored worktree into Git objects.
+ * Capture selected text paths from the index and worktree into Git objects.
  * The user's index, worktree, branch, HEAD, and refs outside the Pi namespace are untouched.
  */
 export async function captureCheckpoint(repository, options, dependencies = {}) {
@@ -218,21 +338,32 @@ export async function captureCheckpoint(repository, options, dependencies = {}) 
 	const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
 	const tempBase = dependencies.tempDir ?? os.tmpdir();
 	const tempIndex = path.join(tempBase, `pi-git-checkpoint-index-${randomUUID()}`);
-	const tempIndexLock = `${tempIndex}.lock`;
+	const tempWorktreeIndex = path.join(tempBase, `pi-git-checkpoint-worktree-index-${randomUUID()}`);
+	const temporaryIndexes = [tempIndex, tempWorktreeIndex];
 
 	try {
 		await rejectUnsupportedIndex(repository, runner, signal);
-		const [head, indexTree, previousAnchor] = await Promise.all([
+		const [head, realIndexTree, previousAnchor, selection] = await Promise.all([
 			readHead(repository, runner, signal),
 			runGit(repository.root, ["write-tree"], { runner, signal }).then((result) => result.stdout.trim()),
 			readCurrentAnchor(repository, ref, runner, signal),
+			checkpointTextPaths(repository, runner, signal),
 		]);
 
 		const alternateIndexEnv = { GIT_INDEX_FILE: tempIndex };
-		await runGit(repository.root, ["read-tree", indexTree], { runner, signal, env: alternateIndexEnv });
-		await runGit(repository.root, ["add", "-A", "--", "."], { runner, signal, env: alternateIndexEnv });
-		const worktreeTree = (await runGit(repository.root, ["write-tree"], {
+		await runGit(repository.root, ["read-tree", realIndexTree], { runner, signal, env: alternateIndexEnv });
+		const excludedTrackedPaths = (await gitPaths(repository, ["ls-files", "-z", "--cached"], runner, signal))
+			.filter((filePath) => !selection.trackedTextPaths.includes(filePath));
+		await removeIndexPaths(repository, excludedTrackedPaths, runner, signal, alternateIndexEnv);
+		const indexTree = (await runGit(repository.root, ["write-tree"], {
 			runner, signal, env: alternateIndexEnv,
+		})).stdout.trim();
+
+		const alternateWorktreeIndexEnv = { GIT_INDEX_FILE: tempWorktreeIndex };
+		await runGit(repository.root, ["read-tree", indexTree], { runner, signal, env: alternateWorktreeIndexEnv });
+		await addWorktreePaths(repository, selection.textPaths, runner, signal, alternateWorktreeIndexEnv);
+		const worktreeTree = (await runGit(repository.root, ["write-tree"], {
+			runner, signal, env: alternateWorktreeIndexEnv,
 		})).stdout.trim();
 
 		const capturedAt = captureTime(dependencies.now);
@@ -278,12 +409,11 @@ export async function captureCheckpoint(repository, options, dependencies = {}) 
 			indexCommit,
 			worktreeTree,
 			indexTree,
+			textPaths: selection.textPaths,
+			trackedTextPaths: selection.trackedTextPaths,
 		};
 	} finally {
-		await Promise.all([
-			rm(tempIndex, { force: true }),
-			rm(tempIndexLock, { force: true }),
-		]);
+		await Promise.all(temporaryIndexes.flatMap((index) => [rm(index, { force: true }), rm(`${index}.lock`, { force: true })]));
 	}
 }
 
@@ -318,12 +448,19 @@ function parseCommit(raw) {
 export async function validateCheckpoint(repository, checkpoint, dependencies = {}) {
 	const runner = dependencyRunner(dependencies);
 	const signal = dependencies.signal;
-	if (!checkpoint || checkpoint.version !== CHECKPOINT_VERSION) {
+	if (!checkpoint || (checkpoint.version !== CHECKPOINT_VERSION && checkpoint.version !== LEGACY_CHECKPOINT_VERSION)) {
 		throw new GitCheckpointError(
 			"UNSUPPORTED_CHECKPOINT_VERSION",
 			`Unsupported Git checkpoint version ${checkpoint?.version ?? "missing"}`,
-			{ expected: CHECKPOINT_VERSION, actual: checkpoint?.version },
+			{ expected: [LEGACY_CHECKPOINT_VERSION, CHECKPOINT_VERSION], actual: checkpoint?.version },
 		);
+	}
+	if (checkpoint.version === CHECKPOINT_VERSION) {
+		const textPaths = requireTextPathList(checkpoint.textPaths, "textPaths");
+		const trackedTextPaths = requireTextPathList(checkpoint.trackedTextPaths, "trackedTextPaths");
+		if (trackedTextPaths.some((filePath) => !textPaths.includes(filePath))) {
+			throw new GitCheckpointError("INVALID_CHECKPOINT", "Checkpoint tracked text paths are not a subset of text paths");
+		}
 	}
 	if (typeof checkpoint.repositoryRoot !== "string" || typeof checkpoint.repositoryCommonDir !== "string") {
 		throw new GitCheckpointError("INVALID_CHECKPOINT", "Checkpoint repository identity is missing");
@@ -397,9 +534,9 @@ export async function validateCheckpoint(repository, checkpoint, dependencies = 
 	return current;
 }
 
-async function restorePhase(repository, phase, args, runner, signal) {
+async function restorePhase(repository, phase, args, runner, signal, env) {
 	try {
-		return await runGit(repository.root, args, { runner, signal });
+		return await runGit(repository.root, args, { runner, signal, env });
 	} catch (error) {
 		if (error instanceof GitCheckpointError && error.code === "ABORTED") throw error;
 		throw new GitCheckpointError(
@@ -408,6 +545,75 @@ async function restorePhase(repository, phase, args, runner, signal) {
 			{ phase, repositoryRoot: repository.root },
 			{ cause: error },
 		);
+	}
+}
+
+async function replaceableTextPath(root, relativePath) {
+	try {
+		await lstat(path.join(root, relativePath));
+		return isTextPath(root, relativePath);
+	} catch (error) {
+		if (error?.code === "ENOENT") return true;
+		throw error;
+	}
+}
+
+async function restoreTextCheckpoint(repository, checkpoint, runner, signal, dependencies) {
+	const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+	const tempIndex = path.join(dependencies.tempDir ?? os.tmpdir(), `pi-git-checkpoint-restore-index-${randomUUID()}`);
+	const tempIndexEnv = { GIT_INDEX_FILE: tempIndex };
+	try {
+		const [worktreePaths, indexPaths] = await Promise.all([
+			treePaths(repository, checkpoint.worktreeTree, runner, signal),
+			treePaths(repository, checkpoint.indexTree, runner, signal),
+		]);
+		const worktreePathSet = new Set(worktreePaths);
+		const indexPathSet = new Set(indexPaths);
+		const savedWorktreePaths = checkpoint.textPaths.filter((filePath) => worktreePathSet.has(filePath));
+		const safeWorktreePaths = [];
+		for (const filePath of savedWorktreePaths) {
+			if (await replaceableTextPath(repository.root, filePath)) safeWorktreePaths.push(filePath);
+		}
+
+		await restorePhase(repository, "loading checkpoint text worktree", ["read-tree", checkpoint.worktreeTree], runner, signal, tempIndexEnv);
+		for (const batch of batches(safeWorktreePaths)) {
+			if (batch.length) await restorePhase(repository, "writing checkpoint text worktree", [
+				"checkout-index", "--force", `--prefix=${repository.root}${path.sep}`, "--", ...batch,
+			], runner, signal, tempIndexEnv);
+		}
+		for (const filePath of checkpoint.trackedTextPaths) {
+			if (!worktreePathSet.has(filePath) && await replaceableTextPath(repository.root, filePath)) {
+				await rm(path.join(repository.root, filePath), { force: true });
+			}
+		}
+
+		await restorePhase(repository, "loading checkpoint text index", ["read-tree", checkpoint.indexTree], runner, signal, tempIndexEnv);
+		const trackedTextPathSet = new Set(checkpoint.trackedTextPaths);
+		const entries = (await indexEntries(repository, tempIndex, runner, signal))
+			.filter((entry) => trackedTextPathSet.has(entry.path));
+		for (const batch of batches(entries, 128)) {
+			if (batch.length) await restorePhase(repository, "writing checkpoint text index", [
+				"update-index", "--add", ...batch.flatMap((entry) => ["--cacheinfo", `${entry.mode},${entry.oid},${entry.path}`]),
+			], runner, signal);
+		}
+		for (const batch of batches(checkpoint.trackedTextPaths.filter((filePath) => !indexPathSet.has(filePath)))) {
+			if (batch.length) await restorePhase(repository, "removing checkpoint text index paths", [
+				"update-index", "--force-remove", "--", ...batch,
+			], runner, signal);
+		}
+		const capturedUntrackedPaths = [];
+		for (const filePath of checkpoint.textPaths) {
+			if (!trackedTextPathSet.has(filePath) && await replaceableTextPath(repository.root, filePath)) {
+				capturedUntrackedPaths.push(filePath);
+			}
+		}
+		for (const batch of batches(capturedUntrackedPaths)) {
+			if (batch.length) await restorePhase(repository, "unstaging checkpoint text-only untracked paths", [
+				"update-index", "--force-remove", "--", ...batch,
+			], runner, signal);
+		}
+	} finally {
+		await Promise.all([rm(tempIndex, { force: true }), rm(`${tempIndex}.lock`, { force: true })]);
 	}
 }
 
@@ -421,19 +627,23 @@ export async function restoreCheckpoint(repository, checkpoint, dependencies = {
 	const current = await validateCheckpoint(repository, checkpoint, { runner, signal });
 	await rejectUnsupportedIndex(current, runner, signal);
 	const headBefore = await readHead(current, runner, signal);
+	if (checkpoint.version === LEGACY_CHECKPOINT_VERSION) {
+		await restorePhase(current, "cleaning current non-ignored untracked paths", ["clean", "-fd", "--", "."], runner, signal);
+		await restorePhase(current, "loading checkpoint worktree", ["read-tree", "--reset", "-u", checkpoint.worktreeTree], runner, signal);
+		await restorePhase(current, "loading checkpoint index", ["read-tree", "--reset", checkpoint.indexTree], runner, signal);
 
-	await restorePhase(current, "cleaning current non-ignored untracked paths", ["clean", "-fd", "--", "."], runner, signal);
-	await restorePhase(current, "loading checkpoint worktree", ["read-tree", "--reset", "-u", checkpoint.worktreeTree], runner, signal);
-	await restorePhase(current, "loading checkpoint index", ["read-tree", "--reset", checkpoint.indexTree], runner, signal);
-
-	const writtenIndex = (await restorePhase(current, "verifying restored index", ["write-tree"], runner, signal)).stdout.trim();
-	if (writtenIndex !== checkpoint.indexTree) {
-		throw new GitCheckpointError(
-			"RESTORE_FAILED",
-			"Restored Git index does not match the checkpoint",
-			{ phase: "verifying restored index", expected: checkpoint.indexTree, actual: writtenIndex },
-		);
+		const writtenIndex = (await restorePhase(current, "verifying restored index", ["write-tree"], runner, signal)).stdout.trim();
+		if (writtenIndex !== checkpoint.indexTree) {
+			throw new GitCheckpointError(
+				"RESTORE_FAILED",
+				"Restored Git index does not match the checkpoint",
+				{ phase: "verifying restored index", expected: checkpoint.indexTree, actual: writtenIndex },
+			);
+		}
+	} else {
+		await restoreTextCheckpoint(current, checkpoint, runner, signal, dependencies);
 	}
+
 	const headAfter = await readHead(current, runner, signal);
 	if (headAfter.oid !== headBefore.oid || headAfter.ref !== headBefore.ref) {
 		throw new GitCheckpointError(

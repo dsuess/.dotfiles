@@ -54,7 +54,7 @@ function checkpointFromEntry(entry: SessionEntry | undefined): CheckpointData | 
 	if (!entry || entry.type !== "custom" || entry.customType !== CHECKPOINT_ENTRY_TYPE) return null;
 	if (!entry.data || typeof entry.data !== "object") return null;
 	const data = entry.data as CheckpointData;
-	if (data.version !== CHECKPOINT_VERSION) return null;
+	if (data.version !== 1 && data.version !== CHECKPOINT_VERSION) return null;
 	if (data.representedLeafId !== null && typeof data.representedLeafId !== "string") return null;
 	return data;
 }
