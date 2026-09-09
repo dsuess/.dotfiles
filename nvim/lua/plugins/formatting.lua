@@ -10,6 +10,7 @@ return {
       formatters_by_ft = {
         python = { "ruff_format", "ruff_organize_imports" },
         lua = { "stylua" },
+        rust = { "rustfmt" },
         markdown = { "prettier" },
         json = { "prettier" },
         yaml = { "prettier" },

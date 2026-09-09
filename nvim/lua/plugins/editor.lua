@@ -21,6 +21,7 @@ return {
         "diff",
         "zig",
         "dart",
+        "rust",
       },
       highlight = { enable = true },
       indent = { enable = true },

@@ -1,7 +1,7 @@
 -- Gather server configs from lang/ modules
 local function collect_servers()
   local servers = {}
-  local lang_modules = { "lang.python", "lang.zig" }
+  local lang_modules = { "lang.python", "lang.zig", "lang.rust" }
   for _, mod in ipairs(lang_modules) do
     local lang = require(mod)
     if lang.servers then
@@ -41,16 +41,32 @@ return {
         vim.lsp.config(server, config)
       end
 
-      -- mason-lspconfig installs servers and auto-calls vim.lsp.enable()
+      -- Servers managed outside Mason (e.g. rust-analyzer via rustup). Mason's
+      -- copies are unmaintained and conflict, so exclude them from auto-install
+      -- and enable explicitly — automatic_enable only covers Mason-installed servers.
+      local externally_managed = { rust_analyzer = true }
+      local ensure_installed = vim.tbl_filter(
+        function(name) return not externally_managed[name] end,
+        vim.tbl_keys(servers)
+      )
+
+      -- mason-lspconfig installs Mason-managed servers and auto-enables them.
       require("mason-lspconfig").setup({
-        ensure_installed = vim.tbl_keys(servers),
+        ensure_installed = ensure_installed,
         automatic_enable = true,
       })
+
+      -- Externally managed servers were configured above but skipped by
+      -- automatic_enable, so enable them explicitly.
+      for name in pairs(externally_managed) do
+        if servers[name] then vim.lsp.enable(name) end
+      end
 
       -- LSP keybindings on attach
       vim.api.nvim_create_autocmd("LspAttach", {
         group = vim.api.nvim_create_augroup("lsp_attach", { clear = true }),
         callback = function(event)
+          vim.lsp.inlay_hint.enable(true, { bufnr = event.buf })
           local map = function(keys, func, desc)
             vim.keymap.set("n", keys, func, { buffer = event.buf, desc = "LSP: " .. desc })
           end
