@@ -172,7 +172,6 @@ const FIXED_GUEST_ENV = Object.freeze({
   HOME: "/root",
   TMPDIR: "/tmp",
   XDG_CACHE_HOME: "/root/.cache",
-  NPM_CONFIG_CACHE: "/root/.npm",
   PIP_CACHE_DIR: "/root/.cache/pip",
   UV_CACHE_DIR: "/root/.cache/uv",
   HF_HOME: "/root/.cache/huggingface",

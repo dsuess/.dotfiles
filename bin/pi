@@ -50,6 +50,9 @@ done
 
 real_pi="$(find_real_pi)" || fail "cannot resolve the installed Pi binary behind this launcher"
 export PI_LAUNCHER_CHAIN="$chain:$real_pi"
+# npm-backed sandbox tools need a writable host cache. Let callers choose a
+# per-launch cache, but establish the tested default before preflight and Pi.
+export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/Users/dsuess/.npm}"
 if [[ "$yolo" == true ]]; then
   printf 'pi: warning: SRT disabled by --yolo\n' >&2
   exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"}

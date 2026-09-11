@@ -58,15 +58,23 @@ test("controller executes a reviewed PATH fixture by bare executable name", asyn
 
 test("controller forwards ordinary secret values but strips control authority", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-environment-"));
-  const startup = beginControllerStartup({ launchDirectory: workspace });
+  const originalNpmCache = process.env.NPM_CONFIG_CACHE;
+  process.env.NPM_CONFIG_CACHE = "/Users/dsuess/.npm";
+  let startup;
+  try {
+    startup = beginControllerStartup({ launchDirectory: workspace });
+  } finally {
+    if (originalNpmCache === undefined) delete process.env.NPM_CONFIG_CACHE;
+    else process.env.NPM_CONFIG_CACHE = originalNpmCache;
+  }
   t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
   const attached = await acquire(startup, "environment");
   const chunks = [];
-  await attached.client.exec(["/bin/bash", "-lc", "printf '%s|%s|%s|' \"$SYNTHETIC_SECRET\" \"${PI_SRT_ROUTING_TOKEN-unset}\" \"${SSH_AUTH_SOCK-unset}\"; if [ \"$PATH\" = request-path ]; then printf request-path; else printf controller-path; fi"], {
+  await attached.client.exec(["/bin/bash", "-lc", "printf '%s|%s|%s|%s|' \"$SYNTHETIC_SECRET\" \"${PI_SRT_ROUTING_TOKEN-unset}\" \"${SSH_AUTH_SOCK-unset}\" \"$NPM_CONFIG_CACHE\"; if [ \"$PATH\" = request-path ]; then printf request-path; else printf controller-path; fi"], {
     cwd: workspace, env: { SYNTHETIC_SECRET: "raw-secret-value", PI_SRT_ROUTING_TOKEN: "must-not-cross", SSH_AUTH_SOCK: "/private/agent", PATH: "request-path" },
     onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); },
   });
-  assert.equal(Buffer.concat(chunks).toString(), "raw-secret-value|||controller-path");
+  assert.equal(Buffer.concat(chunks).toString(), "raw-secret-value|||/Users/dsuess/.npm|controller-path");
   await attached.client.release();
 });
 

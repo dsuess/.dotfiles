@@ -6,15 +6,26 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 const launcher = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../bin/pi");
-test("launcher accepts an interactive invocation with no arguments", (t) => {
+test("launcher sets its npm cache default before preflight and Pi startup", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-launcher-empty-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "home"), workspace = path.join(root, "workspace"), fakeBin = path.join(root, "bin"), observed = path.join(root, "observed");
+  fs.mkdirSync(path.join(home, ".pi/sandbox"), { recursive: true }); fs.mkdirSync(path.join(home, ".pi/agent/extensions/srt-tool-routing"), { recursive: true }); fs.mkdirSync(workspace); fs.mkdirSync(fakeBin);
+  fs.writeFileSync(path.join(home, ".pi/agent/extensions/srt-tool-routing/index.ts"), "");
+  fs.writeFileSync(path.join(home, ".pi/sandbox/client-cli.mjs"), `if (process.argv[2] === "preflight") { (await import("node:fs")).writeFileSync(${JSON.stringify(observed)}, process.env.NPM_CONFIG_CACHE); process.stdout.write("ZGVzY3JpcHRvcg=="); } else process.exit(2);`);
+  const realPi = path.join(fakeBin, "pi"); fs.writeFileSync(realPi, `#!/bin/sh\nprintf '%s' "$NPM_CONFIG_CACHE" >> ${JSON.stringify(observed)}\n`); fs.chmodSync(realPi, 0o755);
+  execFileSync(launcher, [], { cwd: workspace, env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}`, NPM_CONFIG_CACHE: "" }, encoding: "utf8" });
+  assert.equal(fs.readFileSync(observed, "utf8"), "/Users/dsuess/.npm/Users/dsuess/.npm");
+});
+
+test("launcher preserves a caller-selected npm cache", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-launcher-npm-override-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"), workspace = path.join(root, "workspace"), fakeBin = path.join(root, "bin");
   fs.mkdirSync(path.join(home, ".pi/sandbox"), { recursive: true }); fs.mkdirSync(path.join(home, ".pi/agent/extensions/srt-tool-routing"), { recursive: true }); fs.mkdirSync(workspace); fs.mkdirSync(fakeBin);
   fs.writeFileSync(path.join(home, ".pi/agent/extensions/srt-tool-routing/index.ts"), "");
   fs.writeFileSync(path.join(home, ".pi/sandbox/client-cli.mjs"), `if (process.argv[2] === "preflight") process.stdout.write("ZGVzY3JpcHRvcg=="); else process.exit(2);`);
-  const realPi = path.join(fakeBin, "pi"); fs.writeFileSync(realPi, "#!/bin/sh\necho interactive-pi\n"); fs.chmodSync(realPi, 0o755);
-  const output = execFileSync(launcher, [], { cwd: workspace, env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}` }, encoding: "utf8" });
-  assert.equal(output, "interactive-pi\n");
+  const realPi = path.join(fakeBin, "pi"); fs.writeFileSync(realPi, "#!/bin/sh\nprintf '%s' \"$NPM_CONFIG_CACHE\"\n"); fs.chmodSync(realPi, 0o755);
+  const output = execFileSync(launcher, [], { cwd: workspace, env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}`, NPM_CONFIG_CACHE: "/tmp/caller-npm" }, encoding: "utf8" });
+  assert.equal(output, "/tmp/caller-npm");
 });
 
 test("print leading-bang prompt after options executes controller Bash instead of Pi", (t) => {

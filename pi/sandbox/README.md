@@ -8,7 +8,7 @@ Pi, its UI, provider authentication, and trusted-provenance non-core adapters ru
 - Tool parameter schemas and host-adapter package versions can change without an admission-list update. The `sbx` release number and commit can also change. Runtime behavior establishes compatibility. The canary verifies routing ownership, daemon health, authentication, diagnostics, SSH-agent settings, policy, MCP, templates, sidecar fields, and the Docker Engine dial. Incompatible Docker behavior blocks sidecar use. Core SRT file and shell routing remains active.
 - Artifact and integrity pins remain. The Docker shell template digest identifies the reviewed sidecar image. Capability protocol versions and controller source digests protect host/guest coherence. The SRT lockfile and verified patch preimages and postimages protect dependency and patch integrity.
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
-- Tool processes receive a generated HOME, temp directory, cache, and empty immutable `DOCKER_CONFIG`. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
+- Tool processes receive a generated HOME, temp directory, cache, and empty immutable `DOCKER_CONFIG`. npm-backed tools use the launcher-provided `NPM_CONFIG_CACHE`, which defaults to `/Users/dsuess/.npm`; callers can override it per Pi launch or Bash request. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
 - Routed `PATH` is the controller startup `PATH`, with the generated private Docker client directory prepended. PATH is not a security boundary: SRT filesystem permissions decide whether a discovered program can read, execute, or mutate its target. A command may set its own PATH, but cannot bypass those permissions.
 - Routed adapters invoke optional host-installed tools by validated bare executable name through that inherited PATH (for example, `rg` and `fd`). They must use direct argument vectors and must not hard-code an installation prefix, inspect the filesystem, resolve through a shell, or reconstruct PATH. Fixed controller or platform dependencies may retain reviewed absolute paths when their identity is part of the controller protocol. In both cases, SRT filesystem policy remains the authority boundary.
 - The generated Docker client directory exposes the reviewed Docker CLI and only Buildx and Compose. Other Docker Desktop plugins are not available. Buildx configuration, state, and logs use a separate writable generated `BUILDX_CONFIG` directory.
@@ -60,6 +60,15 @@ A root Pi runtime refreshes its opaque controller lease while it runs. After a l
 A parallel tool batch completes only after every sibling settles. One disconnected or unresponsive routed request could therefore previously leave completed siblings visible while the turn remained `Working...`. Controller socket close, socket write failure, invalid response frame, and response deadline now reject every pending routed request, disable routed tools, publish `sandbox:failed`, notify the UI, and request graceful shutdown. The in-flight tool reports `controller transport unavailable: <reason>`; this redacted reason distinguishes peer close, socket error, protocol failure, and response timeout without exposing request data or capabilities. Intentional session replacement retires its old connection without failing the replacement runtime.
 
 Run `npm --prefix pi/sandbox test` for deterministic controller, policy, host-configuration, and sidecar checks. Run `npm --prefix pi run check:deterministic`, then `./install.sh config`, then `npm --prefix pi run check` for the full repository gate. `./install.sh config` is non-destructive: it must not create a disposable sidecar.
+
+To verify npm-backed hooks in a routed workspace, run this without manually setting `NPM_CONFIG_CACHE`:
+
+```sh
+cd /Users/dsuess/src/polez/data-scout
+prek run pyright --files digitization/datascout/datascout/strategies/base.py
+```
+
+Pyright should pass without an npm-cache permission or `/root/.npm` error. This grants no host Docker credentials or other host credentials.
 
 If Docker creation fails, inspect the required capabilities instead of matching an `sbx` release number:
 

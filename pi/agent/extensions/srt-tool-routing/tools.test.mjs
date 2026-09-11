@@ -171,6 +171,7 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
       GENERIC_SECRET_TOKEN: "secret-generic",
       OPENAI_API_KEY: "secret-provider",
       NPM_TOKEN: "secret-package",
+      NPM_CONFIG_CACHE: "/Users/dsuess/.npm",
       GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
     },
   });
@@ -182,19 +183,22 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
   assert.equal(call.options.env.GENERIC_SECRET_TOKEN, "secret-generic");
   assert.equal(call.options.env.OPENAI_API_KEY, "secret-provider");
   assert.equal(call.options.env.NPM_TOKEN, "secret-package");
+  assert.equal(call.options.env.NPM_CONFIG_CACHE, "/Users/dsuess/.npm");
   assert.equal(call.options.env.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
-  assert.equal(call.options.env.NPM_CONFIG_CACHE, "/root/.npm");
+  assert.equal(sanitizeGuestEnvironment({}).NPM_CONFIG_CACHE, undefined, "the adapter must not synthesize /root/.npm");
   assert.deepEqual(chunks, ["bash-output"]);
 
   const sanitized = sanitizeGuestEnvironment({
     GITHUB_TOKEN: "secret",
     GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
     LC_TIME: "C",
+    NPM_CONFIG_CACHE: "/tmp/caller-npm",
   });
   assert.equal(sanitizeGuestEnvironment(undefined).PATH, undefined, "the extension does not construct a guest PATH");
   assert.equal(sanitized.GITHUB_TOKEN, "secret");
   assert.equal(sanitized.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(sanitized.LC_TIME, "C");
+  assert.equal(sanitized.NPM_CONFIG_CACHE, "/tmp/caller-npm");
   for (const name of ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]) {
     assert.equal(sanitized[name], undefined, `${name} must not propagate SRT tool routing MITM trust`);
   }
