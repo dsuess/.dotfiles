@@ -1,6 +1,8 @@
 import { analyzeBashMutation } from "./bash-policy.js";
 
-export const WORKFLOW_TOOLS = new Set(["show_plan", "plan_progress", "complete_plan", "complete_stage"]);
+export const PRESENTATION_TOOLS = Object.freeze(["show_plan"]);
+export const EXECUTION_TOOLS = Object.freeze(["plan_progress", "complete_plan", "complete_stage"]);
+export const WORKFLOW_TOOLS = new Set([...PRESENTATION_TOOLS, ...EXECUTION_TOOLS]);
 export const INSPECTION_TOOLS = Object.freeze([
 	"read",
 	"grep",
@@ -39,10 +41,21 @@ export function getPlanningToolNames(allToolNames, options = {}) {
 
 export function getRestorableTools(snapshot, allToolNames) {
 	const available = new Set(allToolNames);
+	const baseline = snapshotActiveTools(snapshot);
 	return {
-		restored: snapshot.filter((name) => available.has(name)),
-		missing: snapshot.filter((name) => !available.has(name)),
+		restored: baseline.filter((name) => available.has(name)),
+		missing: baseline.filter((name) => !available.has(name)),
 	};
+}
+
+export function composeActiveTools(snapshot, workflowTools, allToolNames) {
+	const available = new Set(allToolNames);
+	const { restored, missing } = getRestorableTools(snapshot, allToolNames);
+	const active = [...restored];
+	for (const name of workflowTools) {
+		if (available.has(name) && !active.includes(name)) active.push(name);
+	}
+	return { active, missing };
 }
 
 export function evaluatePlanningToolCall(toolName, input, allToolNames, options = {}) {

@@ -105,7 +105,7 @@ const ctx = {
 try {
 	for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
 	assert.equal(tools.has("show_plan"), true);
-	assert.equal(activeTools.includes("show_plan"), false, "workflow tools start hidden");
+	assert.equal(activeTools.includes("show_plan"), true, "candidate presentation starts available");
 	assert.equal(activeModel.id, "gpt-5.6-terra", "normal session startup applies the implementation default");
 
 	await commands.get("plan").handler("", ctx);
@@ -126,6 +126,7 @@ try {
 	assert.match(planningPrompt.systemPrompt, /Do not add unresolved blockers, invented entries, or a no-questions placeholder/);
 	assert.match(planningPrompt.systemPrompt, /### Part A — Action-oriented title/);
 	assert.match(planningPrompt.systemPrompt, /Do not add an author-written status marker/);
+	assert.match(planningPrompt.systemPrompt, /Never copy extension-managed Ledger rows or the trailing Part Progress report/);
 	assert.match(planningPrompt.systemPrompt, /selective implementation anchors/);
 	assert.match(planningPrompt.systemPrompt, /not an exhaustive target-file inventory/);
 	assert.match(planningPrompt.systemPrompt, /Add "Verification" whenever the planned result can be meaningfully checked/);
@@ -156,7 +157,8 @@ try {
 	assert.match(recovered, /## Verification[\s\S]*Exercise successful and failed writes/);
 	assert.match(recovered, /## Part Progress/, "recovery retains the canonical managed progress report");
 	const executionState = appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data;
-	assert.equal(executionState.mode, "executing_all");
+	assert.equal(executionState.mode, "normal");
+	assert.equal(executionState.execution.active, true);
 	assert.equal(executionState.approval.consumed, true);
 	assert.equal(activeModel.id, "gpt-5.6-terra");
 	assert.equal(thinkingLevel, "high");
@@ -193,7 +195,8 @@ try {
 		summary: "all stages complete", tests: ["node --test"], allowBlockedStoppingCriterion: false,
 	}, undefined, undefined, ctx);
 	assert.equal(completed.terminate, true);
-	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.mode, "completed");
+	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.mode, "normal");
+	assert.equal(appended.filter((entry) => entry.customType === "plan-mode-state").at(-1).data.outcome, "completed");
 
 	await commands.get("plan").handler("", ctx);
 	assert.equal(activeModel.id, "gpt-5.6-sol", "a new planning run restores the planner model");
@@ -253,7 +256,7 @@ try {
 
 	assert.ok(srtRoutingCompositionStages.includes("planning gate"), "planning transitions request source-aware SRT tool routing verification");
 	assert.ok(srtRoutingCompositionStages.includes("execution-tool transition"), "execution transitions request source-aware SRT tool routing verification");
-	assert.ok(srtRoutingCompositionStages.includes("original-tool restore"), "original-tool restoration requests source-aware SRT tool routing verification");
+	assert.ok(srtRoutingCompositionStages.includes("presentation-tool composition"), "normal parent composition requests source-aware SRT tool routing verification");
 } finally {
 	await rm(project, { recursive: true, force: true });
 }

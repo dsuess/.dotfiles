@@ -76,7 +76,9 @@ export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, partId, 
 	const updatedCore = lines.join("\n");
 	const updated = parsePlanDocument(updatedCore);
 	if (!updated.ok) {
-		throw new Error(`Updated plan is no longer valid canonical Markdown: ${updated.errors.map((item) => item.message).join("; ")}`);
+		const failure = new Error(`Updated plan is no longer valid canonical Markdown: ${updated.errors.map((item) => item.message).join("; ")}`);
+		failure.code = updated.errors[0]?.code;
+		throw failure;
 	}
 	return replaceManagedProgressReport(updatedCore, buildDocumentProgressRows(updated.document));
 }

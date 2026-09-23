@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MAX_PLAN_BYTES, splitManagedProgressReport } from "../plan-document.js";
+import { stripLedgerMutations } from "../ledger.js";
 import {
 	MAX_SLUG_LENGTH,
 	PlanStoreError,
@@ -87,6 +88,47 @@ test("persists Part plans with derived stages and extension-owned pending progre
 			persistPlan({ cwd: project, intent: "forged", title: "Add Reliable Cache Invalidation", markdown: authoredLedger }),
 			(error) => error instanceof PlanStoreError && error.details?.some((item) => item.code === "managed_metadata_forbidden"),
 		);
+	});
+});
+
+test("persists validated initial Part progress in managed ledger rows and the deterministic hash", async () => {
+	await withProject(async (project) => {
+		const options = {
+			cwd: project,
+			...baseOptions,
+			progress: [
+				{ partId: "A", status: "completed", evidence: "Contract tests passed" },
+				{ partId: "B", status: "blocked", note: "Dependency unavailable", evidence: "Probe returned 403" },
+			],
+			now: () => creationDate,
+		};
+		const stored = await persistPlan(options);
+		assert.deepEqual(stored.ledger, {
+			A: { status: "completed", note: null, evidence: "Contract tests passed" },
+			B: { status: "blocked", note: "Dependency unavailable", evidence: "Probe returned 403" },
+			C: { status: "pending", note: null, evidence: null },
+		});
+		assert.match(stored.markdown, /- \*\*Ledger:\*\* \{"status":"completed","note":null,"evidence":"Contract tests passed"\}/);
+		assert.match(stored.markdown, /- ☑ Define cache consistency[\s\S]*- ⛔ Implement reliable invalidation[\s\S]*- ☐ Cover boundary behavior/);
+		assert.equal(stored.document.parts[0].evidence, "Contract tests passed");
+		assert.equal(stored.hash, (await persistPlan({ ...options, existingPlan: { path: stored.path, hash: stored.hash } })).hash);
+	});
+});
+
+test("rejects invalid, duplicate, unknown, and unevidenced initial progress", async () => {
+	await withProject(async (project) => {
+		for (const [progress, code] of [
+			[[{ partId: "A", status: "completed" }], "missing_progress_evidence"],
+			[[{ partId: "A", status: "blocked", evidence: "failed" }], "missing_progress_note"],
+			[[{ partId: "A", status: "pending" }, { partId: "A", status: "in_progress" }], "duplicate_progress_part"],
+			[[{ partId: "Z", status: "pending" }], "unknown_progress_part"],
+			[[{ partId: "A", status: "done" }], "invalid_progress_status"],
+		]) {
+			await assert.rejects(
+				persistPlan({ cwd: project, ...baseOptions, progress }),
+				(error) => error instanceof PlanStoreError && error.details?.some((item) => item.code === code),
+			);
+		}
 	});
 });
 
@@ -218,7 +260,7 @@ test("rejects drift, arbitrary revision paths, and symlink escapes", async () =>
 test("regenerates one managed report during revision without trusting stale rows", async () => {
 	await withProject(async (project) => {
 		const first = await persistPlan({ cwd: project, ...baseOptions });
-		const edited = first.markdown.replace(
+		const edited = stripLedgerMutations(first.markdown).replace(
 			"### Part A — Define cache consistency",
 			"### Part A — Define cache ownership",
 		);

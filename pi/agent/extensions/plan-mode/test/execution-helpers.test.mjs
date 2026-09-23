@@ -19,7 +19,8 @@ const state = {
 	originalActiveTools: ["read", "subagent", "missing"],
 	currentStageId: "2",
 	execution: { mode: "staged", active: true, runId: "run-2" },
-	plan: { path: "/project/.pi/plans/approved.md", hash: "plan-hash" },
+	ledger: { 2: { status: "pending", note: null, evidence: null } },
+	plan: { path: "/project/.pi/plans/approved.md", hash: "plan-hash", stages: [{ id: "2", taskIds: ["2"] }] },
 };
 const contract = {
 	version: 2,
@@ -60,12 +61,16 @@ test("rejects an unsupported execution record instead of restoring it", () => {
 	], state), null);
 });
 
-test("restores exact original tools plus mode-specific workflow tools", () => {
-	assert.deepEqual(getExecutionToolNames(state, ["read", "subagent", "plan_progress", "complete_stage", "complete_plan"]), {
-		active: ["read", "subagent", "plan_progress", "complete_stage"],
+test("restores exact original tools plus separately composed presentation and execution tools", () => {
+	assert.deepEqual(getExecutionToolNames(state, ["read", "subagent", "show_plan", "plan_progress", "complete_stage", "complete_plan"]), {
+		active: ["read", "subagent", "show_plan", "plan_progress", "complete_stage"],
 		missing: ["missing"],
 	});
-	assert.deepEqual(getExecutionToolNames({ ...state, execution: { ...state.execution, mode: "all" } }, ["read", "plan_progress", "complete_plan"]).active, ["read", "plan_progress", "complete_plan"]);
+	assert.deepEqual(getExecutionToolNames({
+		...state,
+		originalActiveTools: ["read", "plan_progress", "complete_plan"],
+		execution: { ...state.execution, mode: "all" },
+	}, ["read", "show_plan", "plan_progress", "complete_plan"]).active, ["read", "show_plan", "plan_progress", "complete_plan"]);
 });
 
 test("in-place kickoff is self-contained and staged instructions enforce a hard boundary", () => {
@@ -78,6 +83,48 @@ test("in-place kickoff is self-contained and staged instructions enforce a hard 
 	assert.match(buildStageInstruction(state), /only execution stage 2/);
 	assert.match(buildStageInstruction(state), /Do not begin a later stage/);
 	assert.match(buildStageInstruction({ ...state, parallelWorkers: [{ workerId: "worker-1", runId: "run-1" }] }), /Resume an existing worker/);
+});
+
+test("kickoff resumes supplied progress without replaying or erasing it", () => {
+	const resumeState = {
+		...state,
+		currentStageId: "B",
+		ledger: {
+			A: { status: "completed", note: null, evidence: "A test passed" },
+			B: { status: "in_progress", note: "implementation started", evidence: "baseline passed" },
+			C: { status: "pending", note: null, evidence: null },
+		},
+		plan: { ...state.plan, stages: [
+			{ id: "A", taskIds: ["A"] }, { id: "B", taskIds: ["B"] }, { id: "C", taskIds: ["C"] },
+		] },
+	};
+	const kickoff = buildExecutionKickoff(contract, resumeState);
+	assert.match(kickoff, /Terminal Parts to skip.*A \(completed; evidence: A test passed\)/);
+	assert.match(kickoff, /already in_progress.*B/);
+	assert.match(kickoff, /Pending Parts.*C/);
+	assert.match(kickoff, /Execute only execution stage B, the first nonterminal derived stage/);
+	assert.match(buildStageInstruction(resumeState), /B=in_progress/);
+	assert.match(buildStageInstruction(resumeState), /without replaying that transition/);
+});
+
+test("all-terminal staged kickoff exposes whole-plan completion reconciliation", () => {
+	const terminalState = {
+		...state,
+		currentStageId: null,
+		ledger: {
+			A: { status: "completed", note: null, evidence: "passed" },
+			B: { status: "blocked", note: "unavailable", evidence: "probe failed" },
+		},
+	};
+	const kickoff = buildExecutionKickoff(contract, terminalState);
+	assert.match(kickoff, /Every Part is already terminal/);
+	assert.match(kickoff, /whole-plan reconciliation turn/);
+	assert.match(kickoff, /call complete_plan/i);
+	assert.doesNotMatch(kickoff, /execution stage null/);
+	assert.match(buildStageInstruction(terminalState), /STAGED EXECUTION RECONCILE/);
+	assert.deepEqual(getExecutionToolNames(terminalState, ["read", "show_plan", "plan_progress", "complete_stage", "complete_plan"]).active, [
+		"read", "show_plan", "plan_progress", "complete_stage", "complete_plan",
+	]);
 });
 
 test("parallel kickoff exposes one ready wave and complete worker contracts", () => {

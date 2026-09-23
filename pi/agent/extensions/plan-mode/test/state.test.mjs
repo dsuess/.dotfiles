@@ -13,6 +13,9 @@ import {
 	enterPlanning,
 	exitPlanning,
 	hasDurableFeedbackPending,
+	hasPendingApproval,
+	isActiveExecution,
+	migrateState,
 	recordInvalidSubmission,
 	recordStageCheckpoint,
 	recordTaskProgress,
@@ -117,6 +120,32 @@ test("alphabetic Part IDs pause at one derived execution stage per Part", () => 
 	assert.equal(recordTaskProgress(full, { itemId: "B", status: "in_progress" }).ok, true);
 });
 
+test("staged execution starts at and advances to the next nonterminal Part", () => {
+	const approved = approvalState({
+		stages: [
+			{ id: "A", description: "Already complete", taskIds: ["A"] },
+			{ id: "B", description: "Resume work", taskIds: ["B"] },
+			{ id: "C", description: "Known blocker", taskIds: ["C"] },
+			{ id: "D", description: "Future work", taskIds: ["D"] },
+		],
+		tasks: [
+			{ id: "A", title: "Already complete", status: "completed", evidence: "A passed" },
+			{ id: "B", title: "Resume work", status: "in_progress", note: "work started", evidence: "partial check" },
+			{ id: "C", title: "Known blocker", status: "blocked", note: "dependency absent", evidence: "probe failed" },
+			{ id: "D", title: "Future work", status: "pending" },
+		],
+	});
+	let execution = approveExecution(approved, "nonce-1", "staged").state;
+	assert.equal(execution.currentStageId, "B");
+	assert.equal(recordTaskProgress(execution, { itemId: "D", status: "in_progress" }).error.code, "future_stage");
+	execution = recordTaskProgress(execution, { itemId: "B", status: "completed", evidence: "B passed" }).state;
+	execution = recordStageCheckpoint(execution, { stageId: "B", nonce: "stage-b", tests: ["focused test"] }).state;
+	execution = resolveStageCheckpoint(execution, "stage-b", "continue").state;
+	assert.equal(execution.currentStageId, "D", "later terminal Parts are skipped at the checkpoint");
+	assert.equal(execution.ledger.A.evidence, "A passed");
+	assert.equal(execution.ledger.C.evidence, "probe failed");
+});
+
 test("parallel execution allows siblings and blocks future waves until their predecessors are terminal", () => {
 	const schedule = (wave, dependencies = []) => ({ wave, workerId: `worker-${wave}-${dependencies.length}`, sourcePartId: "A", dependencies, ownership: `${wave}-${dependencies.length} boundary` });
 	const approved = approvalState({
@@ -140,6 +169,32 @@ test("parallel execution allows siblings and blocks future waves until their pre
 	assert.equal(recordTaskProgress(execution, { itemId: "C", status: "in_progress" }).error.code, "future_wave");
 	execution = recordTaskProgress(execution, { itemId: "B", status: "completed", evidence: "worker B passed" }).state;
 	assert.equal(recordTaskProgress(execution, { itemId: "C", status: "in_progress" }).ok, true);
+});
+
+test("fast optimization preserves source progress and evidence across optimized Parts", () => {
+	const source = approvalState({
+		stages: [{ id: "A", description: "Source Part", taskIds: ["A"] }],
+		tasks: [{ id: "A", title: "Source Part", status: "in_progress", note: "implementation started", evidence: "baseline passed" }],
+	});
+	const optimizing = beginFastOptimization(source, "nonce-1", ["A"]).state;
+	const accepted = acceptFastOptimization(optimizing, submission({
+		hash: "split-fast",
+		approvalNonce: "split-nonce",
+		stages: [
+			{ id: "A", description: "First split", taskIds: ["A"], parallelExecution: { wave: 1, workerId: "worker-a", sourcePartId: "A", dependencies: [], ownership: "first boundary" } },
+			{ id: "B", description: "Second split", taskIds: ["B"], parallelExecution: { wave: 1, workerId: "worker-b", sourcePartId: "A", dependencies: [], ownership: "second boundary" } },
+		],
+		tasks: [
+			{ id: "A", title: "First split", status: "pending" },
+			{ id: "B", title: "Second split", status: "completed", evidence: "invented" },
+		],
+	}));
+	assert.equal(accepted.ok, true);
+	assert.deepEqual(accepted.state.ledger, {
+		A: { status: "in_progress", note: "implementation started", evidence: "baseline passed" },
+		B: { status: "in_progress", note: "implementation started", evidence: "baseline passed" },
+	});
+	assert.equal(accepted.state.currentStageId, "A");
 });
 
 test("fast optimization retains a recoverable approval and hands off directly to parallel execution", () => {
@@ -193,7 +248,7 @@ test("rejects duplicate, stale, and out-of-order actions deterministically", () 
 	assert.equal(execution.ok, true);
 	const repeated = approveExecution(execution.state, "nonce-1", "all");
 	assert.equal(repeated.ok, false);
-	assert.equal(repeated.error.code, "invalid_transition");
+	assert.equal(repeated.error.code, "approval_consumed");
 });
 
 test("change/review returns to planning and increments revision only after valid resubmission", () => {
@@ -215,18 +270,112 @@ test("change/review returns to planning and increments revision only after valid
 	assert.equal(revised.state.counters.invalidSubmissions, 0);
 });
 
-test("exit retains the saved reference while a new planning run starts a fresh active draft", () => {
+test("guard toggles preserve pending approval and all durable workflow facts", () => {
 	const approval = approvalState();
 	const exited = exitPlanning(approval);
 	assert.equal(exited.ok, true);
 	assert.equal(exited.state.mode, "normal");
-	assert.equal(exited.state.plan.path, "/project/.pi/plans/cache.md");
-	assert.deepEqual(exited.state.originalActiveTools, ["read", "bash", "custom_tool"]);
+	assert.equal(hasPendingApproval(exited.state), true);
+	for (const key of [
+		"outcome", "plan", "approval", "optimization", "execution", "ledger", "currentStageId",
+		"checkpoint", "completedStages", "testEvidence", "parallelWorkers", "counters", "blockedReason",
+	]) {
+		assert.deepEqual(exited.state[key], approval[key], key);
+	}
 
 	const restarted = enterPlanning(exited.state, ["read"]);
 	assert.equal(restarted.ok, true);
-	assert.equal(restarted.state.plan, null);
-	assert.deepEqual(restarted.state.ledger, {});
+	assert.equal(restarted.state.mode, "planning");
+	assert.equal(restarted.state.plan.path, "/project/.pi/plans/cache.md");
+	assert.equal(restarted.state.approval.nonce, "nonce-1");
+	assert.deepEqual(restarted.state.ledger, approval.ledger);
+});
+
+test("guard toggles temporarily gate an active execution without ending it", () => {
+	const execution = approveExecution(approvalState(), "nonce-1", "staged").state;
+	const entered = enterPlanning(execution, ["read", "show_plan"]);
+	assert.equal(entered.ok, true);
+	assert.equal(entered.state.mode, "planning");
+	assert.equal(isActiveExecution(entered.state), true);
+	assert.deepEqual(entered.state.execution, execution.execution);
+	assert.deepEqual(entered.state.ledger, execution.ledger);
+
+	const exited = exitPlanning(entered.state);
+	assert.equal(exited.ok, true);
+	assert.equal(exited.state.mode, "normal");
+	assert.equal(isActiveExecution(exited.state), true);
+	assert.deepEqual(exited.state.execution, execution.execution);
+	assert.equal(exited.state.currentStageId, "1");
+});
+
+test("approval actions remain valid after the guard is disabled", () => {
+	const unguarded = exitPlanning(approvalState()).state;
+	assert.equal(hasPendingApproval(unguarded), true);
+	const execution = approveExecution(unguarded, "nonce-1", "all");
+	assert.equal(execution.ok, true);
+	assert.equal(isActiveExecution(execution.state), true);
+
+	const discussion = requestRevision(exitPlanning(approvalState()).state, "nonce-1", "discuss");
+	assert.equal(discussion.ok, true);
+	assert.equal(discussion.state.mode, "normal", "discussion preserves the user's disabled guard");
+	assert.equal(discussion.state.counters.reviewRounds, 1);
+});
+
+test("guard toggles preserve a terminal outcome until a replacement is presented", () => {
+	const terminal = approveExecution(approvalState(), "nonce-1", "all").state;
+	for (const item of Object.values(terminal.ledger)) item.status = "completed";
+	const completed = completeWorkflow(terminal).state;
+	const guarded = enterPlanning(completed, ["read"]).state;
+	assert.equal(guarded.outcome, "completed");
+	assert.deepEqual(guarded.testEvidence, completed.testEvidence);
+	const unguarded = exitPlanning(guarded).state;
+	assert.equal(unguarded.outcome, "completed");
+	assert.deepEqual(unguarded.ledger, completed.ledger);
+});
+
+test("a replacement candidate explicitly supersedes the prior execution", () => {
+	const execution = approveExecution(approvalState(), "nonce-1", "all").state;
+	const guarded = enterPlanning(execution, ["read"]).state;
+	const replacement = showPlan(guarded, submission({
+		path: "/project/.pi/plans/replacement.md",
+		slug: "replacement",
+		hash: "replacement-hash",
+		approvalNonce: "replacement-nonce",
+	}));
+	assert.equal(replacement.ok, true);
+	assert.equal(replacement.state.lastAction, "supersede_execution");
+	assert.equal(replacement.state.execution, null);
+	assert.equal(isActiveExecution(replacement.state), false);
+	assert.equal(hasPendingApproval(replacement.state), true);
+	assert.equal(replacement.state.plan.path, "/project/.pi/plans/replacement.md");
+	assert.equal(execution.execution.active, true, "the prior durable state remains historical evidence");
+});
+
+test("candidate presentation works without a pre-enabled guard and retains validated initial evidence", () => {
+	const presented = showPlan(createInitialState(), submission({
+		tasks: [
+			{ id: "1", title: "Establish the contract", status: "completed", evidence: "Contract review passed" },
+			{ id: "2", title: "Implement and verify", status: "blocked", note: "API unavailable", evidence: "Access probe returned 403" },
+		],
+	}));
+	assert.equal(presented.ok, true);
+	assert.equal(presented.state.mode, "planning");
+	assert.deepEqual(presented.state.ledger, {
+		1: { status: "completed", note: null, evidence: "Contract review passed" },
+		2: { status: "blocked", note: "API unavailable", evidence: "Access probe returned 403" },
+	});
+	const execution = approveExecution(presented.state, "nonce-1", "staged");
+	assert.equal(execution.ok, true);
+	assert.equal(execution.state.currentStageId, null, "terminal initial progress skips all execution stages");
+});
+
+test("initial terminal progress requires evidence and blocked progress requires a note", () => {
+	assert.equal(showPlan(createInitialState(), submission({
+		tasks: [{ id: "1", title: "Establish", status: "completed" }, { id: "2", title: "Implement", status: "pending" }],
+	})).error.code, "missing_evidence");
+	assert.equal(showPlan(createInitialState(), submission({
+		tasks: [{ id: "1", title: "Establish", status: "blocked", evidence: "Probe failed" }, { id: "2", title: "Implement", status: "pending" }],
+	})).error.code, "missing_note");
 });
 
 test("new user input resets consecutive invalid-submission counting", () => {
@@ -351,7 +500,7 @@ test("restore ignores malformed or unsupported state entries", () => {
 	assert.equal(restoreLatestState([]).mode, "normal");
 });
 
-test("migrates every legacy workflow mode into one of the two tool modes", () => {
+test("migrates every legacy workflow phase without inventing concurrent workflows", () => {
 	const base = showPlan(enterPlanning(createInitialState(), ["read"]).state, submission()).state;
 	for (const legacyMode of ["off", "planning", "approval", "executing_all", "executing_staged", "completed", "blocked"]) {
 		const legacy = structuredClone(base);
@@ -360,10 +509,30 @@ test("migrates every legacy workflow mode into one of the two tool modes", () =>
 		delete legacy.outcome;
 		if (legacyMode.startsWith("executing_")) legacy.execution = { mode: legacyMode === "executing_staged" ? "staged" : "all", strategy: "standard", startedAt: null, parentSessionPath: null, runId: null, paused: false };
 		const restored = restoreLatestState([{ type: "custom", customType: PLAN_MODE_STATE_ENTRY, data: legacy }]);
+		assert.equal(restored.version, 3, legacyMode);
 		assert.ok(["planning", "normal"].includes(restored.mode), legacyMode);
+		assert.equal(hasPendingApproval(restored), legacyMode === "approval", legacyMode);
+		assert.equal(isActiveExecution(restored), legacyMode.startsWith("executing_"), legacyMode);
 		if (legacyMode === "approval") assert.equal(restored.approval?.nonce, "nonce-1");
 		if (legacyMode === "executing_staged") assert.equal(restored.execution?.mode, "staged");
 		if (legacyMode === "completed") assert.equal(restored.outcome, "completed");
 		if (legacyMode === "blocked") assert.equal(restored.outcome, "blocked");
 	}
+});
+
+test("migrates current two-mode records while preserving guard-independent execution", () => {
+	const execution = approveExecution(approvalState(), "nonce-1", "staged").state;
+	const guardedExecution = structuredClone(execution);
+	guardedExecution.version = 2;
+	guardedExecution.mode = "planning";
+	guardedExecution.execution.paused = true;
+	guardedExecution.counters.recoveryAttempts = 2;
+
+	const migrated = migrateState(guardedExecution);
+	assert.equal(migrated.version, 3);
+	assert.equal(migrated.mode, "planning");
+	assert.equal(isActiveExecution(migrated), true);
+	assert.equal(migrated.execution.paused, true);
+	assert.equal(migrated.currentStageId, "1");
+	assert.equal(migrated.counters.recoveryAttempts, 2);
 });

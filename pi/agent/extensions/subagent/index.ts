@@ -17,6 +17,7 @@ import {
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const MAX_PARTIAL_ACTIVITY = 50;
+const PLAN_MODE_WORKFLOW_STATE_EVENT = "plan-mode:workflow-state";
 
 const SubagentParameters = Type.Object({
 	prompt: Type.String({
@@ -83,8 +84,13 @@ export function createSubagentExtension(dependencies: ExtensionDependencies = {}
 
 	return function subagentExtension(pi: ExtensionAPI): void {
 		const controllers = new Map<string, AbortController>();
+		let planningGuardActive = false;
 		let runUi: ReturnType<typeof createRunUiManager> | undefined;
 		let nextOrdinal = 1;
+
+		pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data: unknown) => {
+			planningGuardActive = (data as { mode?: string } | undefined)?.mode === "planning";
+		});
 
 		const getRunUi = (ctx: ExtensionContext) => {
 			if (ctx.mode !== "tui") return undefined;
@@ -124,7 +130,7 @@ export function createSubagentExtension(dependencies: ExtensionDependencies = {}
 				const thinkingLevel = params.thinkingLevel ?? ctx.thinkingLevel;
 				const systemPrompt = ctx.getSystemPrompt();
 				const activeTools = pi.getActiveTools();
-				const planningMode = isInheritedPlanningMode(activeTools, systemPrompt);
+				const planningMode = isInheritedPlanningMode(planningGuardActive, systemPrompt);
 				const role = inferRole(params.prompt);
 				const taskSummary = normalizeTaskSummary(params.prompt);
 				const ordinal = nextOrdinal++;

@@ -64,7 +64,7 @@ try {
 	assert.equal((await request({ type: "prompt", message: "/plan off" })).success, true);
 	const offEntries = await request({ type: "get_entries" });
 	const offState = offEntries.data.entries.filter((entry) => entry.type === "custom" && entry.customType === "plan-mode-state").at(-1)?.data;
-	assert.equal(offState?.mode, "off");
+	assert.equal(offState?.mode, "normal");
 } finally {
 	proc.stdin.end();
 	proc.kill("SIGTERM");

@@ -143,7 +143,7 @@ const I = {
 
 export default function (pi: ExtensionAPI) {
 	let currentModelId: string | undefined;
-	let workflowMode: PlanModeWorkflowStateEvent["mode"] = "off";
+	let workflowMode: PlanModeWorkflowStateEvent["mode"] = "normal";
 	let sandboxLifecycle: SandboxLifecycleEvent | undefined;
 	let requestFooterRender: (() => void) | undefined;
 
@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 				invalidate() {},
 				render(width: number): string[] {
 					let line = "";
-					const planningActive = workflowMode === "planning" || workflowMode === "approval";
+					const planningActive = workflowMode === "planning";
 					const cwdColor = planningActive ? P.peach : P.mauve;
 
 					// ── Segment 1: CWD — mode color bg, dark text ──

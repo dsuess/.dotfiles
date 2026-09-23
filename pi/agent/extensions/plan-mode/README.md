@@ -1,19 +1,24 @@
 # Perfect Pi Planning Mode
 
-A global Pi extension for read-oriented planning, explicit approval, clean implementation handoff, and a persistent task ledger.
+A global Pi extension for model-led planning, explicit approval, a mutation guard, implementation handoff, and a persistent task ledger.
+
+The planning workflow and the mutation guard are separate. The workflow owns investigation, candidate files, approval, and optional execution tracking. Planning mode is the user-visible guard that restricts model mutation tools.
 
 ## Commands and entry points
 
-- `/plan [goal]` — enter planning mode and optionally start a planning turn.
-- `/plan off` — leave planning/approval and restore the exact pre-planning tool snapshot (minus tools no longer registered).
-- `--plan` — start a session in planning mode.
-- `Shift+Tab` — toggle planning mode.
-- Command palette **Plan** row — toggle planning mode directly without enqueueing `/plan` or starting an agent turn.
-- `/plan-actions` — reopen actions for the pending plan.
+- `show_plan` — model-only tool that presents a complete candidate from any conversation state. A successful call enables the mutation guard and opens the candidate actions.
+- `/plan [goal]` — user command that enables the mutation guard and optionally starts a planning turn.
+- `/plan off` — disable only the mutation guard. It preserves candidates, approvals, executions, checkpoints, outcomes, and counters.
+- `--plan` — start a session with the mutation guard enabled.
+- `Shift+Tab` — toggle the mutation guard.
+- Command palette **Plan** row — toggle the mutation guard without enqueueing `/plan` or starting an agent turn.
+- `/plan-actions` — reopen actions for the pending candidate, with or without the guard enabled.
 - `/plan-stage-actions` — reopen the active staged checkpoint.
 - `/plan-resume` — resume a paused implementation session.
 
-State has exactly two tool-access modes: `planning` and `normal`. A candidate plan, approval nonce, active all/staged execution, paused checkpoint, and completed/blocked outcome are independent persisted fields. `show_plan` leaves the session in `planning`; only an implementation action restores normal implementation tools.
+Pi slash commands accept user input. The model does not invoke or synthesize `/plan`. Instead, `show_plan` is always available to the parent model as the presentation action.
+
+State has exactly two guard modes: `planning` and `normal`. Candidate, approval, execution, checkpoint, and outcome records do not depend on the guard mode. Only an implementation action starts or resumes implementation. A guard toggle does not create, revise, approve, supersede, or discard a candidate.
 
 ## Model profiles
 
@@ -21,15 +26,19 @@ Plan mode has two independent global defaults in `~/.pi/agent/settings.json`: na
 
 After initialization, planning and inference profiles are branch-local. Resuming a session or navigating its tree restores the saved branch profile rather than adopting a later global edit. Handoff to implementation and `/plan off` switch to the inference profile, while a later planning entry restores the saved planning profile. An explicit CLI `--model` remains higher priority than both defaults.
 
-A `/model` choice or Ctrl+P cycle persists only the active mode's global pair and branch profile: planning/approval changes `defaultThinkingProvider`/`defaultThinkingModel`; implementation changes `defaultProvider`/`defaultModel`. Workflow-driven Sol↔Terra switches never change either durable default. Missing models, credentials, malformed settings, or settings-write failures leave the active model or durable defaults unchanged as applicable and show a warning rather than blocking the workflow.
+A `/model` choice or Ctrl+P cycle persists only the active guard profile. Guarded changes update `defaultThinkingProvider` and `defaultThinkingModel`. Unguarded changes update `defaultProvider` and `defaultModel`. Workflow-driven Sol↔Terra switches never change either durable default. Missing models, credentials, malformed settings, or settings-write failures leave the applicable values unchanged and show a warning.
 
-## Planning gate
+## Planning workflow and mutation guard
 
-Planning exposes only registered inspection/research/question tools plus `show_plan`. Unknown custom tools and implementation workflow tools are hidden. Direct mutation tools are blocked again at `tool_call` as defense in depth.
+`show_plan` stays registered and active in normal, guarded, and executing parent conversations. The execution tools stay hidden outside an approved run. Child workers and questionnaire discussion children do not receive `show_plan`.
 
-Bash and user `!`/`!!` commands use a **known-mutator denylist**. Redirects and recognized filesystem, Git, package-manager, process/service, archive, download, and editor mutations are rejected, including common wrappers, chains, substitutions, and nested `sh -c` forms. Unclassified commands are deliberately allowed. This is fail-open and is not a security boundary.
+When the guard is enabled, Pi exposes only registered inspection, research, and question tools, plus `show_plan`. Unknown custom tools and implementation workflow tools are hidden. Pi blocks direct mutation tools again at `tool_call` as defense in depth.
 
-The per-turn planner prompt adapts `grill-with-docs` to read-only planning: terminology and ADR/CONTEXT decisions become plan tasks rather than inline writes. It also overrides the skill's one-question-at-a-time cadence unless explicitly requested, collecting blockers while useful investigation remains and then asking them together in one batch.
+Bash and user `!`/`!!` commands use a **known-mutator denylist**. The guard rejects redirects and recognized mutation commands. This includes common wrappers, chains, substitutions, and nested `sh -c` forms. Unclassified commands are deliberately allowed. This policy is fail-open and is not a security boundary.
+
+The guarded per-turn prompt adapts `grill-with-docs` to read-only planning. Terminology and ADR/CONTEXT decisions become plan tasks, not inline writes. The prompt keeps the full canonical-format instructions. It collects blockers while useful investigation remains and asks them together in one batch. It uses one-question-at-a-time only when the user requests that format.
+
+Outside the guard, repository and tool guidance encourages deliberate investigation and `show_plan` for non-trivial work. Candidate presentation remains optional. The model does not end useful exploration or present an unfinished candidate only because a turn is ending.
 
 ## Plan files and schema
 
@@ -37,7 +46,9 @@ Validated plans are saved under:
 
 `<project>/.pi/plans/YYYYMMDD_<intent-slug>.md`
 
-`YYYYMMDD` is the local calendar date when a new target is first allocated; revisions retain their recorded path. The model never supplies an output path. Slugs are bounded kebab-case; unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks, enforce a 256 KiB plan limit, use a same-directory temporary file and atomic replacement, and retain the last validated revision on failure.
+`YYYYMMDD` is the local calendar date when a new target is first allocated. Discussion and review revisions retain the current validated path. After implementation handoff, the next candidate gets a new durable path. The extension infers this lineage from workflow lifecycle state, not titles or a model-supplied flag.
+
+The model never supplies an output path. Slugs are bounded kebab-case. Unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks. They enforce a 256 KiB plan limit and use atomic replacement in the same directory. A failed write retains the last validated revision.
 
 Every plan uses this canonical Markdown contract:
 
@@ -69,7 +80,9 @@ Each Part describes one coherent behavior boundary: dependencies, scope, edge ca
 
 Concrete anchors such as paths, symbols, flags, external interfaces, and data shapes are welcome when research established a constraint or they materially reduce ambiguity. They should be selective and rationale-driven. `Critical Files` is not an exhaustive inventory, and plans still reject mandatory target/tool metadata, exhaustive file lists, and tool-call recipes.
 
-Parts initialize `pending`. Runtime statuses are `pending`, `in_progress`, `completed`, and `blocked`, persisted only in extension-managed `Ledger` metadata. A trailing `Part Progress` report is generated from that metadata without changing approved Part headings or authored content. Other Markdown shapes are rejected; saved historical plan files remain untouched but cannot be resumed or executed.
+Parts initialize as `pending` unless `show_plan` supplies valid initial progress. Runtime statuses are `pending`, `in_progress`, `completed`, and `blocked`. The extension persists these statuses only in managed `Ledger` metadata. Terminal initial statuses require evidence, and blocked Parts require a note.
+
+A trailing `Part Progress` report comes from that metadata. It does not change approved Part headings or authored content. Other Markdown shapes are rejected. Saved historical plan files remain untouched but cannot be resumed or executed.
 
 Representative behavior-changing plan:
 
@@ -112,7 +125,17 @@ A documentation-only or investigative plan uses the same `Context` and `Approach
 
 ## Candidate lifecycle
 
-The planner may inspect, answer, and ask questions across any number of turns. It calls `show_plan` only when every blocker is resolved and the complete candidate is ready; ending a turn never requires a plan display. Showing persists and renders one candidate, then opens one decision dialog while status remains `[PLANNING]`. **Discuss** clears the pending nonce and sends open-ended feedback: the planner can answer or investigate without re-showing a plan, and calls `show_plan` later only for a ready revision. Any ordinary user input while a candidate is pending has the same discussion effect. Automatic threshold/overflow compaction is deferred while that decision waits; manual `/compact` remains available.
+The planner can inspect, answer, and ask questions across any number of turns. It calls `show_plan` only when every blocker is resolved and the complete candidate is ready. Ending a turn does not require candidate presentation.
+
+A successful `show_plan` call saves and renders one candidate. It also enables the mutation guard and opens one decision dialog. A validation or persistence failure leaves the prior guard, candidate, and execution unchanged.
+
+**Discuss** clears the pending nonce and sends open-ended feedback. The planner can answer or investigate without immediate resubmission. A later ready revision uses the same validated file. A review revision follows the same rule. Any ordinary user input while a candidate is pending has the same discussion effect.
+
+After handoff to implementation, a later candidate gets a new durable file. If an active or paused run exists, successful presentation marks that run as superseded. The old session entries and plan file remain as durable history. A failed presentation does not supersede the run. The extension does not run concurrent or stacked workflows.
+
+`show_plan` can include optional initial progress for each Part. The extension validates Part IDs, uniqueness, statuses, notes, and required terminal evidence. It writes progress only to managed Ledger metadata and the generated Part Progress report. Model-authored managed progress Markdown remains invalid.
+
+Automatic threshold or overflow compaction waits while a candidate decision is pending. Manual `/compact` remains available. Pending actions remain valid if the user later disables the guard. `/plan-actions` can reopen them in either guard state.
 
 ## Approval actions
 
@@ -121,7 +144,7 @@ The complete saved plan is rendered as a durable transcript block, then the acti
 - **Implement plan** — execute all stages without ordinary stage pauses.
 - **Implement (fast)** — create a source-equivalent parallel revision, then start it without another approval dialog.
 - **Implement in stages** — hard pause after every derived stage (one Part per stage).
-- **Discuss** — send exact free-form revision feedback while remaining gated.
+- **Discuss** — send exact free-form revision feedback without starting implementation or changing the current guard choice.
 - **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
 **Implement plan** remains first and is the default action. Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
@@ -150,13 +173,15 @@ If a current execution is restored without its boundary marker, the extension re
 
 To recover an affected existing session, first stop the loop. Deploy the extension, then use `/reload` or restart Pi. The extension restores the persisted workflow state and continues without editing or deleting the session JSONL file.
 
-The original active tools are restored by registered-name intersection, with execution-only tools added:
+The extension preserves the implementation-tool baseline independently of the always-available `show_plan` tool. It restores that baseline by registered-name intersection, with execution-only tools added:
 
 - `plan_progress` — legal one-task status transitions with notes/evidence.
 - `complete_plan` — terminal whole-plan validation.
 - `complete_stage` — current-stage validation and mandatory checkpoint.
 
-Ledger writes are serialized through Pi's file mutation queue. They atomically update only a Part's managed `Ledger` line and the trailing generated report. The approved Part heading and authored body remain immutable. Any other plan-content drift stops the update. The live widget and saved report list Parts in document order with the same status icon and title-only label. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent. The parent is the only ledger writer.
+Ledger writes are serialized through Pi's file mutation queue. They atomically update only a Part's managed `Ledger` line and the trailing generated report. The approved Part heading and authored body remain immutable. Any other plan-content drift stops the update. The live widget and saved report list Parts in document order with the same status icon and title-only label.
+
+Execution starts at the first nonterminal Part. It skips completed and blocked Parts and retains their evidence. It continues an in-progress Part without replaying its initial transition. If all Parts are terminal, execution reconciles the whole-plan result through `complete_plan` without re-running work. Derived stages govern order and checkpoints but do not add duplicate progress rows. Parallel workers report to the parent implementation agent. The parent is the only ledger writer.
 
 A fast run stays in `executing_all`. Its schedule controls the derived stages. The parent starts every ready Part in a wave. Then it sends one sibling `subagent` call for each Part. Each worker receives its Part, ownership boundary, approved context, acceptance outcomes, and predecessor evidence. Workers use the persisted inference model at high thinking. The parent waits for every worker, records terminal evidence, checks integration, and then starts the next wave. A later wave cannot start before every earlier-wave Part and declared dependency is terminal.
 
@@ -167,7 +192,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 - Reload, resume, and tree navigation restore workflow state and the execution contract matching the active run on the current branch. In-place execution remains in the same session history; unsupported execution records stop safely. Every refresh emits `plan-mode:workflow-state` with the persisted mode and `feedbackPending`, including restored completed sessions and the `complete_plan` transition.
 - After an agent turn settles—or immediately after restoring an idle branch—any unconsumed approval or mandatory checkpoint whose persisted `presented` flag is false opens through the current TUI or RPC context, regardless of whether planning began by command, flag, shortcut, or palette.
 - A decision is marked presented before the extension awaits input, preventing duplicate dialogs. Escape leaves it pending, and `/plan-actions` or `/plan-stage-actions` reopens it manually.
-- TUI mode uses full renderers and structured dialogs. During planning, the global rich statusbar changes only its CWD segment to Catppuccin peach and right-aligns a dark-gray `[PLANNING]` marker.
+- TUI mode uses full renderers and structured dialogs. While the guard is enabled, the rich status bar uses a Catppuccin peach CWD segment and shows a dark-gray `[PLANNING]` marker.
 - RPC uses host select/editor primitives and omits the TUI-only tuicr Review action.
 - Print/JSON validates and saves plans but cannot approve or auto-run.
 - Plan writes are read-back verified. If a validated plan file disappears, approval/review restores it from the matching durable transcript entry before continuing. Resumed executions reconstruct missing plan-item titles and backfill the Part report from the durable approved plan and ledger.
@@ -178,7 +203,7 @@ Staged checkpoints offer Continue, feedback/fixes, summary review, and Stop. Fee
 
 There are three distinct layers:
 
-1. **Workflow gate:** hides model mutation tools and rejects known shell mutations during planning.
+1. **Mutation guard:** hides model mutation tools and rejects known shell mutations while the guard is enabled.
 2. **Trusted writes:** this extension writes the active plan/ledger; tuicr receives only a disposable isolated snapshot.
 3. **SRT tool routing tool boundary:** the trusted host control plane runs Pi, reviewed extensions, model access, sessions, and the controller. The guest tool plane runs routed built-in file and Bash operations. Trusted-provenance host adapters remain on the host.
 

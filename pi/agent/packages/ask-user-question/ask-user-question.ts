@@ -55,6 +55,10 @@ function emitAskUserBlockedEvent(pi: ExtensionAPI, active: boolean): void {
 /** Canonical tool name — single source of truth shared with the reconcile module. */
 export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
 
+// Consume the plan extension's structural event contract without importing its
+// implementation, so this package remains independently typecheckable.
+const PLAN_MODE_WORKFLOW_STATE_EVENT = "plan-mode:workflow-state";
+
 const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
 
 const ERROR_NO_CUSTOM_UI =
@@ -128,6 +132,10 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 
 export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
+	let planningGuardActive = false;
+	pi.events.on(PLAN_MODE_WORKFLOW_STATE_EVENT, (data: unknown) => {
+		planningGuardActive = (data as { mode?: string } | undefined)?.mode === "planning";
+	});
 	pi.registerTool({
 		name: ASK_USER_QUESTION_TOOL_NAME,
 		label: "Ask User Question",
@@ -289,6 +297,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 										model: { provider: model.provider, id: model.id },
 										thinkingLevel: ctx.thinkingLevel ?? "off",
 										activeTools: pi.getActiveTools(),
+										planningGuardActive,
 										projectTrusted: ctx.isProjectTrusted(),
 										tui,
 										signal: controller.signal,

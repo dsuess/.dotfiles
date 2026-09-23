@@ -8,14 +8,22 @@ concepts do not exist.
 
 ### 1. Think and Plan Deliberately
 
-- For any non-trivial task, use Pi's integrated planning mode before editing:
-  enter it with `/plan <goal>` (or `--plan` at startup), investigate, and submit
-  the plan with `show_plan`. Treat its saved `.pi/plans/` document and
-  persistent ledger as the sole plan record.
-- Never self-roll a plan file with `write`, `edit`, or Bash. In particular, do
-  not create `./plans/` or choose a plan-file path yourself. If integrated plan
-  mode is unavailable, keep a concise, checkable plan in the conversation and
-  state that the extension was unavailable.
+- For every non-trivial task, investigate the repository context and plan
+  deliberately before editing.
+- From any conversation state, normally present a complete candidate with the
+  model-only `show_plan` tool before implementation. This action is optional,
+  not a prerequisite for every task. Never call it only because a turn is
+  ending. Continue useful exploration until the candidate is ready.
+- `/plan`, `/plan off`, Shift+Tab, and the palette are user controls for the
+  mutation guard. Do not invoke or synthesize these slash commands. A successful
+  `show_plan` call activates the guard and opens the candidate actions.
+- Treat the mutation guard and durable planning workflow as independent state.
+  Guard changes do not discard a candidate, approval, or execution record.
+- If you use `show_plan`, treat its saved `.pi/plans/` document and persistent
+  ledger as the sole plan record. Never create a plan file with `write`, `edit`,
+  or Bash. Do not create `./plans/` or choose a plan-file path yourself.
+- If `show_plan` is unavailable, keep a concise, checkable plan in the
+  conversation and state that the integrated workflow is unavailable.
 - Treat a task as non-trivial when it has three or more steps, touches multiple
   files, changes architecture, or has meaningful verification risk.
 - For large or ambiguous work, spell out the expected behavior and state

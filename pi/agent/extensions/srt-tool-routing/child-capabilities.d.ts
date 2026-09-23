@@ -12,4 +12,9 @@ export function splitChildCapabilities(
   options?: { excluded?: Iterable<string> },
 ): ChildCapabilities;
 
+export function isInheritedPlanningMode(
+  guardActive?: boolean,
+  systemPrompt?: string,
+): boolean;
+
 export function childToolCliArgs(capabilities: ChildCapabilities): string[];

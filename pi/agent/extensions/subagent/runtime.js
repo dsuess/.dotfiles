@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
 	childToolCliArgs,
+	isInheritedPlanningMode as detectInheritedPlanningMode,
 	splitChildCapabilities,
 } from "../srt-tool-routing/child-capabilities.js";
 
@@ -153,8 +154,8 @@ export function filterChildTools(activeTools = []) {
 	return [...capabilities.builtins, ...capabilities.hostAdapters];
 }
 
-export function isInheritedPlanningMode(activeTools = [], systemPrompt = "") {
-	return activeTools.includes("show_plan") && /\[PI PLANNING MODE ACTIVE\]/.test(systemPrompt);
+export function isInheritedPlanningMode(guardActive = false, systemPrompt = "") {
+	return detectInheritedPlanningMode(guardActive, systemPrompt);
 }
 
 export function createJsonlParser({ onEvent, onMalformed } = {}) {

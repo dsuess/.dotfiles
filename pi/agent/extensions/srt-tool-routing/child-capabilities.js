@@ -16,10 +16,6 @@ export const AUDITED_CHILD_HOST_ADAPTERS = Object.freeze([
   "ketch_crawl",
   "ask_user_question",
   "subagent",
-  "show_plan",
-  "plan_progress",
-  "complete_plan",
-  "complete_stage",
 ]);
 
 const BUILTINS = new Set(SRT_ROUTING_CHILD_BUILTINS);
@@ -41,6 +37,10 @@ export function splitChildCapabilities(activeTools = [], options = {}) {
     hostAdapters: Object.freeze([...new Set(hostAdapters)]),
     rejected: Object.freeze([...new Set(rejected)]),
   });
+}
+
+export function isInheritedPlanningMode(guardActive = false, systemPrompt = "") {
+  return guardActive === true && /\[PI PLANNING MODE ACTIVE\]/.test(systemPrompt);
 }
 
 export function childToolCliArgs(_capabilities) {

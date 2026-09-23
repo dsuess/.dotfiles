@@ -16,6 +16,7 @@ const {
 const { registerSandboxTools, SRT_ROUTING_BUILTIN_NAMES } = await jiti.import(
   new URL("./tools.ts", import.meta.url).pathname,
 );
+const { splitChildCapabilities } = await import("./child-capabilities.js");
 const pi0842 = await import(
   new URL("../../packages/ask-user-question/node_modules/@earendil-works/pi-coding-agent/dist/index.js", import.meta.url)
 );
@@ -89,6 +90,38 @@ test("trusted package provenance accepts package source and metadata version dri
     },
   };
   assert.equal(isTrustedHostAdapter(tool, manifest), true);
+});
+
+test("show_plan retains trusted parent-host provenance", () => {
+  const manifest = createHostAdapterManifest({ agentDir: AGENT_DIR });
+  const sourceInfo = {
+    path: path.join(AGENT_DIR, "extensions", "plan-mode", "index.ts"),
+    source: "auto",
+    scope: "user",
+    origin: "top-level",
+    baseDir: AGENT_DIR,
+  };
+  assert.equal(isTrustedHostAdapter({ name: "show_plan", parameters: {}, sourceInfo }, manifest), true);
+  assert.equal(isTrustedHostAdapter({
+    name: "show_plan",
+    parameters: {},
+    sourceInfo: { ...sourceInfo, scope: "project" },
+  }, manifest), false);
+
+  const verified = verifyToolInventory([
+    ...replacementTools(),
+    { name: "show_plan", parameters: {}, sourceInfo },
+  ], { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR, manifest });
+  assert.equal(verified.allowedNames.has("show_plan"), true);
+});
+
+test("workflow tools are parent-only child capabilities", () => {
+  const capabilities = splitChildCapabilities([
+    "read", "show_plan", "plan_progress", "complete_plan", "complete_stage", "ketch_search",
+  ]);
+  assert.deepEqual(capabilities.builtins, ["read"]);
+  assert.deepEqual(capabilities.hostAdapters, ["ketch_search"]);
+  assert.deepEqual(capabilities.rejected, ["show_plan", "plan_progress", "complete_plan", "complete_stage"]);
 });
 
 test("trusted host adapters reject every provenance-boundary mismatch", (t) => {

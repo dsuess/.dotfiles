@@ -56,7 +56,7 @@ export interface CompletedStageV1 { stageId: string; summary: string; changedFil
 export interface TestEvidenceV1 { command: string; result: "passed" | "failed" | "not_run"; summary: string; }
 export interface ParallelWorkerV1 { workerId: string; runId?: string; sessionId?: string; stageIds: string[]; summary?: string; }
 
-export interface PlanModeExecutionV2 {
+export interface PlanModeExecutionV3 {
 	mode: ExecutionMode;
 	strategy: ExecutionStrategy;
 	startedAt: string | null;
@@ -67,18 +67,18 @@ export interface PlanModeExecutionV2 {
 	active: boolean;
 }
 
-export interface PlanModeStateV2 {
-	version: 2;
+export interface PlanModeStateV3 {
+	version: 3;
 	/** Planning gates tools; normal exposes implementation tools when execution is active. */
 	mode: WorkflowMode;
 	/** Terminal workflow result, independent of the interaction mode. */
 	outcome: WorkflowOutcome | null;
 	originalActiveTools: string[];
 	plan: PlanReferenceV1 | null;
-	/** A validated candidate's action nonce. It remains in planning mode until consumed. */
+	/** A validated candidate's durable action nonce, independent of the mutation guard. */
 	approval: ApprovalTokenV1 | null;
 	optimization: FastOptimizationV1 | null;
-	execution: PlanModeExecutionV2 | null;
+	execution: PlanModeExecutionV3 | null;
 	ledger: Record<string, LedgerItemV1>;
 	currentStageId: string | null;
 	checkpoint: { nonce: string; stageId: string; consumed: boolean; presented: boolean } | null;
@@ -90,7 +90,7 @@ export interface PlanModeStateV2 {
 	lastAction: string | null;
 }
 
-export type PlanModeState = PlanModeStateV2;
+export type PlanModeState = PlanModeStateV3;
 export interface TransitionError { code: string; message: string; }
 export type TransitionResult = { ok: true; state: PlanModeState } | { ok: false; state: PlanModeState; error: TransitionError };
 
@@ -98,13 +98,13 @@ export interface PlanSubmission {
 	path: string; slug: string; hash: string; title: string; intent: string; approvalNonce: string;
 	executionStrategy?: ExecutionStrategy;
 	stages: Array<{ id: string; description: string; taskIds: string[]; parallelExecution?: ParallelExecutionStageV1 }>;
-	tasks: Array<{ id: string; title: string; status: TaskStatus }>;
+	tasks: Array<{ id: string; title: string; status: TaskStatus; note?: string | null; evidence?: string | null }>;
 }
 
 export {
 	LEGAL_MODE_TRANSITIONS, PLAN_MODE_STATE_ENTRY, PLAN_MODE_STATE_VERSION, TASK_STATUSES, WORKFLOW_MODES,
 	acceptFastOptimization, approveExecution, beginFastOptimization, blockWorkflow, completeWorkflow,
-	createInitialState, enterPlanning, exitPlanning, getStageTaskIds, hasDurableFeedbackPending,
+	createInitialState, enterPlanning, exitPlanning, getNextNonterminalStageId, getStageTaskIds, hasDurableFeedbackPending,
 	hasPendingApproval, isActiveExecution, isPlanModeState, isPlanning, isStagedExecution, migrateState,
 	recordInvalidSubmission, recordStageCheckpoint, recordTaskProgress, requestRevision,
 	resetInvalidSubmissions, resolveStageCheckpoint, resumeExecution, restoreFastOptimization,

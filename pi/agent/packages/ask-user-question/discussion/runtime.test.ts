@@ -114,6 +114,7 @@ describe("discussion fork runtime", () => {
         model: { provider: "provider", id: "model" },
         thinkingLevel: "high",
         activeTools: ["read", "edit", "ask_user_question", "subagent", "show_plan"],
+        planningGuardActive: true,
         projectTrusted: true,
         tui,
         thread,
@@ -190,17 +191,19 @@ describe("discussion fork runtime", () => {
       multiSelect: false,
       parentSessionFile: parent.getSessionFile(),
       parentToolCallId: "tool-1",
-      systemPrompt: "Parent instructions",
+      systemPrompt: "Parent instructions\n[PI PLANNING MODE ACTIVE]",
       cwd: process.cwd(),
       model: { provider: "provider", id: "model" },
       thinkingLevel: "off",
-      activeTools: [],
+      activeTools: ["show_plan"],
+      planningGuardActive: false,
       projectTrusted: true,
       tui: { stop: vi.fn(), start: vi.fn(), renderNow: vi.fn() },
       thread,
       lastConsumedResolutionId: "already-consumed",
     }, {
-      spawnProcess: vi.fn(() => {
+      spawnProcess: vi.fn((_command, _args, options) => {
+        expect((options?.env as Record<string, string>)["PI_SUBAGENT_PLANNING"]).toBeUndefined();
         queueMicrotask(() => child.close(0));
         return child;
       }),

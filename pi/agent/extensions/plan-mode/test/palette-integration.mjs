@@ -135,7 +135,7 @@ function assertPlanningFooter(message) {
 for (const handler of lifecycleHandlers.get("session_start") ?? []) {
 	await handler({ reason: "startup" }, ctx);
 }
-assert.deepEqual(activeTools, originalActiveTools, "workflow tools start hidden");
+assert.deepEqual(activeTools, [...originalActiveTools, "show_plan"], "normal startup exposes only candidate presentation");
 assertNormalFooter("normal startup");
 assert.match(renderFooter(), /unknown.*\[high\]/, "statusbar shows the current thinking level after the model name");
 
@@ -172,8 +172,8 @@ for (const width of [0, 1, 9, 10, 11, 24, 80]) {
 
 await openPalette(ctx);
 states = appended.filter((entry) => entry.customType === "plan-mode-state");
-assert.equal(states.at(-1)?.data.mode, "off", "second palette Plan selection disables planning");
-assert.deepEqual(activeTools, originalActiveTools, "second selection restores the original tools");
+assert.equal(states.at(-1)?.data.mode, "normal", "second palette Plan selection disables planning");
+assert.deepEqual(activeTools, [...originalActiveTools, "show_plan"], "second selection restores the baseline plus presentation");
 assert.equal(queued.some(({ message }) => message === "/plan"), false, "direct toggling never queues /plan");
 assertNormalFooter("direct planning exit");
 
@@ -195,8 +195,8 @@ for (const handler of lifecycleHandlers.get("session_tree") ?? []) {
 assertPlanningFooter("restored approval");
 await openPalette(ctx);
 states = appended.filter((entry) => entry.customType === "plan-mode-state");
-assert.equal(states.at(-1)?.data.mode, "off", "palette selection exits pending approval");
-assert.deepEqual(activeTools, originalActiveTools, "exiting approval restores the original tools");
+assert.equal(states.at(-1)?.data.mode, "normal", "palette selection exits pending approval");
+assert.deepEqual(activeTools, [...originalActiveTools, "show_plan"], "exiting approval restores the baseline plus presentation");
 assertNormalFooter("approval exit");
 
 const executionState = stateModule.approveExecution(approvalState, "nonce", "all").state;
@@ -215,16 +215,12 @@ for (const handler of lifecycleHandlers.get("session_tree") ?? []) {
 	await handler({ reason: "tree" }, ctx);
 }
 assertNormalFooter("execution restoration");
-const entryCountBeforeExecutionToggle = appended.length;
-notifications.length = 0;
 await openPalette(ctx);
-assert.equal(appended.length, entryCountBeforeExecutionToggle, "execution rejection does not persist a transition");
-assert.equal(activeTools.includes("plan_progress"), true, "execution tools remain active after rejection");
-assert.equal(
-	notifications.some(({ message, level }) => level === "warning" && /not allowed while workflow mode is executing_all/.test(message)),
-	true,
-	"execution selection surfaces the existing invalid-transition warning",
-);
+states = appended.filter((entry) => entry.customType === "plan-mode-state");
+assert.equal(states.at(-1)?.data.mode, "planning", "palette can gate an active execution without ending it");
+assert.equal(states.at(-1)?.data.execution.active, true, "guarding preserves active execution state");
+assert.equal(activeTools.includes("plan_progress"), false, "the guard takes priority over execution tools");
+assert.equal(activeTools.includes("show_plan"), true, "candidate presentation remains available while execution is guarded");
 assert.equal(queued.some(({ message }) => message === "/plan"), false, "edge-case toggles never queue /plan");
 
 appended.push({ type: "custom", customType: "plan-mode-state", data: stateModule.createInitialState() });
@@ -235,5 +231,5 @@ await commands.get("plan").handler("", ctx);
 assert.equal(appended.at(-1)?.data.mode, "planning", "explicit /plan still enters planning");
 assertPlanningFooter("explicit planning entry");
 await commands.get("plan").handler("off", ctx);
-assert.equal(appended.at(-1)?.data.mode, "off", "explicit /plan off still exits planning");
+assert.equal(appended.at(-1)?.data.mode, "normal", "explicit /plan off still exits planning");
 assertNormalFooter("explicit planning exit");

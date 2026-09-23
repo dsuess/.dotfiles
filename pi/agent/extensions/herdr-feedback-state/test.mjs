@@ -82,15 +82,15 @@ test("keeps the aggregate blocked for every overlap and clear order", async () =
 		ui.custom = () => custom.promise;
 		const harness = createHarness(ui);
 		await harness.lifecycle("session_start");
-		harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "approval", feedbackPending: true });
+		harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "normal", feedbackPending: true });
 		harness.emitEvent(ASK_USER_BLOCKED_EVENT, { active: true });
 		const uiWait = ui.custom(() => undefined);
 
 		if (clearQuestionnaireFirst) {
 			harness.emitEvent(ASK_USER_BLOCKED_EVENT, { active: false });
-			harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "executing_all", feedbackPending: false });
+			harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "planning", feedbackPending: false });
 		} else {
-			harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "executing_all", feedbackPending: false });
+			harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "planning", feedbackPending: false });
 			harness.emitEvent(ASK_USER_BLOCKED_EVENT, { active: false });
 		}
 		assert.deepEqual(harness.reports, [WAITING]);
@@ -162,7 +162,7 @@ test("restores durable workflow state but retires transient waits on replacement
 	const pending = deferred();
 	firstUI.editor = () => pending.promise;
 	const harness = createHarness(firstUI);
-	harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "approval", feedbackPending: true });
+	harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "normal", feedbackPending: true });
 	await harness.lifecycle("session_start");
 	const retired = firstUI.editor("feedback");
 	harness.emitEvent(ASK_USER_BLOCKED_EVENT, { active: true });
@@ -173,7 +173,7 @@ test("restores durable workflow state but retires transient waits on replacement
 	await retired;
 	await nextTurn();
 	assert.deepEqual(harness.reports, [WAITING, { active: false }, WAITING]);
-	harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "executing_all", feedbackPending: false });
+	harness.emitEvent(PLAN_MODE_WORKFLOW_STATE_EVENT, { mode: "planning", feedbackPending: false });
 	assert.deepEqual(harness.reports, [WAITING, { active: false }, WAITING, { active: false }]);
 });
 

@@ -124,6 +124,7 @@ async function createHarness({
 	return {
 		cwd, handlers, events, commands, shortcuts, tools, entries, timeline, sentUserMessages, sentMessages, notifications, reviewInvocations, workflowStates, ctx, emit,
 		getActiveTools: () => [...activeTools],
+		getActiveModel: () => activeModel,
 		latestState: () => entries.filter((entry) => entry.customType === "plan-mode-state").at(-1)?.data,
 		async cleanup() { await rm(cwd, { recursive: true, force: true }); },
 	};
@@ -180,25 +181,125 @@ test("candidate stays in planning, defers automatic compaction, and ordinary inp
 	} finally { await harness.cleanup(); }
 });
 
-test("Escape keeps approval pending and manual reopening remains available", async () => {
+test("Escape keeps approval pending across guard-off, reload, and tree restoration without duplicate dialogs", async () => {
 	const harness = await createHarness({ actions: ["cancel", "cancel"] });
 	try {
 		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.workflowStates.at(-1).feedbackPending, true);
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "feedback wait is independent of the guard");
 		await harness.emit("session_tree");
+		await harness.emit("session_start", { reason: "reload" });
+		await Promise.resolve();
 		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "restoration retains the durable approval wait");
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1, "presented approval does not auto-open twice");
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 	} finally { await harness.cleanup(); }
 });
 
-test("ordinary startup restores the off state without exposing workflow tools", async () => {
+test("ordinary startup exposes only the presentation workflow tool", async () => {
 	const harness = await createHarness();
 	try {
 		assert.equal(harness.latestState(), undefined);
-		assert.equal(harness.getActiveTools().includes("show_plan"), false);
+		assert.equal(harness.getActiveTools().includes("show_plan"), true);
 		assert.equal(harness.getActiveTools().includes("plan_progress"), false);
+		assert.equal(harness.getActiveTools().includes("complete_plan"), false);
+	} finally { await harness.cleanup(); }
+});
+
+test("show_plan from a normal parent snapshots the implementation baseline and enables the guard", async () => {
+	const harness = await createHarness({ actions: ["cancel"] });
+	try {
+		const result = await harness.tools.get("show_plan").execute("submit-normal", {
+			intent: "Make approval reliable",
+			title: "Add Reliable Cache Invalidation",
+			markdown: PART_PLAN,
+			progress: [{ partId: "A", status: "completed", evidence: "Contract review passed" }],
+		}, undefined, undefined, harness.ctx);
+		assert.equal(result.details.accepted, true);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.deepEqual(harness.latestState().originalActiveTools, ["read", "bash", "edit", "write", "custom_tool"]);
+		assert.deepEqual(harness.latestState().ledger.A, { status: "completed", note: null, evidence: "Contract review passed" });
+		assert.equal(harness.getActiveTools().includes("edit"), false);
+		assert.equal(harness.getActiveTools().includes("show_plan"), true);
+		assert.match(await readFile(result.details.path, "utf8"), /- ☑ Define cache consistency/);
+	} finally { await harness.cleanup(); }
+});
+
+test("discussion with the guard off preserves the guard and revises the validated path", async () => {
+	const harness = await createHarness({ actions: ["cancel"] });
+	try {
+		const first = await submit(harness);
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		assert.equal(harness.latestState().mode, "normal");
+		await harness.emit("input", { source: "interactive", text: "Refine the acceptance wording." });
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.latestState().approval, null);
+		const revised = await harness.tools.get("show_plan").execute("submit-revision", {
+			intent: "Make approval reliable",
+			title: "Add Reliable Cache Invalidation",
+			markdown: PART_PLAN.replace("every write outcome", "each write outcome"),
+		}, undefined, undefined, harness.ctx);
+		assert.equal(revised.details.accepted, true);
+		assert.equal(revised.details.path, first.details.path);
+		assert.equal(revised.details.revision, 2);
+		assert.equal(harness.latestState().mode, "planning");
+	} finally { await harness.cleanup(); }
+});
+
+test("guard toggles route planning and inference models while preserving active execution", async () => {
+	const harness = await createHarness({
+		actions: ["run"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		assert.equal(harness.getActiveModel().id, "gpt-5.6-terra", "normal startup uses inference routing");
+		await submit(harness);
+		assert.equal(harness.getActiveModel().id, "gpt-5.6-sol", "successful presentation enables guard routing");
+		await harness.emit("agent_settled");
+		assert.equal(harness.latestState().execution.active, true);
+		assert.equal(harness.getActiveModel().id, "gpt-5.6-terra", "execution uses inference routing");
+		await harness.commands.get("plan").handler("", harness.ctx);
+		assert.equal(harness.latestState().execution.active, true);
+		assert.equal(harness.getActiveModel().id, "gpt-5.6-sol", "guard-on takes planning routing priority");
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		assert.equal(harness.latestState().execution.active, true);
+		assert.equal(harness.getActiveModel().id, "gpt-5.6-terra", "guard-off restores inference routing");
+	} finally { await harness.cleanup(); }
+});
+
+test("failed execution-time presentation preserves the run; success supersedes it onto a new path", async () => {
+	const harness = await createHarness({ actions: ["run"] });
+	try {
+		const first = await submit(harness);
+		await harness.emit("agent_settled");
+		const executing = structuredClone(harness.latestState());
+		assert.equal(executing.execution.active, true);
+		assert.equal(harness.getActiveTools().includes("show_plan"), true);
+
+		const rejected = await harness.tools.get("show_plan").execute("invalid-replacement", {
+			intent: "Replacement",
+			title: "Invalid",
+			markdown: "# Invalid\n",
+		}, undefined, undefined, harness.ctx);
+		assert.equal(rejected.details.accepted, false);
+		assert.equal(harness.latestState().mode, executing.mode);
+		assert.equal(harness.latestState().execution.runId, executing.execution.runId);
+		assert.equal(harness.latestState().plan.path, first.details.path);
+		assert.equal(harness.getActiveTools().includes("plan_progress"), true);
+
+		const replacement = await submit(harness, PART_PLAN.replace("stale entries", "outdated entries"));
+		assert.equal(replacement.details.accepted, true);
+		assert.notEqual(replacement.details.path, first.details.path);
+		assert.equal(harness.latestState().lastAction, "supersede_execution");
+		assert.equal(harness.latestState().execution, null);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.match(await readFile(first.details.path, "utf8"), /stale entries/);
 	} finally { await harness.cleanup(); }
 });
 
@@ -324,6 +425,43 @@ test("fast approval starts an equivalent optimizer revision and queues direct pa
 		assert.equal(contract.workerThinkingLevel, "high");
 		assert.equal(harness.sentMessages.length, 1);
 		assert.match(harness.sentMessages[0].message.content, /one sibling tool batch/i);
+	} finally { await harness.cleanup(); }
+});
+
+test("fast optimization derives persisted optimized progress from source evidence", async () => {
+	const harness = await createHarness({
+		actions: ["fast"],
+		initialTools: ["read", "bash", "edit", "write", "subagent", "custom_tool"],
+		model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+	});
+	try {
+		await enterThrough(harness, "command");
+		await harness.tools.get("show_plan").execute("source", {
+			intent: "Make approval reliable",
+			title: "Add Reliable Cache Invalidation",
+			markdown: PART_PLAN,
+			progress: [
+				{ partId: "A", status: "completed", evidence: "contract test passed" },
+				{ partId: "B", status: "in_progress", note: "implementation started", evidence: "baseline passed" },
+				{ partId: "C", status: "blocked", note: "fixture unavailable", evidence: "fixture probe failed" },
+			],
+		}, undefined, undefined, harness.ctx);
+		await harness.emit("agent_settled");
+		const optimized = await submit(harness, PART_PARALLEL_PLAN);
+		assert.equal(optimized.details.accepted, true);
+		assert.deepEqual(harness.latestState().ledger, {
+			A: { status: "completed", note: null, evidence: "contract test passed" },
+			B: { status: "in_progress", note: "implementation started", evidence: "baseline passed" },
+			C: { status: "blocked", note: "fixture unavailable", evidence: "fixture probe failed" },
+		});
+		assert.equal(harness.latestState().currentStageId, "B");
+		const saved = await readFile(optimized.details.path, "utf8");
+		assert.match(saved, /Part A[^]*"status":"completed"[^]*"evidence":"contract test passed"/);
+		assert.match(saved, /Part B[^]*"status":"in_progress"[^]*"evidence":"baseline passed"/);
+		assert.match(saved, /Part C[^]*"status":"blocked"[^]*"evidence":"fixture probe failed"/);
+		assert.match(harness.sentMessages.at(-1).message.content, /Terminal Parts to skip.*A \(completed; evidence: contract test passed\)/);
+		assert.match(harness.sentMessages.at(-1).message.content, /already in_progress.*B/);
+		assert.match(harness.sentMessages.at(-1).message.content, /current ready wave is 1: B/);
 	} finally { await harness.cleanup(); }
 });
 
@@ -621,10 +759,15 @@ test("stale approval tokens do not open or consume the active decision", async (
 	} finally { await harness.cleanup(); }
 });
 
-test("RPC hosts receive the state-driven approval dialog", async () => {
+test("RPC hosts receive the state-driven approval dialog with the guard off", async () => {
 	const harness = await createHarness({ mode: "rpc", actions: ["cancel"] });
 	try {
-		await enterThrough(harness, "palette"); await submit(harness); await harness.emit("agent_settled");
+		await enterThrough(harness, "palette");
+		await submit(harness);
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.latestState().approval.consumed, false);
+		await harness.emit("agent_settled");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
 	} finally { await harness.cleanup(); }
 });
@@ -691,8 +834,17 @@ test("mandatory staged checkpoints open from state without synthetic commands", 
 		assert.equal(harness.latestState().checkpoint.presented, true);
 		assert.equal(harness.workflowStates.at(-1).feedbackPending, true);
 		assert.equal(harness.sentUserMessages.some(({ message }) => /^\/plan-stage-actions\b/.test(message)), false);
+		await harness.commands.get("plan").handler("", harness.ctx);
+		assert.equal(harness.latestState().mode, "planning");
+		assert.equal(harness.latestState().execution.active, true);
+		assert.equal(harness.latestState().checkpoint.consumed, false);
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "guard-on retains the checkpoint wait");
 		await harness.emit("session_tree");
-		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "restoration retains the durable checkpoint wait");
+		await Promise.resolve();
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1, "guarded restoration does not duplicate the checkpoint dialog");
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.workflowStates.at(-1).feedbackPending, true, "guard-off retains the checkpoint wait");
 		await harness.commands.get("plan-stage-actions").handler("", harness.ctx);
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 	} finally { await harness.cleanup(); }

@@ -24,11 +24,11 @@ import {
 	type InPlaceExecutionContract,
 } from "./execution.ts";
 import {
+	composeActiveTools,
 	evaluatePlanningToolCall,
 	getPlanningToolNames,
-	getRestorableTools,
+	PRESENTATION_TOOLS,
 	snapshotActiveTools,
-	WORKFLOW_TOOLS,
 } from "./planning-gate.js";
 import { synchronizeLedgerMarkdown } from "./ledger.js";
 import {
@@ -59,6 +59,7 @@ import {
 	createInitialState,
 	enterPlanning,
 	exitPlanning,
+	getNextNonterminalStageId,
 	getStageTaskIds,
 	hasDurableFeedbackPending,
 	recordInvalidSubmission,
@@ -262,14 +263,19 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		verifySandboxToolComposition("planning gate");
 	}
 
-	function hideWorkflowTools(): void {
-		pi.setActiveTools(pi.getActiveTools().filter((name) => !WORKFLOW_TOOLS.has(name)));
-		verifySandboxToolComposition("workflow-tool hide");
+	function applyPresentationTools(ctx?: ExtensionContext): void {
+		const baseline = state.originalActiveTools.length > 0 ? state.originalActiveTools : snapshotOriginalTools();
+		const { active, missing } = composeActiveTools(baseline, PRESENTATION_TOOLS, allToolNames());
+		pi.setActiveTools(active);
+		verifySandboxToolComposition("presentation-tool composition");
+		if (missing.length > 0 && ctx?.hasUI) {
+			ctx.ui.notify(`Plan mode: tools no longer registered and not restored: ${missing.join(", ")}`, "warning");
+		}
 	}
 
 	function restoreOriginalTools(ctx: ExtensionContext): void {
-		const { restored, missing } = getRestorableTools(state.originalActiveTools, allToolNames());
-		pi.setActiveTools(restored);
+		const { active, missing } = composeActiveTools(state.originalActiveTools, PRESENTATION_TOOLS, allToolNames());
+		pi.setActiveTools(active);
 		verifySandboxToolComposition("original-tool restore");
 		if (missing.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(`Plan mode: tools no longer registered and not restored: ${missing.join(", ")}`, "warning");
@@ -305,9 +311,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		if (missing.length > 0 && ctx?.hasUI) ctx.ui.notify(`Plan execution skipped missing tools: ${missing.join(", ")}`, "warning");
 	}
 
+	function refreshToolComposition(ctx?: ExtensionContext): void {
+		if (isPlanning(state)) applyPlanningGate();
+		else if (isActiveExecution(state)) applyExecutionTools(ctx);
+		else applyPresentationTools(ctx);
+	}
+
 	function refreshWorkflowUI(ctx: ExtensionContext): void {
-		if (isActiveExecution(state)) applyExecutionTools(ctx);
-		else if (state.outcome === "completed" || state.outcome === "blocked") restoreOriginalTools(ctx);
+		refreshToolComposition(ctx);
 		updateStatus(ctx);
 	}
 
@@ -357,9 +368,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			if (ctx.hasUI) ctx.ui.notify(result.error.message, "warning");
 			return;
 		}
-		// Restore against the pre-transition snapshot before replacing state.
-		restoreOriginalTools(ctx);
 		commitTransition(result);
+		refreshToolComposition(ctx);
 		updateStatus(ctx);
 		await applyModelProfile(ctx, modelRouting?.inference, "inference");
 		if (ctx.hasUI) ctx.ui.notify("Planning mode disabled. Original tools restored.", "info");
@@ -519,7 +529,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		const result = requestRevision(state, nonce, "discuss") as TransitionResult;
 		if (!result.ok) { ctx.ui.notify(result.error.message, "warning"); return; }
 		commitTransition(result);
-		applyPlanningGate();
+		refreshToolComposition(ctx);
 		updateStatus(ctx);
 		pi.sendUserMessage(`Revise the saved plan at ${state.plan?.path}. Apply this exact user feedback:\n\n${text}\n\nRe-read the current plan, use grill-with-docs for any newly exposed decision, and submit the complete revised canonical plan with show_plan. Do not implement.`);
 	}
@@ -546,7 +556,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		const result = requestRevision(state, nonce, "review") as TransitionResult;
 		if (!result.ok) { ctx.ui.notify(result.error.message, "warning"); return false; }
 		commitTransition(result);
-		applyPlanningGate();
+		refreshToolComposition(ctx);
 		updateStatus(ctx);
 		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\nPlan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr. Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Respond with one visible resolution block per comment in the supplied original order. In each block, reproduce the exact comment content as a Markdown blockquote, prefixing every line of a multi-line comment with \"> \", and put \`**Resolution:**\` immediately below it. Use this shape:\n\n> Exact user question or comment\n\n**Resolution:** Grounded answer, reconciliation, and plan impact.\n\nThe quoted user text—not an anchor, stable ID, or opaque hash—is the visible label. Stable IDs may support internal inventory checks only: do not present an ID-only bullet or hash-led answer. Inventory and explicitly answer every user question, including natural-language interrogatives and requests for a choice. Ground each resolution in repository evidence, a stated assumption, or a user decision, and say whether it changes the plan. Never silently convert an answerable question into plan text. Batch every user-owned decision that remains open through the normal collect-then-batch clarification workflow. Do not submit while any question or required user decision is open; remain in planning mode until the complete discussion closes.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nBefore show_plan, provide a final complete resolution block for every comment. After every question has an explicit answer or agreed resolution, continue the planning discussion and call show_plan only when the complete revised candidate is ready. Do not edit the saved plan with ordinary mutation tools and do not implement.`);
 		return true;
@@ -604,7 +614,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			for (;;) {
 				const stageId = state.checkpoint?.stageId;
 				if (!stageId) return;
-				const finalStage = state.plan?.stageIds.at(-1) === stageId;
+				const finalStage = getNextNonterminalStageId(state, stageId) === null;
 				const choice = await showStageDialog(ctx, finalStage);
 				if (choice.action === "cancel") return;
 				if (choice.action === "review") {
@@ -686,23 +696,28 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		name: "show_plan",
 		label: "Show Plan",
 		description:
-			"Validate and atomically save a complete canonical planning-mode Markdown document under the current project's .pi/plans directory, then request user approval.",
+			"Validate and atomically save a complete canonical Markdown plan from any parent-conversation state, enable the mutation guard, and request user approval.",
 		promptSnippet: "Submit the complete validated planning document for approval",
 		promptGuidelines: [
-			"Use show_plan only as the final action in Pi planning mode, and include the entire canonical Markdown document.",
+			"Use show_plan only when the complete candidate is ready for approval; include the entire canonical Markdown document.",
 		],
 		parameters: Type.Object({
 			intent: Type.String({ description: "Short intent used to derive the safe plan filename", minLength: 1, maxLength: 16_384 }),
 			title: Type.String({ description: "Exact H1 title from the Markdown plan", minLength: 1, maxLength: 512 }),
 			markdown: Type.String({ description: "Complete canonical Markdown plan", minLength: 1, maxLength: 262_144 }),
-		}),
+			progress: Type.Optional(Type.Array(Type.Object({
+				partId: Type.String({ description: "Canonical Part ID, such as A or B", minLength: 1 }),
+				status: Type.Union([
+					Type.Literal("pending"),
+					Type.Literal("in_progress"),
+					Type.Literal("completed"),
+					Type.Literal("blocked"),
+				]),
+				note: Type.Optional(Type.String({ description: "Required blocker note for blocked Parts", minLength: 1 })),
+				evidence: Type.Optional(Type.String({ description: "Required evidence for completed or blocked Parts", minLength: 1 })),
+			}, { additionalProperties: false }), { description: "Optional extension-managed initial progress for selected Parts" })),
+		}, { additionalProperties: false }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (state.mode !== "planning") {
-				return {
-					content: [{ type: "text", text: `show_plan is unavailable while workflow mode is ${state.mode}.` }],
-					details: { accepted: false, mode: state.mode },
-				};
-			}
 			if (state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS) {
 				return {
 					content: [{ type: "text", text: "Three submissions failed. Wait for new user input before retrying show_plan." }],
@@ -713,6 +728,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			try {
 				const optimizing = state.optimization !== null;
 				let sourceMarkdown: string;
+				let optimizedProgress: Array<{ partId: string; status: "pending" | "in_progress" | "completed" | "blocked"; note?: string; evidence?: string }> | null = null;
 				if (optimizing) {
 					try {
 						sourceMarkdown = await readApprovedPlan(ctx);
@@ -729,14 +745,26 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					if (!equivalent.ok) {
 						throw new PlanStoreError("fast_revision_invalid", "Fast revision changed approved scope or has an invalid parallel schedule", equivalent.errors);
 					}
+					optimizedProgress = equivalent.optimized.parallelExecution.map((assignment) => {
+						const source = state.ledger[assignment.sourcePartId];
+						if (!source) throw new PlanStoreError("fast_revision_invalid", `Fast revision Part ${assignment.partId} has no source progress to preserve`);
+						return {
+							partId: assignment.partId,
+							status: source.status,
+							...(source.note ? { note: source.note } : {}),
+							...(source.evidence ? { evidence: source.evidence } : {}),
+						};
+					});
 				}
+				const canReviseCurrentCandidate = Boolean(state.plan && !state.execution && state.outcome === null);
 				const stored = await persistPlan({
 					cwd: ctx.cwd,
 					configDirName: CONFIG_DIR_NAME,
 					intent: params.intent,
 					title: params.title,
 					markdown: params.markdown,
-					existingPlan: state.plan ? { path: state.plan.path, hash: state.plan.hash } : null,
+					progress: optimizedProgress ?? params.progress ?? [],
+					existingPlan: canReviseCurrentCandidate ? { path: state.plan!.path, hash: state.plan!.hash } : null,
 				});
 				const nonce = randomBytes(18).toString("base64url");
 				const stages = stored.document.stages.map((stage) => ({
@@ -754,7 +782,13 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					} : {}),
 				}));
 				const tasks = getDocumentProgressTasks(stored.document)
-					.map((task) => ({ id: task.id, title: task.title, status: task.status }));
+					.map((task) => ({
+						id: task.id,
+						title: task.title,
+						status: stored.ledger[task.id].status,
+						note: stored.ledger[task.id].note,
+						evidence: stored.ledger[task.id].evidence,
+					}));
 				const submission = {
 					path: stored.path,
 					slug: stored.slug,
@@ -766,9 +800,11 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					stages,
 					tasks,
 				};
+				const transitionSource = structuredClone(state);
+				if (!isPlanning(state)) transitionSource.originalActiveTools = snapshotOriginalTools();
 				const result = (optimizing
-					? acceptFastOptimization(state, submission)
-					: showPlan(state, submission)) as TransitionResult;
+					? acceptFastOptimization(transitionSource, submission)
+					: showPlan(transitionSource, submission)) as TransitionResult;
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
 				approvedPlanMarkdown = stored.markdown;
@@ -787,8 +823,11 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					};
 				}
 				commitTransition(result);
+				executionContract = null;
 				applyPlanningGate();
 				updateStatus(ctx);
+				initializeModelRouting(ctx);
+				await applyModelProfile(ctx, modelRouting?.planning, "planning");
 				return {
 					content: [{
 						type: "text",
@@ -820,11 +859,11 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 						details: { accepted: false, fast: true, attempts, retryLimitReached: true, restoredApproval: restored.ok, ...(validationErrors ? { validationErrors } : {}) },
 					};
 				}
-				applyPlanningGate();
+				refreshToolComposition(ctx);
 				return {
 					content: [{
 						type: "text",
-						text: `${formatStoreError(error)}\nSubmission rejected; planning mode remains active. Attempt ${attempts}/${MAX_INVALID_SUBMISSIONS}.${retryLimitReached ? " Wait for user input before retrying." : " Correct the errors and resubmit the complete plan."}`,
+						text: `${formatStoreError(error)}\nSubmission rejected; the prior guard and workflow remain unchanged. Attempt ${attempts}/${MAX_INVALID_SUBMISSIONS}.${retryLimitReached ? " Wait for user input before retrying." : " Correct the errors and resubmit the complete plan."}`,
 					}],
 					details: { accepted: false, attempts, retryLimitReached, fast: optimizing, ...(validationErrors ? { validationErrors } : {}) },
 				};
@@ -883,14 +922,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 	pi.on("user_bash", async (event) => evaluatePlanningUserBash(event.command));
 
 	pi.on("input", async (event, ctx) => {
-		if (event.source === "extension" || !isPlanning(state)) return;
-		// Any ordinary prompt after a candidate is shown is an open discussion,
-		// not a forced resubmission. It consumes only the decision nonce.
+		if (event.source === "extension") return;
+		// Any ordinary prompt after a candidate is shown opens discussion without
+		// changing the user's current guard choice or discarding the candidate.
 		if (hasPendingApproval(state)) {
 			const discussion = requestRevision(state, state.approval!.nonce, "discuss") as TransitionResult;
 			if (discussion.ok) {
 				commitTransition(discussion);
-				applyPlanningGate();
+				refreshToolComposition(ctx);
 				updateStatus(ctx);
 			}
 			return;
@@ -899,7 +938,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		const result = resetInvalidSubmissions(state) as TransitionResult;
 		if (result.ok && result.state !== state) {
 			commitTransition(result);
-			applyPlanningGate();
+			refreshToolComposition(ctx);
 		}
 	});
 
@@ -1093,11 +1132,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			const result = enterPlanning(state, snapshotOriginalTools()) as TransitionResult;
 			if (result.ok) commitTransition(result);
 		}
-		if (isGated(state)) applyPlanningGate();
-		else if (isActiveExecution(state)) applyExecutionTools(ctx);
-		else if (state.originalActiveTools.length > 0 && ["completed", "blocked"].includes(state.outcome ?? "")) restoreOriginalTools(ctx);
-		else if (state.mode === "normal" && state.lastAction === "exit_planning" && state.originalActiveTools.length > 0) restoreOriginalTools(ctx);
-		else hideWorkflowTools();
+		refreshToolComposition(ctx);
 		initializeModelRouting(ctx);
 		if (isGated(state)) {
 			await applyModelProfile(ctx, modelRouting?.planning, "planning");

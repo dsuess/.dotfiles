@@ -18,7 +18,7 @@ Always commit a plan document in the same commit as the changes that implement i
 
 ## Correction lessons
 
-- Planning UX must use a persistent tool-gated mode and explicit model-directed candidate presentation, not a forced one-response approval phase.
+- Keep durable planning candidates, approvals, and execution records independent of the mutation guard. Use model-directed candidate presentation without coupling workflow state to guard state.
 
 - When a controller setting is read from an environment variable, add it to `spawnController()`'s explicit environment allowlist and test that forwarding.
 

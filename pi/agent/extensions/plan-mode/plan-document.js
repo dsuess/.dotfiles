@@ -353,25 +353,34 @@ function validateCanonicalSectionOrder(h2, errors) {
 }
 
 function parsePartLedger(body, partId, line, errors, allowManagedMetadata) {
+	const pending = { status: "pending", note: null, evidence: null };
 	const rows = unfencedLineRows(body, line);
 	const ledgerRows = rows.filter((row) => /^- \*\*Ledger:\*\*/.test(row.line));
-	if (ledgerRows.length === 0) return "pending";
+	if (ledgerRows.length === 0) return pending;
 	if (ledgerRows.length > 1) {
 		errors.push(error("duplicate_managed_metadata", `Part ${partId} contains more than one managed Ledger row`, ledgerRows[1].number));
-		return "pending";
+		return pending;
 	}
 	if (!allowManagedMetadata) {
 		errors.push(error("managed_metadata_forbidden", `Part ${partId} must not contain author-written Ledger metadata`, ledgerRows[0].number));
-		return "pending";
+		return pending;
 	}
 	const raw = ledgerRows[0].line.replace(/^- \*\*Ledger:\*\*\s*/, "");
 	try {
 		const ledger = JSON.parse(raw);
-		if (!ledger || typeof ledger !== "object" || !STATUS_SET.has(ledger.status)) throw new Error("invalid status");
-		return ledger.status;
+		const note = ledger?.note ?? null;
+		const evidence = ledger?.evidence ?? null;
+		if (
+			!ledger || typeof ledger !== "object" || !STATUS_SET.has(ledger.status) ||
+			(note !== null && (typeof note !== "string" || !note.trim())) ||
+			(evidence !== null && (typeof evidence !== "string" || !evidence.trim())) ||
+			(["completed", "blocked"].includes(ledger.status) && evidence === null) ||
+			(ledger.status === "blocked" && note === null)
+		) throw new Error("invalid ledger");
+		return { status: ledger.status, note, evidence };
 	} catch {
 		errors.push(error("invalid_managed_metadata", `Part ${partId} has malformed extension-managed Ledger metadata`, ledgerRows[0].number));
-		return "pending";
+		return pending;
 	}
 }
 
@@ -445,8 +454,8 @@ function parseCanonicalDocument(lines, headings, titleHeading, errors, options) 
 		if (unfencedLineRows(body, heading.line + 1).some((row) => /^- \*\*(?:Targets|Tools \/ APIs):\*\*/.test(row.line))) {
 			errors.push(error("disallowed_metadata", `Part ${id} must not reintroduce mandatory target or tool inventory metadata`, heading.line));
 		}
-		const status = parsePartLedger(body, id, heading.line + 1, errors, options.allowManagedMetadata !== false);
-		parts.push({ id, status, title, body });
+		const ledger = parsePartLedger(body, id, heading.line + 1, errors, options.allowManagedMetadata !== false);
+		parts.push({ id, ...ledger, title, body });
 	}
 
 	const parallelExecutionHeading = sectionByName.get("Parallel Execution");

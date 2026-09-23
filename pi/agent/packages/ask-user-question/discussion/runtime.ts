@@ -6,6 +6,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   childToolCliArgs,
+  isInheritedPlanningMode,
   splitChildCapabilities,
 } from "../../../extensions/srt-tool-routing/child-capabilities.js";
 import type {
@@ -60,6 +61,7 @@ export interface DiscussionForkRequest {
   model: { provider: string; id: string };
   thinkingLevel: string;
   activeTools: readonly string[];
+  planningGuardActive?: boolean;
   projectTrusted: boolean;
   tui: Pick<TUI, "start" | "stop" | "renderNow">;
   thread?: DiscussionThread;
@@ -399,9 +401,7 @@ export async function runDiscussionFork(
   try {
     files = await makeSecurePromptFile(request.cwd, request.systemPrompt);
     const capabilities = splitChildCapabilities(request.activeTools, { excluded: CHILD_TOOL_EXCLUSIONS });
-    const planningMode =
-      request.activeTools.includes("show_plan") &&
-      /\[PI PLANNING MODE ACTIVE\]/.test(request.systemPrompt);
+    const planningMode = isInheritedPlanningMode(request.planningGuardActive, request.systemPrompt);
     const args = [
       "--session",
       thread.sessionFile,

@@ -10,8 +10,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { parsePlanDocument, replaceManagedProgressReport } from "./plan-document.js";
-import { buildDocumentProgressRows } from "./progress-widget.js";
+import { PLAN_STATUSES, parsePlanDocument } from "./plan-document.js";
+import { synchronizeLedgerMarkdown } from "./ledger.js";
 
 export const MAX_INTENT_BYTES = 16 * 1024;
 export const MAX_SLUG_LENGTH = 64;
@@ -24,6 +24,42 @@ export class PlanStoreError extends Error {
 		this.code = code;
 		this.details = details;
 	}
+}
+
+const PLAN_STATUS_SET = new Set(PLAN_STATUSES);
+
+export function validateInitialProgress(document, progress = []) {
+	if (!Array.isArray(progress)) {
+		throw new PlanStoreError("invalid_progress", "Initial Part progress must be an array");
+	}
+	const knownIds = new Set((document?.parts ?? []).map((part) => part.id));
+	const supplied = new Map();
+	const details = [];
+	for (const item of progress) {
+		const partId = typeof item?.partId === "string" ? item.partId.trim() : "";
+		const status = item?.status;
+		const note = item?.note == null ? null : typeof item.note === "string" ? item.note.trim() : undefined;
+		const evidence = item?.evidence == null ? null : typeof item.evidence === "string" ? item.evidence.trim() : undefined;
+		if (!partId) details.push({ code: "invalid_progress_part", message: "Initial progress requires a non-empty Part ID" });
+		else if (supplied.has(partId)) details.push({ code: "duplicate_progress_part", message: `Initial progress repeats Part ${partId}` });
+		else if (!knownIds.has(partId)) details.push({ code: "unknown_progress_part", message: `Initial progress references unknown Part ${partId}` });
+		if (!PLAN_STATUS_SET.has(status)) details.push({ code: "invalid_progress_status", message: `Initial progress for Part ${partId || "?"} has an invalid status` });
+		if (note === undefined || evidence === undefined || note === "" || evidence === "") {
+			details.push({ code: "invalid_progress_text", message: `Initial progress note and evidence for Part ${partId || "?"} must be non-empty strings when supplied` });
+		}
+		if (["completed", "blocked"].includes(status) && !evidence) {
+			details.push({ code: "missing_progress_evidence", message: `Initial ${status} progress for Part ${partId || "?"} requires evidence` });
+		}
+		if (status === "blocked" && !note) {
+			details.push({ code: "missing_progress_note", message: `Initial blocked progress for Part ${partId || "?"} requires a blocker note` });
+		}
+		if (partId && !supplied.has(partId)) supplied.set(partId, { status, note: note || null, evidence: evidence || null });
+	}
+	if (details.length > 0) throw new PlanStoreError("invalid_progress", "Initial Part progress is invalid", details);
+	return Object.fromEntries((document?.parts ?? []).map((part) => [
+		part.id,
+		supplied.get(part.id) ?? { status: "pending", note: null, evidence: null },
+	]));
 }
 
 function isWithin(root, candidate) {
@@ -213,6 +249,7 @@ export async function persistPlan(options) {
 		maxCollisionProbes = MAX_COLLISION_PROBES,
 		renameFile,
 		now = () => new Date(),
+		progress = [],
 	} = options ?? {};
 	if (typeof cwd !== "string" || !cwd) throw new PlanStoreError("invalid_cwd", "A project working directory is required");
 	if (typeof title !== "string" || !title.trim()) throw new PlanStoreError("invalid_title", "Plan title cannot be empty");
@@ -225,13 +262,14 @@ export async function persistPlan(options) {
 	if (parsed.document.title !== title.trim()) {
 		throw new PlanStoreError("title_mismatch", "The title parameter must exactly match the plan H1 title");
 	}
+	const ledger = validateInitialProgress(parsed.document, progress);
 	let persistedMarkdown;
 	try {
-		persistedMarkdown = replaceManagedProgressReport(markdown, buildDocumentProgressRows(parsed.document));
+		persistedMarkdown = synchronizeLedgerMarkdown(markdown, markdown, ledger);
 	} catch (error) {
 		throw new PlanStoreError(
 			"validation_failed",
-			"Generated plan progress report is invalid",
+			"Generated plan progress metadata is invalid",
 			[{ code: error.code ?? "malformed_progress_report", message: error.message }],
 		);
 	}
@@ -262,5 +300,6 @@ export async function persistPlan(options) {
 		hash,
 		markdown: persistedMarkdown,
 		document: persisted.document,
+		ledger,
 	};
 }

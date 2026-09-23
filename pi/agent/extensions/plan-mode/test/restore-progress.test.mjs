@@ -43,7 +43,7 @@ test("restored current execution reconstructs Part titles and backfills its miss
 			tasks: [
 				{ id: "A", title: "Define cache consistency", status: "pending" },
 				{ id: "B", title: "Implement reliable invalidation", status: "in_progress" },
-				{ id: "C", title: "Cover boundary behavior", status: "blocked" },
+				{ id: "C", title: "Cover boundary behavior", status: "blocked", note: "Waiting on dependency", evidence: "Dependency check failed" },
 			],
 		}).state;
 		state = approveExecution(state, "approval", "all").state;

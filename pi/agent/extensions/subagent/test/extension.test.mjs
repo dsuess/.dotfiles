@@ -5,8 +5,9 @@ import { createPiJiti } from "../../../../test-helpers.mjs";
 const jiti = await createPiJiti(import.meta.url);
 const extensionModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 
-function createHarness({ runChild, env = {} } = {}) {
+function createHarness({ runChild, env = {}, guardMode = "planning" } = {}) {
 	const handlers = new Map();
+	const eventHandlers = new Map();
 	const tools = [];
 	const widgetCalls = [];
 	let activeTools = [
@@ -20,8 +21,13 @@ function createHarness({ runChild, env = {} } = {}) {
 		},
 		getActiveTools() { return [...activeTools]; },
 		setActiveTools(names) { activeTools = [...names]; },
+		events: {
+			on(name, handler) { eventHandlers.set(name, handler); return () => eventHandlers.delete(name); },
+			emit(name, event) { eventHandlers.get(name)?.(event); },
+		},
 	};
 	extensionModule.createSubagentExtension({ runChild, env })(pi);
+	pi.events.emit("plan-mode:workflow-state", { mode: guardMode });
 	const theme = {
 		fg: (_color, text) => text,
 		bg: (_color, text) => text,
@@ -117,6 +123,20 @@ test("inherits model, thinking, effective prompt, active tools, and planning mod
 	assert.match(activeRows, /Inspect README/);
 	assert.doesNotMatch(activeRows, /📖|reading|README\.md/, "activity does not replace the fixed role/task row");
 	assert.equal(harness.widgetCalls.at(-1)[1], undefined, "widget clears when the run leaves the map");
+});
+
+test("globally active show_plan does not imply an inherited planning guard", async () => {
+	let request;
+	const harness = createHarness({
+		guardMode: "normal",
+		runChild: async (options) => {
+			request = options;
+			return { output: "ok", details: { status: "completed", model: options.model, activity: [], finalText: "ok" } };
+		},
+	});
+	await harness.tools[0].execute("normal-child", { prompt: "Inspect" }, undefined, undefined, harness.ctx);
+	assert.ok(request.activeTools.includes("show_plan"));
+	assert.equal(request.planningMode, false);
 });
 
 test("model and thinking overrides are independent of inherited defaults and restrictions", async (t) => {

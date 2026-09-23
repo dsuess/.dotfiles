@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	composeActiveTools,
 	evaluatePlanningToolCall,
 	getPlanningToolNames,
 	getRestorableTools,
@@ -36,9 +37,22 @@ test("fast optimization removes questions while retaining read-only inspection a
 	);
 });
 
-test("restoration uses the exact snapshot intersection and reports disappeared tools", () => {
-	assert.deepEqual(getRestorableTools(["custom_mutator", "read", "missing", "read"], registered), {
+test("restoration uses only the implementation baseline and reports disappeared tools", () => {
+	assert.deepEqual(getRestorableTools([
+		"custom_mutator", "show_plan", "read", "plan_progress", "missing", "read", "complete_plan",
+	], registered), {
 		restored: ["custom_mutator", "read", "read"],
+		missing: ["missing"],
+	});
+});
+
+test("composition keeps presentation tools separate from the implementation baseline", () => {
+	assert.deepEqual(composeActiveTools(
+		["custom_mutator", "show_plan", "read", "plan_progress", "missing"],
+		["show_plan"],
+		registered,
+	), {
+		active: ["custom_mutator", "read", "show_plan"],
 		missing: ["missing"],
 	});
 });

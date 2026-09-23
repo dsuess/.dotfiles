@@ -111,17 +111,16 @@ test("filters recursive, parent-workflow, duplicate, and untrusted tools", () =>
 	]), ["read", "bash"]);
 });
 
-test("planning inheritance requires both the active workflow marker and effective planning prompt", () => {
+test("planning inheritance requires both the active guard and effective planning prompt", () => {
 	const prompt = "prefix\n[PI PLANNING MODE ACTIVE]\nplanning rules";
-	assert.equal(isInheritedPlanningMode(["read", "subagent", "show_plan"], prompt), true);
-	assert.equal(isInheritedPlanningMode(["read", "subagent"], prompt), false);
-	assert.equal(isInheritedPlanningMode(["read", "show_plan"], "ordinary prompt"), false);
+	assert.equal(isInheritedPlanningMode(true, prompt), true);
+	assert.equal(isInheritedPlanningMode(false, prompt), false);
+	assert.equal(isInheritedPlanningMode(true, "ordinary prompt with globally active show_plan"), false);
 });
 
-test("fails closed for a legacy submit_plan capability", () => {
-	const prompt = "prefix\n[PI PLANNING MODE ACTIVE]\nplanning rules";
+test("filters a legacy submit_plan capability without confusing it for the guard", () => {
 	assert.deepEqual(filterChildTools(["read", "submit_plan"]), ["read"]);
-	assert.equal(isInheritedPlanningMode(["read", "submit_plan"], prompt), false);
+	assert.equal(isInheritedPlanningMode(false, "ordinary prompt"), false);
 });
 
 test("incremental JSONL parsing handles split, multiple, trailing, malformed, and non-event records", () => {
