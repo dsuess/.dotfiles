@@ -44,3 +44,11 @@ opt.timeoutlen = 300
 opt.completeopt = "menu,menuone,noselect"
 opt.wildmode = "longest:full,full"
 opt.wrap = false
+
+-- Diagnostics
+-- Disable underlines for warnings (keep only errors underlined)
+vim.diagnostic.config({
+  underline = {
+    severity = { min = vim.diagnostic.severity.ERROR },
+  },
+})

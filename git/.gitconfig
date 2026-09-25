@@ -7,7 +7,7 @@
     excludesfile = ~/.gitignore
     pager = bat --paging=always
 [push]
-	default = upstream
+	default = simple
 	autoSetupRemote = true
 [merge]
     tool = nvimdiff
@@ -48,4 +48,4 @@
 [include]
     path = ~/.gitconfig.local
 [branch]
-	autoSetupMerge = always
+	autoSetupMerge = simple

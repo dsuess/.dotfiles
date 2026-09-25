@@ -7,6 +7,11 @@ return {
     opts = {
       flavour = "mocha",
       auto_integrations = true,
+      lsp_styles = {
+        underlines = {
+          warnings = {},
+        },
+      },
     },
     config = function(_, opts)
       require("catppuccin").setup(opts)
