@@ -23,7 +23,8 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "@juicesharp/rpiv-i18n": "*"
+    "@juicesharp/rpiv-i18n": "*",
+    "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": { "optional": true },
@@ -32,14 +33,14 @@
     "@juicesharp/rpiv-i18n": { "optional": true }
   },
   "dependencies": {
-    "@juicesharp/rpiv-config": "2.3.1",
-    "typebox": "1.1.24"
+    "@juicesharp/rpiv-config": "2.3.1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.2",
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@earendil-works/pi-tui": "0.84.2",
     "@types/node": "22.20.1",
+    "typebox": "1.1.24",
     "typescript": "6.0.3",
     "vitest": "4.1.10"
   },

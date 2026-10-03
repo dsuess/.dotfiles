@@ -1,13 +1,13 @@
 {
-  "lastChangelogVersion": "0.84.4",
+  "lastChangelogVersion": "1.0.0",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-luna",
+  "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "medium",
   "defaultThinkingProvider": "openai-codex",
-  "defaultThinkingModel": "gpt-5.6-sol",
+  "defaultThinkingModel": "gpt-6-astra",
   "enabledModels": [
     "openai-codex/gpt-6-astra",
-    "openai-codex/gpt-6-sol",
+    "openai-codex/gpt-6.1-sol",
     "openai-codex/gpt-6-luna"
   ],
   "editorPaddingX": 1,

@@ -79,9 +79,9 @@ concepts do not exist.
 
 - Planning and implementation model selection is managed by the planning-mode
   extension. Choose models here only when spawning subagents.
-- **Light subagents:** Use the current GPT Luna or Haiku model for simple,
+- **Light subagents:** Use GPT-6 Luna or the current Haiku model for simple,
   well-defined research tasks.
-- **Medium subagents:** Use the current GPT Terra or Sonnet model for standard
+- **Medium subagents:** Use GPT-6 Sol or the current Sonnet model for standard
   implementation tasks and difficult research.
 - Pass a concrete provider-qualified `model` and `thinkingLevel: "high"` to
   every subagent. Resolve model-family names to a current catalog ID.
