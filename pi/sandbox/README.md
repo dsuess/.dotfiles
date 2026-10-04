@@ -13,7 +13,7 @@ Sandbox filesystem, environment, and Docker restrictions apply while sandboxing 
 - Artifact and integrity pins remain. The Docker shell template digest identifies the reviewed sidecar image. Capability protocol versions and controller source digests protect host/guest coherence. The SRT lockfile and verified patch preimages and postimages protect dependency and patch integrity.
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
 - Tool processes receive a generated HOME, temp directory, cache, and empty immutable `DOCKER_CONFIG`. npm-backed tools use the launcher-provided `NPM_CONFIG_CACHE`, which defaults to `/Users/dsuess/.npm`; callers can override it per Pi launch or Bash request. They do not receive controller descriptors, routing tokens, SSH/GPG agents, host Docker contexts, credentials, control sockets, or SBX controls.
-- Routed `PATH` is the controller startup `PATH`, with the generated private Docker client directory prepended. PATH is not a security boundary: SRT filesystem permissions decide whether a discovered program can read, execute, or mutate its target. A command may set its own PATH, but cannot bypass those permissions.
+- Routed `PATH` starts with the generated Docker client directory, then the read-only `mktemp` compatibility directory, then the controller startup `PATH`. PATH is not a security boundary: SRT filesystem permissions decide whether a discovered program can read, execute, or mutate its target. A command may set its own PATH, but cannot bypass those permissions.
 - Routed adapters invoke optional host-installed tools by validated bare executable name through that inherited PATH (for example, `rg` and `fd`). They must use direct argument vectors and must not hard-code an installation prefix, inspect the filesystem, resolve through a shell, or reconstruct PATH. Fixed controller or platform dependencies may retain reviewed absolute paths when their identity is part of the controller protocol. In both cases, SRT filesystem policy remains the authority boundary.
 - The generated Docker client directory exposes the reviewed Docker CLI and only Buildx and Compose. Other Docker Desktop plugins are not available. Buildx configuration, state, and logs use a separate writable generated `BUILDX_CONFIG` directory.
 - Ordinary tool environment values, including secrets, are forwarded directly. Do not mask credentials: failures and retained diagnostics must redact values instead.
@@ -21,6 +21,22 @@ Sandbox filesystem, environment, and Docker restrictions apply while sandboxing 
 - IP egress is unrestricted. Unix-socket access is limited to the exact private Docker broker socket and reviewed system exceptions.
 - Workspace writes are allow-only. A workspace below the real home directory remains writable; controller and broker state are never granted. Installed tool roots, including `/opt/homebrew`, `/usr/local`, `~/.local/bin`, `~/.local/share/uv/tools`, and `~/.local/share/uv/python`, are read-only. The uv credentials directory remains denied.
 - `config.json` stores versioned saved grants for explicitly shared tool-plane directories. Its initial grant is read-only `~/.agents`. `readWrite` is empty. Each client has its own effective policy snapshot. Saved grants do not replace derived workspace or tool access. Grants never create Docker sidecar mounts, PATH entries, generated-HOME files, or environment forwarding.
+
+## Temporary files
+
+The controller supplies a private `TMPDIR` for each workspace/controller generation. Operations within that generation share temporary files. Temporary files are not durable storage. Controller exit does not delete this directory. A controller restart can reuse the directory for the same workspace and generation.
+
+On macOS, native `mktemp` can ignore `TMPDIR` and select the shared user temp directory. Ordinary PATH-resolved `mktemp` uses a read-only compatibility command. Default files, directories (`-d`), and prefixes (`-t`) use the private directory. The system `mktemp` creates the random names. Explicit templates and directory arguments (`-p`) retain native behavior and require filesystem permission. Quiet (`-q`) and dry-run (`-u`) options retain native behavior.
+
+Node and other TMPDIR-aware runtimes use the same private directory. Controller and request environment overrides cannot change that default directory. The policy does not grant the shared macOS temp directory or all of `/tmp`.
+
+Absolute `/usr/bin/mktemp` calls, commands that replace PATH, and APIs that ignore TMPDIR can still fail. Host execution remains unchanged.
+
+Run this smoke command from an ordinary host terminal:
+
+```sh
+pi -p --no-session '!set -e; f=$(mktemp); d=$(mktemp -d); printf "%s\n%s\n%s\n" "$TMPDIR" "$f" "$d"; rm "$f"; rmdir "$d"'
+```
 
 ## Docker sidecar
 

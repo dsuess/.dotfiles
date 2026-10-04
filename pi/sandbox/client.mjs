@@ -11,7 +11,7 @@ import { encodeFrame, FrameDecoder, makeRequest, validateResponse } from "./prot
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const controller = path.join(HERE, "controller.mjs");
-const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "filesystem-configuration.mjs"), path.join(HERE, "client-policy.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs"), path.join(HERE, "apply-srt-workspace-write-patch.mjs"), path.join(HERE, "package.json"), path.join(HERE, "package-lock.json")];
+const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "filesystem-configuration.mjs"), path.join(HERE, "client-policy.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "temp-command.mjs"), path.join(HERE, "srt-compatibility-canary.mjs"), path.join(HERE, "apply-srt-workspace-write-patch.mjs"), path.join(HERE, "package.json"), path.join(HERE, "package-lock.json")];
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);

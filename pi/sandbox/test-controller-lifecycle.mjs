@@ -123,7 +123,7 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
   t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); });
   const command = `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "$PATH" "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR" "$UV_PYTHON_INSTALL_DIR" "$(command -v user-tool)" "$(user-tool)" "$(command -v workspace-tool)" "$(command -v docker)" "$(cat "$HOME/.serena/serena_config.yml")"; if printf blocked > ${JSON.stringify(path.join(userToolBin, "write-test"))}; then printf user-tool-writable; else printf user-tool-readonly; fi; if printf blocked > "$UV_TOOL_DIR/write-test"; then printf uv-tool-writable; else printf uv-tool-readonly; fi`;
   const output = execFileSync(process.execPath, [new URL("./client-cli.mjs", import.meta.url).pathname, "bash", Buffer.from(JSON.stringify(startup)).toString("base64"), workspace, command], { encoding: "utf8" }).trimEnd().split("\n");
-  assert.equal(output[0], `${path.dirname(output[7])}:${inheritedPath}`);
+  assert.equal(output[0], `${path.dirname(output[7])}:${path.join(startup.runtimeRoot, `generation-${startup.generation}`, "temp-bin")}:${inheritedPath}`);
   assert.equal(output[1], fs.realpathSync(userToolBin));
   assert.equal(output[2], fs.realpathSync(path.join(home, ".local/share/uv/tools")));
   assert.equal(output[3], fs.realpathSync(path.join(home, ".local/share/uv/python")));
