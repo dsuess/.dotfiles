@@ -41,16 +41,23 @@ test("read-write grants imply read and write without workspace-write exceptions"
   assert(!policy.filesystem.allowCompleteWorkspaceWrites.includes(item.shared));
 });
 
-test("configuration bytes participate in controller identity", (t) => {
-  const configPath = clientInternals.controllerSourceFiles.find((file) => file.endsWith(`${path.sep}config.json`));
-  assert.ok(configPath);
-  const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-config-digest-")), "config.json");
-  t.after(() => fs.rmSync(path.dirname(copy), { recursive: true, force: true }));
-  fs.copyFileSync(configPath, copy);
-  const files = clientInternals.controllerSourceFiles.map((file) => file === configPath ? copy : file);
-  const before = sourceDigest(files);
-  fs.appendFileSync(copy, "\n");
-  assert.notEqual(sourceDigest(files), before);
+test("configuration bytes do not replace the controller, while protocol source still does", (t) => {
+  const sources = clientInternals.controllerSourceFiles;
+  assert.equal(sources.some((file) => file.endsWith(`${path.sep}config.json`)), false);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-config-digest-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const configCopy = path.join(root, "config.json");
+  fs.writeFileSync(configCopy, "{}\n");
+  const before = sourceDigest(sources);
+  fs.appendFileSync(configCopy, "\n");
+  assert.equal(sourceDigest(sources), before);
+  const protocol = sources.find((file) => file.endsWith(`${path.sep}protocol.mjs`));
+  const codeCopy = path.join(root, "protocol.mjs");
+  fs.copyFileSync(protocol, codeCopy);
+  const files = sources.map((file) => file === protocol ? codeCopy : file);
+  const codeBefore = sourceDigest(files);
+  fs.appendFileSync(codeCopy, "\n");
+  assert.notEqual(sourceDigest(files), codeBefore);
 });
 
 test("fails closed for missing, malformed, duplicate, overlapping, and unsafe grants", (t) => {
@@ -60,7 +67,7 @@ test("fails closed for missing, malformed, duplicate, overlapping, and unsafe gr
   assert.throws(() => item.load(config(["relative"])), /absolute or home-relative/);
   assert.throws(() => item.load(config([item.shared, item.shared])), /duplicate or overlapping/);
   assert.throws(() => item.load(config([item.shared], [item.shared])), /duplicate or overlapping/);
-  assert.throws(() => item.load(config([item.root])), /workspace|controller/);
+  assert.throws(() => item.load(config([item.root])), /protected|workspace|controller/);
   assert.throws(() => item.load(config([item.workspace])), /workspace/);
   assert.throws(() => item.load(config([item.controller])), /controller/);
   assert.throws(() => item.load(config([path.join(item.home, ".ssh")])), /directory does not exist|credential/);

@@ -12,7 +12,8 @@ import { buildSrtPolicy } from "./srt-policy.mjs";
 import { WorkspaceDockerSidecar } from "./docker-sidecar.mjs";
 import { materializeDockerClientEnvironment, resolveDockerClientTools } from "./docker-client-env.mjs";
 import { resolveHostReadManifest, resolveUserToolRuntime } from "./host-configuration.mjs";
-import { loadFilesystemGrants } from "./filesystem-grants.mjs";
+import { createFilesystemConfigurationService } from "./filesystem-configuration.mjs";
+import { ClientPolicies } from "./client-policy.mjs";
 import { atomicJson, manifestFor, validateDescriptor } from "./capability.mjs";
 import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamEvent, validateRequest } from "./protocol.mjs";
 
@@ -61,8 +62,12 @@ const dockerClient = materializeDockerClientEnvironment(generationRoot, resolveD
 applySrtWorkspaceWritePatch();
 const sidecar = new WorkspaceDockerSidecar({ workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, runtimeRoot: descriptor.runtimeRoot, brokerRoot: descriptor.brokerRoot });
 await sidecar.startBroker(); // Sidecar creation stays lazy: bridge() calls ensure on first Docker use.
-const filesystemGrants = loadFilesystemGrants({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, controllerRoot: descriptor.runtimeRoot });
-const policy = buildSrtPolicy({ home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest, grants: filesystemGrants });
+const validation = { home: hostHome, workspaceRoot: descriptor.workspaceRoot, controllerRoot: descriptor.runtimeRoot };
+const configuration = createFilesystemConfigurationService(validation);
+configuration.read(); // Reject invalid saved defaults before publishing readiness.
+const policyOptions = { home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: dockerClient.files, hostReadManifest };
+const policy = buildSrtPolicy({ ...policyOptions, grants: [] });
+const clientPolicies = new ClientPolicies({ configuration, validation, buildPolicy: (grants) => buildSrtPolicy({ ...policyOptions, grants }) });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -87,13 +92,14 @@ async function terminate(operation) {
   return true;
 }
 function quoteBash(argv) { return argv.map((item) => `'${String(item).replace(/'/g, "'\\''")}'`).join(" "); }
-async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxOutputBytes, helperRequest }) {
+async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxOutputBytes, helperRequest, effectivePolicy }) {
   if (operationCount >= MAX_OPERATIONS) throw Object.assign(new Error("operation concurrency limit reached"), { code: "busy" });
   const command = helperRequest ? quoteBash([process.execPath, helper]) : quoteBash(argv);
-  const wrapped = await SandboxManager.wrapWithSandboxArgv(command, "/bin/bash");
+  const wrapped = await SandboxManager.wrapWithSandboxArgv(command, "/bin/bash", { filesystem: effectivePolicy.filesystem });
+  const operationKey = Symbol();
   return new Promise((resolve, reject) => {
     const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd, env: boundedEnvironment({ ...wrapped.env, ...env }), shell: false, detached: true, stdio: [helperRequest ? "pipe" : "ignore", "pipe", "pipe"] });
-    const operation = { child, socket, finished: false, cancelled: false }; active.set(requestId, operation); operationCount += 1;
+    const operation = { child, socket, requestId, finished: false, cancelled: false }; active.set(operationKey, operation); operationCount += 1;
     let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), stdoutBytes = 0, stderrBytes = 0;
     const stream = (name, chunk) => {
       const bytesName = name === "stdout" ? "stdoutBytes" : "stderrBytes";
@@ -105,8 +111,8 @@ async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxO
     };
     child.stdout.on("data", (chunk) => stream("stdout", chunk)); child.stderr.on("data", (chunk) => stream("stderr", chunk));
     const timeout = setTimeout(() => void terminate(operation), timeoutMs); timeout.unref();
-    child.once("error", (error) => { clearTimeout(timeout); operation.finished = true; removeOperation(requestId, child); reject(error); });
-    child.once("close", (code, signal) => { clearTimeout(timeout); operation.finished = true; removeOperation(requestId, child); if (helperRequest) { try { const answer = JSON.parse(stdout.toString("utf8")); if (!answer.ok) throw Object.assign(new Error(answer.message || "helper failed"), { code: answer.code || "helper_error" }); resolve(answer.result); } catch (error) { reject(error); } } else resolve({ exitCode: code ?? 1, signal: signal ?? null, outputBytes: Math.min(maxOutputBytes, stdoutBytes + stderrBytes), truncated: stdoutBytes + stderrBytes > maxOutputBytes, cancelled: operation.cancelled }); });
+    child.once("error", (error) => { clearTimeout(timeout); operation.finished = true; removeOperation(operationKey, child); reject(error); });
+    child.once("close", (code, signal) => { clearTimeout(timeout); operation.finished = true; removeOperation(operationKey, child); if (helperRequest) { try { const answer = JSON.parse(stdout.toString("utf8")); if (!answer.ok) throw Object.assign(new Error(answer.message || "helper failed"), { code: answer.code || "helper_error" }); resolve(answer.result); } catch (error) { reject(error); } } else resolve({ exitCode: code ?? 1, signal: signal ?? null, outputBytes: Math.min(maxOutputBytes, stdoutBytes + stderrBytes), truncated: stdoutBytes + stderrBytes > maxOutputBytes, cancelled: operation.cancelled }); });
     if (helperRequest) child.stdin.end(JSON.stringify(helperRequest));
   });
 }
@@ -145,16 +151,19 @@ async function dispatch(request, socket) {
     return { leaseToken: p.leaseToken, expiresAt };
   }
   validateLease(request);
-  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, policyGeneration: policy.generation, runtimeGeneration: String(descriptor.generation).padStart(64, "0"), filesystemGrants: filesystemGrants.map(({ canonicalPath, access }) => ({ path: canonicalPath, access })), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
+  if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, ...clientPolicies.status(socket), runtimeGeneration: String(descriptor.generation).padStart(64, "0"), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
   if (request.method === "lease.heartbeat") return { ok: true };
   if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: activeLeaseCount() === 0 }; }
-  if (request.method === "cancel") return { cancelled: await terminate(active.get(p.requestId)) };
-  if (p.policyGeneration !== policy.generation) throw Object.assign(new Error("stale policy generation"), { code: "stale_generation" });
+  if (request.method === "cancel") return { cancelled: await terminate([...active.values()].find((operation) => operation.socket === socket && operation.requestId === p.requestId)) };
+  if (request.method === "policy.prepare") return clientPolicies.prepare(socket, p);
+  if (request.method === "policy.activate") return clientPolicies.activate(socket, p.preparation, p.revision);
+  // Capture before any await. Subsequent refreshes cannot change this operation.
+  const effectivePolicy = clientPolicies.capture(socket, p.policyGeneration).policy;
   if (request.method === "docker.reset") { await sidecar.reset(); return { reset: true }; }
-  if (request.method === "exec") return spawnSandbox({ ...p, requestId: request.id, socket });
+  if (request.method === "exec") return spawnSandbox({ ...p, requestId: request.id, socket, effectivePolicy });
   const map = { "fs.access": "access", "fs.mkdir": "mkdir", "fs.listDir": "listDir", "fs.stat": "stat", "fs.rename": "rename", "fs.readFile": "readFile", "fs.writeFile": "writeFile", "fs.deleteFile": "deleteFile" };
   const operation = map[request.method]; if (!operation) throw Object.assign(new Error("unsupported controller operation"), { code: "unknown_method" });
-  return spawnSandbox({ argv: [], cwd: descriptor.workspaceRoot, env: {}, requestId: request.id, socket, timeoutMs: 60_000, maxOutputBytes: 12 * 1024 * 1024, helperRequest: { operation, params: p } });
+  return spawnSandbox({ argv: [], cwd: descriptor.workspaceRoot, env: {}, requestId: request.id, socket, timeoutMs: 60_000, maxOutputBytes: 12 * 1024 * 1024, helperRequest: { operation, params: p }, effectivePolicy });
 }
 const server = net.createServer((socket) => { const decoder = new FrameDecoder(async (value) => { let request; try { request = validateRequest(value); const result = await dispatch(request, socket); socket.write(encodeFrame(makeResponse(request.id, result))); } catch (error) { socket.write(encodeFrame(makeErrorResponse(request?.id ?? 1, error))); } }); socket.on("data", (data) => { try { decoder.push(data); } catch { socket.destroy(); } }); socket.on("close", () => { for (const [id, operation] of active) if (operation.socket === socket) void terminate(operation); }); });
 let controllerSocketInode = null;

@@ -1,9 +1,12 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { acquireControllerLease, ControllerClient, stopStartedController } from "../../../sandbox/client.mjs";
+import { createFilesystemConfigurationService } from "../../../sandbox/filesystem-configuration.mjs";
+import { createClientPolicyService, takeReloadPolicy, retainReloadPolicy } from "./policy-service.mjs";
 import {
   createHostAdapterManifest,
   isSrtToolRoutingReplacement,
@@ -16,13 +19,39 @@ import {
   SANDBOX_LIFECYCLE_EVENT,
   type SandboxLifecycleEvent,
 } from "./events.ts";
-import { showSandboxStatus } from "./status-view.ts";
+import { compactSandboxStatus, formatSandboxStatus, formatSandboxGrants, SANDBOX_OFF_LABEL, SANDBOX_OFF_WARNING } from "./status-view.ts";
+import { createSandboxCommand, type SandboxCommandMessage } from "./command-ui.ts";
 import {
-  createSandboxBashOperations,
+  createModeBashOperations,
   SRT_ROUTING_BUILTIN_NAMES,
   registerSandboxTools,
   type SandboxClient,
 } from "./tools.ts";
+import {
+  ConversationMode,
+  startConversationMode,
+  retireConversationMode,
+  type SandboxExecutionMode,
+} from "./mode-state.ts";
+
+/** Trusted command/policy integration only; never publish this service as a model tool. */
+export interface RoutingControl {
+  getMode(): { mode: SandboxExecutionMode; blockedReason: string | null };
+  assertIdle(ctx: ExtensionContext): void;
+  atIdle<T>(ctx: ExtensionContext, action: () => Promise<T>): Promise<T>;
+  setMode(mode: SandboxExecutionMode, ctx: ExtensionContext): Promise<void>;
+  setPolicyVerifier(verify: () => Promise<void>): void;
+  blockSandbox(reason: string): void;
+  getPolicyService(): RoutingPolicyService;
+}
+
+export interface RoutingPolicyService {
+  status(): Promise<any>;
+  listGrants(): Promise<any>;
+  addGrant(access: "ro" | "rw", path: string, ctx: ExtensionContext): Promise<any>;
+  removeGrant(path: string, ctx: ExtensionContext): Promise<any>;
+  reloadGrants(ctx: ExtensionContext): Promise<any>;
+}
 
 export const SANDBOX_VERIFY_TOOLS_EVENT = "srt-tool-routing:verify-tools";
 export const SANDBOX_BEFORE_USER_BASH_EVENT = "srt-tool-routing:before-user-bash";
@@ -59,6 +88,7 @@ interface ExtensionDependencies {
     runtimeGeneration: string;
     adoptLease: boolean;
     renewalStartup?: any;
+    effectiveSnapshot?: any;
   }) => Promise<{ client: SandboxClient & { destroy?: () => void; release?: () => Promise<void> }; status: any }>;
   acquire?: (options: { startup: any; clientId: string; signal: AbortSignal }) => Promise<{
     client: SandboxClient & { destroy?: () => void; release?: () => Promise<void>; onTerminal?: (listener: (error: Error) => void) => () => void; };
@@ -69,6 +99,7 @@ interface ExtensionDependencies {
   }>;
   auditOptions?: { extensionPath?: string; agentDir?: string };
   statusIntervalMs?: number;
+  onControl?: (control: RoutingControl) => void;
 }
 
 function requiredHex(value: string | undefined, name: string): string {
@@ -181,6 +212,12 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     let ownsRootLease = false;
     let released = false;
     let retired = false;
+    let mode = new ConversationMode();
+    let sessionManager: object | undefined;
+    let startupReady = false;
+    let verifyEffectivePolicy: () => Promise<void> = async () => {};
+    let policyService: ReturnType<typeof createClientPolicyService> | null = null;
+    let retainedPolicy: any = undefined;
     const clearCapabilityEnvironment = (): void => {
       for (const name of CAPABILITY_ENV_FIELDS) delete env[name];
     };
@@ -192,7 +229,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       return client;
     };
 
-    registerSandboxTools(pi, { cwd, getClient });
+    registerSandboxTools(pi, { cwd, getClient, execution: { run: (operation) => mode.run(operation) } });
 
     const verifyInventory = () =>
       verifyToolInventory(configuredTools(pi), {
@@ -202,15 +239,12 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       });
 
     const emitLifecycle = (event: SandboxLifecycleEvent, ctx = lastContext): void => {
+      const execution = mode.snapshot();
+      event = { ...event, mode: execution.mode, blockedReason: execution.blockedReason };
       pi.events.emit(SANDBOX_LIFECYCLE_EVENT, event);
       if (!ctx?.hasUI) return;
-      const marker =
-        event.health === "healthy"
-          ? ctx.ui.theme.fg("success", `sandbox:${event.sidecarId?.slice(0, 8) ?? "ready"}`)
-          : event.health === "failed"
-            ? ctx.ui.theme.fg("error", "sandbox:failed")
-            : ctx.ui.theme.fg("warning", `sandbox:${event.health}`);
-      ctx.ui.setStatus("srt-tool-routing", marker);
+      const compact = compactSandboxStatus(event);
+      ctx.ui.setStatus("srt-tool-routing", ctx.ui.theme.fg(compact.color, compact.label));
     };
 
     const publishStatus = (status: any, ctx = lastContext): void => {
@@ -228,12 +262,13 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       }
     };
 
-    const failClosed = (ctx: ExtensionContext | undefined, reason: string): void => {
-      if (retired || fatalError) return;
+    const failClosed = (ctx: ExtensionContext | undefined, reason: string, controllerFailure = false): void => {
+      if (retired || (fatalError && controllerFailure)) return;
       fatalError = reason;
+      const deliberatelyOff = controllerFailure && mode.snapshot().mode === "off";
       const activeClient = client;
       client = null;
-      pi.setActiveTools([]);
+      if (!deliberatelyOff) pi.setActiveTools([]);
       if (ownsRootLease && !released) {
         released = true;
         void activeClient?.release?.().catch(() => {});
@@ -251,7 +286,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       }, ctx);
       if (ctx?.hasUI) ctx.ui.notify(`SRT tool routing failed closed: ${reason}`, "error");
       writeHandshake(env.PI_SRT_ROUTING_HANDSHAKE_FILE, { ok: false, error: reason });
-      ctx?.shutdown();
+      if (!deliberatelyOff) ctx?.shutdown();
     };
 
     const enforceInventory = (ctx?: ExtensionContext, result = verifyInventory()): void => {
@@ -283,6 +318,20 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       pi.setActiveTools([]);
       const requested = parseRequestedBuiltins(env.PI_SRT_ROUTING_BUILTIN_TOOLS);
       const requestedHostTools = parseRequestedHostTools(env.PI_SRT_ROUTING_HOST_TOOLS, manifest.keys());
+      if (mode.snapshot().mode === "off") {
+        // A retained explicit choice remains usable if the controller died during
+        // reload. Audit replacements first; this is never a health-based fallback.
+        const inventory = verifyInventory();
+        const missing = requestedHostTools.filter((name) => !inventory.allowedNames.has(name));
+        if (inventory.replacementErrors.length > 0 || missing.length > 0) {
+          const reason = [...inventory.replacementErrors, ...missing.map((name) => `Untrusted host adapter: ${name}`)].join("; ");
+          failClosed(ctx, reason);
+          return Promise.reject(new Error(reason));
+        }
+        permittedNames = new Set([...requested, ...requestedHostTools]);
+        pi.setActiveTools([...permittedNames]);
+        enforceInventory(ctx, inventory);
+      }
       const inherited = env.PI_SRT_ROUTING_LEASE !== undefined;
       // Only a replacement runtime in this same host process can adopt the
       // release duty. Child Pi processes inherit the marker but have another PID.
@@ -313,6 +362,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
               runtimeGeneration: requiredHex(env.PI_SRT_ROUTING_IMAGE_GENERATION, "PI_SRT_ROUTING_IMAGE_GENERATION"),
               adoptLease: adoptRootLease,
               renewalStartup,
+              ...(retainedPolicy ? { effectiveSnapshot: retainedPolicy.effective } : {}),
             });
           } else {
             const startup = parseStartupDescriptor(env.PI_SRT_ROUTING_STARTUP_DESCRIPTOR);
@@ -331,10 +381,22 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
           const activeClient = client;
           activeClient.onTerminal?.((error) => {
             if (!retired && !fatalError && client === activeClient) {
-              failClosed(lastContext ?? undefined, error.message);
+              failClosed(lastContext ?? undefined, error.message, true);
             }
           });
-          const status = connected.status;
+          let status = connected.status;
+          // Production clients always provide this API; dependency-injected tool
+          // spies may intentionally implement only the execution interface.
+          if (typeof (activeClient as any).preparePolicy === "function") {
+            policyService = createClientPolicyService({ client: activeClient,
+              configuration: createFilesystemConfigurationService({ home: os.homedir(), workspaceRoot,
+                controllerRoot: path.dirname(requiredString(env.PI_SRT_ROUTING_SOCKET ?? connected.manifest?.socketPath, "controller socket")) }),
+              control, publish: (next: any) => publishStatus(next),
+            });
+            await policyService.restore(retainedPolicy);
+            verifyEffectivePolicy = policyService.verify;
+            status = await policyService.status();
+          }
           if (status.workspaceKey !== workspaceKey || status.workspaceRoot !== workspaceRoot ||
               status.health !== "healthy" ||
               !((status.sidecarId === null && status.dockerHealthy === false) || (typeof status.sidecarId === "string" && status.dockerHealthy === true)) ||
@@ -342,9 +404,17 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
             throw new Error("SRT tool routing controller status does not match the requested workspace");
           }
           const result = verifyInventory();
-          if (result.replacementErrors.length > 0) throw new Error(result.replacementErrors.join("; "));
+          if (result.replacementErrors.length > 0) {
+            const reason = result.replacementErrors.join("; ");
+            failClosed(ctx, reason);
+            throw new Error(reason);
+          }
           const missingHostTools = requestedHostTools.filter((name) => !result.allowedNames.has(name));
-          if (missingHostTools.length > 0) throw new Error(`Requested host adapters are missing or have untrusted provenance: ${missingHostTools.join(", ")}`);
+          if (missingHostTools.length > 0) {
+            const reason = `Requested host adapters are missing or have untrusted provenance: ${missingHostTools.join(", ")}`;
+            failClosed(ctx, reason);
+            throw new Error(reason);
+          }
           permittedNames = new Set([...requested, ...requestedHostTools]);
           pi.setActiveTools([...permittedNames]);
           enforceInventory(ctx, result);
@@ -360,17 +430,18 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
             // field before the first Docker connection.
             delete env.PI_SRT_ROUTING_VM_ID;
           }
+          startupReady = true;
           publishStatus(status, ctx);
           traceStartup("routing_connection_audit_complete");
           if (statusTimer) clearInterval(statusTimer);
           statusTimer = setInterval(() => {
             const activeClient = client as any;
             if (!activeClient || fatalError || retired) return;
-            void activeClient.status().then((next: any) => {
+            void (policyService ? policyService.status() : activeClient.status()).then((next: any) => {
               if (!retired && client === activeClient) publishStatus(next);
             }).catch((error: unknown) => {
               if (!retired && client === activeClient) {
-                failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error));
+                failClosed(lastContext ?? undefined, error instanceof Error ? error.message : String(error), true);
               }
             });
           }, dependencies.statusIntervalMs ?? 2000);
@@ -383,14 +454,59 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
         } catch (error) {
           if (retired) throw error;
           const reason = error instanceof Error ? error.message : String(error);
-          failClosed(ctx, reason);
+          failClosed(ctx, reason, true);
           throw error;
         }
       })();
       return readiness;
     };
 
-    pi.on("session_start", (_event, ctx) => {
+    const control: RoutingControl = {
+      getMode: () => mode.snapshot(),
+      getPolicyService: () => {
+        if (!policyService || fatalError) throw new Error(fatalError ?? "Sandbox policy is not ready");
+        return policyService;
+      },
+      assertIdle: (ctx) => mode.assertIdle(() => ctx.isIdle?.() ?? true),
+      atIdle: (ctx, action) => mode.atIdle(() => ctx.isIdle?.() ?? true, action),
+      setPolicyVerifier: (verify) => { verifyEffectivePolicy = verify; },
+      blockSandbox: (reason) => mode.blockSandbox(reason),
+      async setMode(next, ctx) {
+        mode.assertIdle(() => ctx.isIdle?.() ?? true);
+        // An explicit off choice cannot bypass the normal launch handshake.
+        if (next === "off" && !startupReady && mode.snapshot().mode !== "off") {
+          await readiness;
+          if (!startupReady) throw new Error(fatalError ?? "Sandbox startup is not ready");
+        }
+        await mode.switchMode(next, () => ctx.isIdle?.() ?? true, async () => {
+          await readiness;
+          const activeClient = getClient() as SandboxClient & { status(): Promise<any> };
+          const status = await activeClient.status();
+          if (status.health !== "healthy" ||
+              !((status.sidecarId === null && status.dockerHealthy === false) ||
+                (typeof status.sidecarId === "string" && status.dockerHealthy === true)) ||
+              !/^[0-9a-f]{64}$/.test(status.policyGeneration) || !/^[0-9a-f]{64}$/.test(status.runtimeGeneration) ||
+              status.workspaceKey !== connectedStatus?.workspaceKey ||
+              status.workspaceRoot !== connectedStatus?.workspaceRoot ||
+              status.policyGeneration !== activeClient.policyGeneration ||
+              status.runtimeGeneration !== connectedStatus?.runtimeGeneration) {
+            throw new Error("SRT tool routing readiness or effective policy does not match this client");
+          }
+          await verifyEffectivePolicy();
+          enforceInventory(ctx);
+          publishStatus(policyService ? await policyService.status() : status, ctx);
+        });
+      },
+    };
+    dependencies.onControl?.(control);
+
+    pi.on("session_start", async (event, ctx) => {
+      sessionManager = ctx.sessionManager;
+      mode = await startConversationMode(sessionManager, event.reason);
+      retainedPolicy = takeReloadPolicy(sessionManager, event.reason);
+      // A retained off choice was already authorized after a successful normal
+      // launch; a failed re-enable must not prevent an explicit return to off.
+      startupReady = mode.snapshot().mode === "off";
       traceStartup("pi_initialize_complete");
       if (ctx.hasUI) traceStartup("host_ui_ready");
       const pending = startReadiness(ctx);
@@ -400,8 +516,9 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
 
     pi.on("input", async () => {
       try {
-        await readiness;
-        enforceInventory();
+        mode.assertExecutable();
+        if (mode.snapshot().mode === "on") { await readiness; getClient(); }
+        enforceInventory(lastContext ?? undefined);
         return { action: "continue" };
       } catch {
         // Pi catches input-event errors and would continue the submission. A
@@ -411,11 +528,19 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     });
 
     pi.on("before_agent_start", async () => {
-      await readiness;
-      enforceInventory();
+      mode.assertExecutable();
+      if (mode.snapshot().mode === "on") { await readiness; getClient(); }
+      enforceInventory(lastContext ?? undefined);
     });
 
+    pi.on("agent_start", () => { mode.agentStarted(); });
+    pi.on("agent_end", () => { mode.agentEnded(); });
+    pi.on("tool_execution_start", (event) => { mode.toolStarted(event.toolCallId); });
+    pi.on("tool_execution_end", (event) => { mode.toolEnded(event.toolCallId); });
+
     pi.on("tool_call", async (event) => {
+      try { mode.assertExecutable(); }
+      catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
       const tool = configuredTools(pi).find((candidate) => candidate.name === event.toolName);
       const allowed = Boolean(
         tool &&
@@ -437,19 +562,22 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       pi.events.emit(SANDBOX_BEFORE_USER_BASH_EVENT, gate);
       if (gate.result) return gate.result;
       try {
-        await readiness;
-      } catch {
+        mode.assertExecutable();
+        if (mode.snapshot().mode === "on") { await readiness; getClient(); }
+      } catch (error) {
         return {
           result: {
-            output: fatalError ?? "SRT tool routing controller startup failed.", exitCode: 126,
+            output: error instanceof Error ? error.message : (fatalError ?? "SRT tool routing controller startup failed."), exitCode: 126,
             cancelled: false, truncated: false,
           },
         };
       }
-      return { operations: createSandboxBashOperations(getClient) };
+      return { operations: createModeBashOperations(getClient, mode.reserve()) };
     });
 
     pi.on("session_shutdown", async (event, ctx) => {
+      retainReloadPolicy(sessionManager, event.reason, policyService?.retention());
+      retireConversationMode(mode, sessionManager, event.reason);
       retired = true;
       if (statusTimer) clearInterval(statusTimer);
       statusTimer = null;
@@ -489,38 +617,74 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       if (ctx.hasUI) ctx.ui.setStatus("srt-tool-routing", undefined);
     });
 
-    pi.registerCommand("sandbox", {
-      description: "Show shared SRT tool routing sandbox status",
-      handler: async (_args, ctx) => {
-        if (!client || fatalError) {
-          ctx.ui.notify(fatalError ?? "SRT tool routing is starting; status is available after readiness.", fatalError ? "error" : "info");
-          return;
-        }
+    const report = (result: SandboxCommandMessage, ctx: ExtensionContext): void => {
+      if (result.level === "error") emitLifecycle(lifecycleFromStatus(connectedStatus), ctx);
+      if (ctx.hasUI) ctx.ui.notify(result.message, result.level ?? "info");
+      else pi.sendMessage({ customType: "sandbox-status", content: result.message, display: true }, { triggerTurn: false });
+    };
+    const readStatus = async (ctx: ExtensionContext, grantsOnly = false): Promise<any> => {
+      let status = connectedStatus ?? { health: "starting", workspaceRoot: ctx.cwd };
+      if (client && !fatalError) {
         try {
-          publishStatus(await showSandboxStatus(ctx, client), ctx);
+          status = policyService
+            ? await control.getPolicyService()[grantsOnly ? "listGrants" : "status"]()
+            : await (client as any).status();
         } catch (error) {
-          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+          status = { ...status, health: "failed", failure: error instanceof Error ? error.message : String(error) };
         }
-      },
+        publishStatus(status, ctx);
+      }
+      return {
+        ...status,
+        workspaceRoot: status.workspaceRoot ?? env.PI_SRT_ROUTING_WORKSPACE_ROOT ?? ctx.cwd,
+        configPath: status.configPath ?? path.join(os.homedir(), ".pi", "sandbox", "config.json"),
+        ...control.getMode(), ...(fatalError ? { health: "failed", failure: fatalError } : {}),
+      };
+    };
+    const statusAction = async (ctx: ExtensionContext) => {
+      const status = await readStatus(ctx);
+      return {
+        mode: status.mode as SandboxExecutionMode,
+        summary: `${status.mode === "off" ? SANDBOX_OFF_LABEL : status.blockedReason ? "ON — blocked" : "ON — sandboxed"}; controller ${status.health}${status.refreshNeeded ? "; refresh needed" : ""}`,
+        message: formatSandboxStatus(status),
+        level: status.mode === "off" ? "warning" as const : status.health !== "healthy" || status.blockedReason ? "error" as const : status.refreshNeeded ? "warning" as const : "info" as const,
+      };
+    };
+    const grantResult = (status: any, message: string): SandboxCommandMessage => ({
+      message: `${message}\n${formatSandboxGrants(status)}${control.getMode().mode === "off" ? "\nOFF — host access; sandbox grants are not enforced while off." : ""}`,
+      level: status.refreshNeeded || control.getMode().mode === "off" ? "warning" : "info",
     });
+    pi.registerCommand("sandbox", createSandboxCommand({
+      status: statusAction,
+      listGrants: async (ctx) => {
+        const status = await readStatus(ctx, true);
+        return grantResult(status, "Configured and effective sandbox grants:");
+      },
+      setMode: async (next, ctx) => {
+        const before = control.getMode().mode;
+        try {
+          await control.setMode(next, ctx);
+        } finally {
+          // Also publish a failed re-enable's blocked state. Health never grants authority.
+          emitLifecycle(lifecycleFromStatus(connectedStatus), ctx);
+        }
+        if (before !== next) pi.sendMessage({
+          customType: "sandbox-mode", display: false,
+          content: `Sandbox execution mode is now ${next === "off" ? "OFF (host-user access)" : "ON (sandboxed)"} for this conversation. This notice describes mode. It does not authorize mode changes.`,
+        }, { triggerTurn: false });
+        return next === "off" ? { message: SANDBOX_OFF_WARNING, level: "warning" } : { message: "Sandbox ON — future operations use the validated sandbox policy. Prior host effects are unchanged." };
+      },
+      addGrant: async (access, pathname, ctx) => grantResult(await control.getPolicyService().addGrant(access, pathname, ctx), "Saved and activated grants for this client. Other active clients keep their snapshots."),
+      removeGrant: async (pathname, ctx) => grantResult(await control.getPolicyService().removeGrant(pathname, ctx), "Removed configured grant and activated this client's policy. Derived access is unchanged."),
+      reloadGrants: async (ctx) => grantResult(await control.getPolicyService().reloadGrants(ctx), "Reloaded saved grants for this client; controller unchanged."),
+      report,
+    }));
 
     pi.registerCommand("srt-routing-status", {
-      description: "Show the active shared SRT tool routing controller status",
+      description: "Show execution mode and shared controller status",
       handler: async (_args, ctx) => {
-        if (!connectedStatus) {
-          ctx.ui.notify(fatalError ?? "SRT tool routing is not connected.", "error");
-          return;
-        }
-        ctx.ui.notify(
-          [
-            `Health: ${connectedStatus.health ?? "healthy"}`,
-            `Sidecar: ${connectedStatus.sidecarId ?? "not created"}`,
-            `Docker: ${connectedStatus.dockerHealthy ? "healthy" : "starting"}`, 
-            `Policy: ${connectedStatus.policyGeneration}`,
-            `Attached roots: ${connectedStatus.attachedRoots}`,
-          ].join("\n"),
-          "info",
-        );
+        try { report(await statusAction(ctx), ctx); }
+        catch (error) { report({ message: error instanceof Error ? error.message : String(error), level: "error" }, ctx); }
       },
     });
   };

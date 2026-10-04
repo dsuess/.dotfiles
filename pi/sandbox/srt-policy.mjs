@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { validateFilesystemGrants } from "./filesystem-grants.mjs";
 
 const TOOL_ROOTS = ["/opt/homebrew", "/usr/local", "/usr/bin", "/bin"];
-const FORBIDDEN_HOME = new Set([".pi", ".codex", ".sbx", ".aws", ".azure", ".docker", ".kube", ".ssh"]);
 
 function within(candidate, root) {
   const relative = path.relative(root, candidate);
@@ -27,18 +27,10 @@ function aliases(value) {
     if (item === "/var" || item.startsWith("/var/")) out.add(`/private${item}`);
     if (item === "/private" || item.startsWith("/private/")) out.add(item.slice(8) || "/");
   }
-  return [...out];
-}
-function assertGrant(pathname, home, workspace, controllerRoot) {
-  if (within(pathname, controllerRoot) || within(controllerRoot, pathname) || pathname === "/" || pathname === home || within(pathname, path.join(home, ".ssh"))) throw new Error("grant overlaps protected root");
-  if (within(pathname, home)) {
-    const first = path.relative(home, pathname).split(path.sep)[0];
-    if (FORBIDDEN_HOME.has(first)) throw new Error("grant overlaps credential root");
-    const local = path.join(home, ".local");
-    const uvCredentials = path.join(local, "share", "uv", "credentials");
-    if (pathname === local || within(pathname, uvCredentials) || within(uvCredentials, pathname)) throw new Error("grant overlaps user-tool credential root");
-  }
-  if (within(pathname, workspace) || within(workspace, pathname)) throw new Error("additional grant overlaps workspace");
+  // Never turn a textual /private alias into authority for a different root.
+  return [...out].filter((item) => {
+    try { return fs.realpathSync(item) === resolved; } catch { return false; }
+  });
 }
 function assertHostReadRoot(pathname, home) {
   const local = path.join(home, ".local");
@@ -70,12 +62,8 @@ export function buildSrtPolicy(options) {
     assertHostReadRoot(resolved, home);
     reads.add(resolved);
   }
-  for (const grant of options.grants ?? []) {
-    const resolved = existing(grant.path, "filesystem grant");
-    const lexical = path.resolve(grant.path);
-    assertGrant(lexical, home, workspaceRoot, controllerRoot);
-    assertGrant(resolved, home, workspaceRoot, controllerRoot);
-    const grantAliases = aliases(lexical);
+  for (const grant of validateFilesystemGrants(options.grants ?? [], { ...options, home: options.home ?? home, controllerRoot: options.controllerRoot ?? options.runtimeRoot })) {
+    const grantAliases = aliases(grant.path);
     if (grant.access === "ro") grantAliases.forEach((item) => reads.add(item));
     else if (grant.access === "rw") grantAliases.forEach((item) => { reads.add(item); writes.add(item); });
     else throw new Error("filesystem grant access is invalid");
@@ -101,4 +89,4 @@ export function buildSrtPolicy(options) {
   };
   return Object.freeze({ ...policy, workspaceRoot, bareCommonDirectory: common, controllerRoot, dockerSocket, generation: createHash("sha256").update(JSON.stringify(policy)).digest("hex") });
 }
-export const srtPolicyInternals = Object.freeze({ within, assertGrant, assertHostReadRoot, aliases });
+export const srtPolicyInternals = Object.freeze({ within, assertHostReadRoot, aliases });

@@ -25,6 +25,12 @@ function fakeClient() {
     onTerminal(listener) { this.terminalListener = listener; return () => { this.terminalListener = null; }; },
     failTransport(message = "controller transport unavailable: peer closed") { this.terminalListener?.(new Error(message)); },
     async release() { this.releaseCalls += 1; },
+    async status() {
+      return {
+        health: "healthy", dockerHealthy: true, sidecarId: "vm-shared", workspaceKey: HEX_C,
+        workspaceRoot: "/physical/workspace", policyGeneration: HEX_B, runtimeGeneration: HEX_A, attachedRoots: 1,
+      };
+    },
     async access() {},
     async mkdir() {},
     async listDir() { return []; },
@@ -47,6 +53,7 @@ function createHarness(t, options = {}) {
   const handlers = new Map();
   const eventHandlers = new Map();
   const definitions = new Map();
+  const commands = new Map();
   const sourceByName = new Map();
   const status = [];
   let active = ["read", "write", "edit", "bash", "grep", "find", "ls", "unknown_host_tool"];
@@ -64,7 +71,7 @@ function createHarness(t, options = {}) {
       definitions.set(definition.name, definition);
       sourceByName.set(definition.name, sourceInfo);
     },
-    registerCommand() {},
+    registerCommand(name, definition) { commands.set(name, definition); },
     on(name, handler) {
       if (!handlers.has(name)) handlers.set(name, []);
       handlers.get(name).push(handler);
@@ -123,8 +130,10 @@ function createHarness(t, options = {}) {
     })).toString("base64");
   }
   const connectCalls = [];
+  let control;
   extensionModule.createSrtToolRoutingSandboxExtension({
     env,
+    onControl: (value) => { control = value; },
     statusIntervalMs: options.statusIntervalMs,
     auditOptions: { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR },
     acquire: options.acquire,
@@ -152,6 +161,8 @@ function createHarness(t, options = {}) {
     hasUI: true,
     mode: "tui",
     cwd: "/physical/workspace",
+    sessionManager: options.sessionManager ?? {},
+    isIdle: () => true,
     ui: {
       theme: { fg: (_color, value) => value },
       setStatus: (...args) => status.push(args),
@@ -174,9 +185,12 @@ function createHarness(t, options = {}) {
     env,
     handshake,
     definitions,
+    commands,
     sourceByName,
     eventHandlers,
     connectCalls,
+    control,
+    status,
     emit,
     active: () => [...active],
     getAllToolsCalls: () => getAllToolsCalls,
@@ -538,4 +552,377 @@ test("extension is inert for explicit --yolo launches", () => {
     registerTool: (tool) => definitions.push(tool),
   });
   assert.deepEqual(definitions, []);
+});
+
+test("conversation-local off survives only extension reload, never replacement, child, or restart", async (t) => {
+  for (const reason of ["reload", "new", "resume", "fork", "startup"]) {
+    const sessionManager = {};
+    const first = createHarness(t, { sessionManager });
+    await first.emit("session_start", { reason: "startup" });
+    await first.control.setMode("off", first.ctx);
+    assert.deepEqual(first.control.getMode(), { mode: "off", blockedReason: null });
+    assert.equal(Object.values(first.env).includes("off"), false, "off is never environment authority");
+    const child = createHarness(t, { env: { ...first.env }, sessionManager: {} });
+    await child.emit("session_start", { reason: "reload" });
+    assert.equal(child.control.getMode().mode, "on", "another client cannot inherit off even with identical capabilities");
+    await child.emit("session_shutdown", { reason: "quit" });
+    await first.emit("session_shutdown", { reason: reason === "startup" ? "reload" : reason });
+    const replacement = createHarness(t, { env: first.env, sessionManager });
+    await replacement.emit("session_start", { reason });
+    assert.equal(replacement.control.getMode().mode, reason === "reload" ? "off" : "on", reason);
+    await replacement.emit("session_shutdown", { reason: "quit" });
+  }
+});
+
+test("idle controls reject active tools, batches, user Bash, and policy transitions", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  for (const [start, end, event] of [
+    ["agent_start", "agent_end", {}],
+    ["tool_execution_start", "tool_execution_end", { toolCallId: "host-1", toolName: "ketch_search" }],
+  ]) {
+    await harness.emit(start, event);
+    await assert.rejects(() => harness.control.setMode("off", harness.ctx), /idle.*Retry after/);
+    assert.equal(harness.control.getMode().mode, "on");
+    await harness.emit(end, event);
+  }
+  let finish;
+  harness.client.exec = async () => new Promise((resolve) => { finish = resolve; });
+  const response = await harness.emit("user_bash", { command: "pwd" });
+  await assert.rejects(() => harness.control.setMode("off", harness.ctx), /idle.*Retry after/, "Bash authority is reserved before its engine starts");
+  const running = response.operations.exec("pwd", process.cwd(), { onData() {} });
+  await assert.rejects(() => harness.control.setMode("off", harness.ctx), /idle.*Retry after/);
+  finish({ exitCode: 0 });
+  await running;
+  let release;
+  const transition = harness.control.atIdle(harness.ctx, async () => new Promise((resolve) => { release = resolve; }));
+  await assert.rejects(() => harness.control.setMode("off", harness.ctx), /idle.*Retry after/);
+  await assert.rejects(() => harness.definitions.get("read").execute("blocked", { path: "x" }), /controls are changing/);
+  release();
+  await transition;
+  await harness.control.setMode("off", harness.ctx);
+  assert.equal(harness.control.getMode().mode, "off");
+  harness.ctx.isIdle = () => false;
+  await assert.rejects(() => harness.control.setMode("on", harness.ctx), /idle.*Retry after/);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("on waits for controller and effective policy, and failure blocks execution instead of host fallback", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.control.setMode("off", harness.ctx);
+  let finish;
+  harness.control.setPolicyVerifier(async () => new Promise((resolve) => { finish = resolve; }));
+  const enabling = harness.control.setMode("on", harness.ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(harness.control.getMode().blockedReason, /being verified/);
+  await assert.rejects(() => harness.definitions.get("read").execute("read-transition", { path: "x" }), /controls are changing/);
+  finish();
+  await enabling;
+  assert.deepEqual(harness.control.getMode(), { mode: "on", blockedReason: null });
+  await harness.control.setMode("off", harness.ctx);
+  harness.control.setPolicyVerifier(async () => { throw new Error("effective snapshot is not ready"); });
+  await assert.rejects(() => harness.control.setMode("on", harness.ctx), /execution blocked.*effective snapshot/);
+  assert.equal(harness.control.getMode().mode, "on");
+  await assert.rejects(() => harness.definitions.get("read").execute("read-blocked", { path: "x" }), /execution blocked/);
+  const bash = await harness.emit("user_bash", { command: "pwd" });
+  assert.equal(bash.result.exitCode, 126);
+  assert.match(bash.result.output, /effective snapshot/);
+  assert.deepEqual(await harness.emit("input", { text: "x" }), { action: "handled" });
+  await harness.control.setMode("off", harness.ctx);
+  harness.client.status = async () => { throw new Error("controller unavailable"); };
+  await assert.rejects(() => harness.control.setMode("on", harness.ctx), /execution blocked.*controller unavailable/);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("controller health failure while deliberately off retains host execution and reload choice", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.control.setMode("off", harness.ctx);
+  harness.client.failTransport();
+  assert.equal(harness.control.getMode().mode, "off");
+  assert.deepEqual(harness.active().sort(), ["bash", "read"]);
+  assert.equal(harness.shutdownCalls(), 0);
+  const chunks = [];
+  const response = await harness.emit("user_bash", { command: "printf host" });
+  await response.operations.exec("printf host", process.cwd(), { onData: (data) => chunks.push(data.toString()) });
+  assert.equal(chunks.join(""), "host");
+  await assert.rejects(() => harness.control.setMode("on", harness.ctx), /execution blocked.*transport unavailable/);
+  await harness.control.setMode("off", harness.ctx);
+  await harness.emit("session_shutdown", { reason: "reload" });
+  const replacement = createHarness(t, { env: harness.env, sessionManager: harness.ctx.sessionManager, connectError: "controller unavailable" });
+  // Supply failed inherited transport rather than acquiring a new controller.
+  Object.assign(replacement.env, {
+    PI_SRT_ROUTING_SOCKET: "/tmp/failed.sock", PI_SRT_ROUTING_LEASE: HEX_A,
+    PI_SRT_ROUTING_WORKSPACE_KEY: HEX_C, PI_SRT_ROUTING_WORKSPACE_ROOT: "/physical/workspace",
+    PI_SRT_ROUTING_POLICY_GENERATION: HEX_B, PI_SRT_ROUTING_IMAGE_GENERATION: HEX_A,
+  });
+  await replacement.emit("session_start", { reason: "reload" });
+  assert.deepEqual(await replacement.emit("input", { text: "x" }), { action: "continue" });
+  assert.equal(replacement.control.getMode().mode, "off");
+  assert.deepEqual(replacement.active().sort(), ["bash", "read"]);
+  assert.equal(replacement.shutdownCalls(), 0);
+  await assert.rejects(() => replacement.control.setMode("on", replacement.ctx), /execution blocked.*controller unavailable/);
+  await replacement.control.setMode("off", replacement.ctx);
+  assert.equal(replacement.control.getMode().mode, "off", "failed reload readiness cannot erase prior explicit authorization");
+  await replacement.emit("session_shutdown", { reason: "quit" });
+});
+
+test("off cannot bypass normal startup readiness or trusted provenance", async (t) => {
+  const harness = createHarness(t, { connectError: "controller unavailable" });
+  await harness.emit("session_start", { reason: "startup" });
+  await assert.rejects(() => harness.control.setMode("off", harness.ctx), /controller unavailable/);
+  assert.equal(harness.control.getMode().mode, "on");
+  const ready = createHarness(t);
+  await ready.emit("session_start", { reason: "startup" });
+  await ready.control.setMode("off", ready.ctx);
+  ready.sourceByName.set("bash", { path: "/tmp/spoofed.ts", scope: "user", origin: "top-level", baseDir: AGENT_DIR });
+  assert.equal((await ready.emit("tool_call", { toolName: "bash" })).block, true);
+  await assert.rejects(() => ready.emit("before_agent_start"), /trusted SRT tool-routing extension provenance/);
+  assert.deepEqual(ready.active(), []);
+  assert.equal(ready.shutdownCalls(), 1);
+});
+
+test("off keeps the independent planning user-Bash preflight", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.control.setMode("off", harness.ctx);
+  harness.pi.events.on(extensionModule.SANDBOX_BEFORE_USER_BASH_EVENT, (payload) => {
+    payload.result = { result: { output: "Planning mode blocks mutations", exitCode: 126, cancelled: false, truncated: false } };
+  });
+  const result = await harness.emit("user_bash", { command: "touch must-not-exist" });
+  assert.equal(result.result.exitCode, 126);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("real planning extension blocks native-off mutations independently of routing mode", async (t) => {
+  const plan = await jiti.import(new URL("../plan-mode/index.ts", import.meta.url).pathname);
+  const harness = createHarness(t);
+  const entries = [];
+  Object.assign(harness.pi, {
+    registerFlag() {}, getFlag: () => true, registerEntryRenderer() {}, registerShortcut() {},
+    appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
+  });
+  Object.assign(harness.ctx.sessionManager, { getBranch: () => entries, getSessionFile: () => undefined });
+  harness.ctx.ui.setWidget = () => {};
+  plan.default(harness.pi);
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.emit("input", { text: "planning", source: "interactive" });
+  const planningTools = harness.active();
+  assert.equal(planningTools.includes("write"), false);
+  for (const selectedMode of ["off", "on"]) {
+    await harness.control.setMode(selectedMode, harness.ctx);
+    assert.deepEqual(harness.active(), planningTools, "changing SRT mode must not restore gated mutation tools");
+    for (const [toolName, input] of [["write", { path: "denied", content: "x" }], ["bash", { command: "touch denied" }]]) {
+      const blocked = await harness.emit("tool_call", { toolName, input });
+      assert.equal(blocked.block, true);
+      assert.match(blocked.reason, /Planning mode/);
+    }
+    const userBash = await harness.emit("user_bash", { command: "touch denied" });
+    assert.equal(userBash.result.exitCode, 126);
+    assert.match(userBash.result.output, /Planning mode/);
+  }
+  assert.equal(entries.some((entry) => JSON.stringify(entry).includes('"mode":"off"')), false, "bypass authority is never persisted with planning history");
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("module re-evaluation retains trusted reload state, not transcript or environment off claims", async () => {
+  const modeModule = await jiti.import(new URL("./mode-state.ts", import.meta.url).pathname);
+  const manager = { getBranch: () => [{ type: "custom", customType: "sandbox-mode", data: { mode: "off" } }] };
+  const mode = await modeModule.startConversationMode(manager, "startup");
+  assert.equal(mode.snapshot().mode, "on", "transcript claims have no authority");
+  await mode.switchMode("off", () => true, async () => {});
+  modeModule.retireConversationMode(mode, manager, "reload");
+  const freshJiti = await createPiJiti(import.meta.url);
+  const reloadedModule = await freshJiti.import(new URL("./mode-state.ts", import.meta.url).pathname);
+  const retained = await reloadedModule.startConversationMode(manager, "reload");
+  assert.equal(retained.snapshot().mode, "off");
+  reloadedModule.retireConversationMode(retained, manager, "quit");
+  const restarted = await reloadedModule.startConversationMode(manager, "reload");
+  assert.equal(restarted.snapshot().mode, "on");
+});
+
+test("actual child-runtime environment selection does not transmit parent off authority", async (t) => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { runSubagent } = await import("../subagent/runtime.js");
+  const parent = createHarness(t);
+  await parent.emit("session_start", { reason: "startup" });
+  await parent.control.setMode("off", parent.ctx);
+  let childEnv;
+  await runSubagent({
+    prompt: "Report mode", model: "test-provider/test-model", thinkingLevel: "high",
+    cwd: process.cwd(), systemPrompt: "OFF — host access (parent conversation only)", activeTools: parent.active(),
+  }, {
+    baseEnv: parent.env,
+    spawnImpl(_command, args, options) {
+      childEnv = options.env;
+      assert.ok(args.includes("--no-builtin-tools"));
+      assert.equal(args.includes("--yolo"), false);
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      queueMicrotask(() => {
+        child.stdout.end(`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "on" }], stopReason: "stop" } })}\n`);
+        child.stderr.end();
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+  });
+  assert.equal(childEnv.PI_SRT_ROUTING_LEASE, parent.env.PI_SRT_ROUTING_LEASE);
+  assert.equal(Object.values(childEnv).includes("off"), false);
+  const child = createHarness(t, { env: childEnv });
+  await child.emit("session_start", { reason: "startup" });
+  assert.equal(child.control.getMode().mode, "on");
+  assert.equal(parent.control.getMode().mode, "off");
+  await child.emit("session_shutdown", { reason: "quit" });
+  await parent.emit("session_shutdown", { reason: "quit" });
+});
+
+test("entrypoint attaches isolated policy services, retains snapshots only for reload, and forwards no snapshot to children", async (t) => {
+  function policyClient(revision) {
+    const client = fakeClient();
+    client.effectiveSnapshot = { revision, config: { version: 1, filesystem: { readOnly: [], readWrite: [] } }, grants: [], configPath: "/saved/config.json", targetPath: "/saved/config.json" };
+    client.preparations = [];
+    const originalStatus = client.status.bind(client);
+    client.status = async () => ({ ...await originalStatus(), effectiveConfiguration: client.effectiveSnapshot, effectiveRevision: client.effectiveSnapshot.revision, savedRevision: HEX_C });
+    client.preparePolicy = async (snapshot) => {
+      client.preparations.push(snapshot);
+      return { preparation: HEX_A, policyGeneration: HEX_B };
+    };
+    client.activatePolicy = async (_prepared, snapshot) => { client.effectiveSnapshot = snapshot; };
+    return client;
+  }
+  const manager = {};
+  const first = createHarness(t, { sessionManager: manager, client: policyClient(HEX_A) });
+  await first.emit("session_start", { reason: "startup" });
+  await first.emit("input");
+  assert.equal((await first.control.getPolicyService().status()).effectiveRevision, HEX_A);
+  await first.emit("session_shutdown", { reason: "reload" });
+  const reloaded = createHarness(t, { sessionManager: manager, env: first.env, client: policyClient(HEX_C) });
+  await reloaded.emit("session_start", { reason: "reload" });
+  await reloaded.emit("input");
+  assert.equal(reloaded.connectCalls[0].effectiveSnapshot.revision, HEX_A);
+  assert.equal((await reloaded.control.getPolicyService().status()).effectiveRevision, HEX_A);
+  const child = createHarness(t, { sessionManager: {}, env: { ...first.env }, client: policyClient(HEX_C) });
+  await child.emit("session_start", { reason: "startup" });
+  await child.emit("input");
+  assert.equal(child.connectCalls[0].effectiveSnapshot, undefined);
+  assert.equal((await child.control.getPolicyService().status()).effectiveRevision, HEX_C);
+  await child.emit("session_shutdown", { reason: "quit" });
+  await reloaded.emit("session_shutdown", { reason: "new" });
+  const fresh = createHarness(t, { sessionManager: manager, env: reloaded.env, client: policyClient(HEX_C) });
+  await fresh.emit("session_start", { reason: "new" });
+  await fresh.emit("input");
+  assert.equal(fresh.connectCalls[0].effectiveSnapshot, undefined);
+  assert.equal((await fresh.control.getPolicyService().status()).effectiveRevision, HEX_C);
+  await fresh.emit("session_shutdown", { reason: "quit" });
+});
+
+test("registered sandbox commands bind literal paths and menu actions to trusted policy services", async (t) => {
+  const harness = createHarness(t);
+  const calls = [], notifications = [], notices = [];
+  harness.ctx.ui.notify = (...args) => notifications.push(args);
+  harness.pi.sendMessage = (message) => notices.push(message);
+  await harness.emit("session_start", { reason: "startup" });
+  const snapshot = { savedRevision: HEX_A, effectiveRevision: HEX_A, refreshNeeded: false,
+    configPath: "/canonical/config.json", configuredGrants: [{ path: "/safe/path with spaces", access: "ro" }],
+    filesystemGrants: [{ path: "/safe/path with spaces", access: "ro" }] };
+  harness.control.getPolicyService = () => ({
+    async addGrant(...args) { calls.push(["add", ...args]); return snapshot; },
+    async removeGrant(...args) { calls.push(["remove", ...args]); return snapshot; },
+    async reloadGrants(...args) { calls.push(["reload", ...args]); return snapshot; },
+  });
+  const command = harness.commands.get("sandbox");
+  await command.handler("grants add ro /safe/path with spaces", harness.ctx);
+  assert.deepEqual(calls.at(-1), ["add", "ro", "/safe/path with spaces", harness.ctx]);
+  assert.match(notifications.at(-1)[0], /Saved and activated/);
+  assert.match(notifications.at(-1)[0], /Config: \/canonical\/config.json/);
+  assert.match(notifications.at(-1)[0], /Configured grants:/);
+  const choices = ["Add or change a saved grant", "Read-write (rw)"];
+  harness.ctx.ui.select = async () => choices.shift();
+  harness.ctx.ui.input = async () => "/safe/path with spaces";
+  await command.handler("", harness.ctx);
+  assert.deepEqual(calls.at(-1), ["add", "rw", "/safe/path with spaces", harness.ctx]);
+  await command.handler("grants remove /safe/path with spaces", harness.ctx);
+  assert.deepEqual(calls.at(-1), ["remove", "/safe/path with spaces", harness.ctx]);
+  assert.match(notifications.at(-1)[0], /Derived access is unchanged/);
+  await command.handler("reload", harness.ctx);
+  assert.deepEqual(calls.at(-1), ["reload", harness.ctx]);
+  const count = calls.length;
+  harness.ctx.ui.select = async () => undefined;
+  await command.handler("", harness.ctx);
+  await command.handler("reset", harness.ctx);
+  assert.equal(calls.length, count, "cancel and unsupported sidecar commands cannot mutate");
+  assert.match(notifications.at(-1)[0], /Invalid \/sandbox syntax/);
+  assert.equal(notices.length, 0, "grant actions do not change execution mode");
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("user commands publish immediate off warnings, retain indicators on reload, and report failed on", async (t) => {
+  const manager = {};
+  const first = createHarness(t, { sessionManager: manager });
+  const notifications = [], messages = [];
+  first.ctx.ui.notify = (...args) => notifications.push(args);
+  first.pi.sendMessage = (message, options) => messages.push([message, options]);
+  await first.emit("session_start", { reason: "startup" });
+  const command = first.commands.get("sandbox");
+  await command.handler("off", first.ctx);
+  assert.equal(first.control.getMode().mode, "off");
+  assert.equal(notifications.at(-1)[1], "warning");
+  for (const term of [/files/, /credentials/, /Docker/, /Other clients remain sandboxed/, /cannot undo host effects/]) {
+    assert.match(notifications.at(-1)[0], term);
+  }
+  assert.match(first.status.at(-1)[1], /sandbox: off — host access/);
+  assert.equal(messages.at(-1)[0].display, false);
+  assert.equal(messages.at(-1)[1].triggerTurn, false);
+  await first.commands.get("srt-routing-status").handler("", first.ctx);
+  assert.match(notifications.at(-1)[0], /Docker selection: host Docker/);
+  assert.match(notifications.at(-1)[0], /Private Docker health: healthy \(not selected\)/);
+  await command.handler("off", first.ctx);
+  assert.equal(messages.length, 1, "repeated off does not create a mode-change notice");
+  await first.emit("session_shutdown", { reason: "reload" });
+  const next = createHarness(t, { env: first.env, sessionManager: manager });
+  next.ctx.ui.notify = (...args) => notifications.push(args);
+  next.pi.sendMessage = (message) => messages.push([message]);
+  await next.emit("session_start", { reason: "reload" });
+  assert.match(next.status.at(-1)[1], /sandbox: off — host access/);
+  next.control.setPolicyVerifier(async () => { throw new Error("policy unavailable"); });
+  await next.commands.get("sandbox").handler("on", next.ctx);
+  assert.match(notifications.at(-1)[0], /policy unavailable/);
+  assert.equal(notifications.at(-1)[1], "error");
+  assert.match(next.status.at(-1)[1], /sandbox: on — blocked/);
+  await next.commands.get("sandbox").handler("status", next.ctx);
+  assert.match(notifications.at(-1)[0], /Sandbox execution blocked:/);
+  assert.equal((await next.emit("tool_call", { toolName: "read" })).block, true);
+  assert.equal(messages.length, 1, "failed mode transition sends no success notice");
+  await next.emit("session_shutdown", { reason: "quit" });
+});
+
+test("registered no-UI commands publish read-only status and errors without mutation", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  harness.ctx.hasUI = false;
+  harness.ctx.mode = "print";
+  const messages = [];
+  harness.pi.sendMessage = (message, options) => messages.push([message, options]);
+  harness.ctx.ui.notify = () => { throw new Error("no terminal output allowed"); };
+  let mutations = 0;
+  harness.control.setMode = async () => { mutations += 1; };
+  harness.control.getPolicyService = () => { mutations += 1; throw new Error("must not run"); };
+  const command = harness.commands.get("sandbox");
+  for (const args of ["", "status", "grants list", "help"]) {
+    await command.handler(args, harness.ctx);
+    assert.equal(messages.at(-1)[0].display, true);
+    assert.equal(messages.at(-1)[1].triggerTurn, false);
+  }
+  assert.match(messages[0][0].content, /Execution: ON — sandboxed/);
+  for (const args of ["off", "on", "reload", "grants add rw /safe/path", "grants remove /safe/path"]) {
+    await command.handler(args, harness.ctx);
+    assert.match(messages.at(-1)[0].content, /requires interactive or RPC UI/);
+  }
+  assert.equal(mutations, 0);
+  await harness.emit("session_shutdown", { reason: "quit" });
 });

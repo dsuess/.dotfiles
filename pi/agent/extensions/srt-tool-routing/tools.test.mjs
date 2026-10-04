@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createPiJiti } from "../../../test-helpers.mjs";
@@ -6,10 +8,14 @@ import { createPiJiti } from "../../../test-helpers.mjs";
 const jiti = await createPiJiti(import.meta.url);
 const {
   createSandboxBashOperations,
+  createModeBashOperations,
+  createModeDispatchedTool,
+  sanitizeHostEnvironment,
   pathResolvedHostTool,
   registerSandboxTools,
   sanitizeGuestEnvironment,
 } = await jiti.import(new URL("./tools.ts", import.meta.url).pathname);
+const { ConversationMode } = await jiti.import(new URL("./mode-state.ts", import.meta.url).pathname);
 const { adapterEffects } = await jiti.import(new URL("./host-adapters.ts", import.meta.url).pathname);
 
 function fakeClient(cwd) {
@@ -69,11 +75,11 @@ function fakeClient(cwd) {
   };
 }
 
-function registeredTools(client, cwd) {
+function registeredTools(client, cwd, execution) {
   const tools = new Map();
   registerSandboxTools(
     { registerTool(tool) { tools.set(tool.name, tool); } },
-    { cwd, getClient: () => client },
+    { cwd, getClient: () => client, execution },
   );
   return tools;
 }
@@ -202,4 +208,128 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
   for (const name of ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]) {
     assert.equal(sanitized[name], undefined, `${name} must not propagate SRT tool routing MITM trust`);
   }
+});
+
+test("dispatch keeps native schemas, renderers, and exact execution arguments in both modes", async () => {
+  const mode = new ConversationMode();
+  const calls = [];
+  const nativeResult = { content: [{ type: "text", text: "host" }], details: { path: "host" } };
+  const sandboxResult = { content: [{ type: "text", text: "sandbox" }], details: { path: "sandbox" } };
+  const native = {
+    name: "bash", parameters: { type: "object" }, renderCall() {}, renderResult() {},
+    outputSchema: { type: "object" }, executionMode: "sequential",
+    execute: async (...args) => { calls.push(["host", ...args]); return nativeResult; },
+  };
+  const tool = createModeDispatchedTool(native, async (...args) => { calls.push(["sandbox", ...args]); return sandboxResult; }, mode);
+  for (const key of ["parameters", "renderCall", "renderResult", "outputSchema", "executionMode"]) assert.equal(tool[key], native[key]);
+  const args = ["id", { command: "pwd" }, new AbortController().signal, () => {}, { cwd: "/example" }];
+  assert.equal(await tool.execute(...args), sandboxResult);
+  await mode.switchMode("off", () => true, async () => {});
+  assert.equal(await tool.execute(...args), nativeResult);
+  assert.deepEqual(calls, [["sandbox", ...args], ["host", ...args]]);
+});
+
+test("all seven registered replacements select real host operations off and controller operations on", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "srt-native-dispatch-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cwd = path.join(root, "workspace");
+  const outside = path.join(root, "outside workspace");
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "host.txt"), "host-needle\n");
+  const client = fakeClient(cwd);
+  const mode = new ConversationMode();
+  const tools = registeredTools(client, cwd, mode);
+  const before = new Map(client.files);
+  await mode.switchMode("off", () => true, async () => {});
+  assert.match((await tools.get("read").execute("host-read", { path: path.join(outside, "host.txt") })).content[0].text, /host-needle/);
+  await tools.get("write").execute("host-write", { path: path.join(outside, "edit.txt"), content: "before\n" });
+  await tools.get("edit").execute("host-edit", { path: path.join(outside, "edit.txt"), edits: [{ oldText: "before", newText: "after" }] });
+  assert.equal(fs.readFileSync(path.join(outside, "edit.txt"), "utf8"), "after\n");
+  assert.match((await tools.get("grep").execute("host-grep", { pattern: "host-needle", path: outside })).content[0].text, /host\.txt:1/);
+  assert.match((await tools.get("find").execute("host-find", { pattern: "*.txt", path: outside })).content[0].text, /host\.txt/);
+  assert.match((await tools.get("ls").execute("host-ls", { path: outside })).content[0].text, /host\.txt/);
+  const updates = [];
+  const bash = await tools.get("bash").execute("host-bash", { command: "printf native-bash" }, undefined, (result) => updates.push(result));
+  assert.match(bash.content[0].text, /native-bash/);
+  assert.ok(updates.length > 0, "native streaming remains enabled");
+  assert.deepEqual(client.files, before);
+  assert.equal(client.execCalls.length, 0, "host dispatch never consults the controller");
+  await mode.switchMode("on", () => true, async () => {});
+  assert.match((await tools.get("read").execute("sandbox-read", { path: "read.txt" })).content[0].text, /line one/);
+  await tools.get("write").execute("sandbox-write", { path: "new.txt", content: "sandbox" });
+  await tools.get("edit").execute("sandbox-edit", { path: "edit.txt", edits: [{ oldText: "before", newText: "sandbox-after" }] });
+  await tools.get("grep").execute("sandbox-grep", { pattern: "line" });
+  await tools.get("find").execute("sandbox-find", { pattern: "*.txt" });
+  await tools.get("ls").execute("sandbox-ls", { path: "." });
+  await tools.get("bash").execute("sandbox-bash", { command: "pwd" });
+  assert.equal(client.files.get(path.join(cwd, "new.txt")).toString(), "sandbox");
+  assert.equal(client.files.get(path.join(cwd, "edit.txt")).toString(), "sandbox-after\n");
+  assert.equal(client.execCalls.length, 3);
+  assert.equal(fs.existsSync(path.join(cwd, "new.txt")), false, "sandbox writes never fall back to host");
+});
+
+test("off retains host HOME, Docker, credentials and session context but hides routing authority", async () => {
+  const env = {
+    HOME: os.homedir(), DOCKER_HOST: "unix:///host/docker.sock", DOCKER_CONTEXT: "host-context",
+    SSH_AUTH_SOCK: "/host/ssh-agent.sock", OPENAI_API_KEY: "tool-secret", PI_SESSION_ID: "host-session",
+    PI_SRT_ROUTING_LEASE: "hidden", PI_SRT_ROUTING_SOCKET: "/hidden/controller.sock",
+    PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "hidden-descriptor", PI_SRT_ROUTING: "1",
+  };
+  const sanitized = sanitizeHostEnvironment(env);
+  for (const key of ["HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "SSH_AUTH_SOCK", "OPENAI_API_KEY", "PI_SESSION_ID"]) assert.equal(sanitized[key], env[key]);
+  for (const key of Object.keys(env).filter((key) => key.startsWith("PI_SRT_"))) assert.equal(sanitized[key], undefined);
+  const sandboxEnv = sanitizeGuestEnvironment(env);
+  assert.equal(sandboxEnv.HOME, "/root");
+  for (const key of ["PI_SRT_ROUTING_LEASE", "PI_SRT_ROUTING_SOCKET", "DOCKER_HOST", "DOCKER_CONTEXT", "SSH_AUTH_SOCK"]) assert.equal(sandboxEnv[key], undefined);
+  const mode = new ConversationMode();
+  await mode.switchMode("off", () => true, async () => {});
+  const operations = createModeBashOperations(() => { throw new Error("must not consult controller off"); }, mode);
+  const chunks = [];
+  await operations.exec('printf "%s|%s|%s|%s|%s" "$HOME" "$DOCKER_HOST" "$DOCKER_CONTEXT" "$PI_SRT_ROUTING_LEASE" "$PI_SRT_ROUTING_SOCKET"', process.cwd(), {
+    env, onData: (data) => chunks.push(data.toString()),
+  });
+  assert.equal(chunks.join(""), `${os.homedir()}|unix:///host/docker.sock|host-context||`);
+});
+
+test("off preserves native cancellation and mutation queues; active operations hold their authority", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "srt-native-queue-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const mode = new ConversationMode();
+  await mode.switchMode("off", () => true, async () => {});
+  const tools = registeredTools(fakeClient(cwd), cwd, mode);
+  fs.writeFileSync(path.join(cwd, "queued.txt"), "first");
+  await Promise.all([
+    tools.get("edit").execute("edit-first", { path: "queued.txt", edits: [{ oldText: "first", newText: "second" }] }),
+    tools.get("edit").execute("edit-second", { path: "queued.txt", edits: [{ oldText: "second", newText: "third" }] }),
+  ]);
+  assert.equal(fs.readFileSync(path.join(cwd, "queued.txt"), "utf8"), "third");
+  const abort = new AbortController();
+  let started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const running = tools.get("bash").execute("cancel-bash", { command: "printf started; sleep 20" }, abort.signal, () => started());
+  await ready;
+  await assert.rejects(() => mode.switchMode("on", () => true, async () => {}), /Retry after.*user Bash/);
+  abort.abort();
+  await assert.rejects(() => running, /aborted/);
+  await mode.switchMode("on", () => true, async () => {});
+});
+
+test("native Bash retains Pi session metadata and contextual cwd while sandbox Bash suppresses it", async () => {
+  const mode = new ConversationMode();
+  const client = fakeClient(process.cwd());
+  const tools = registeredTools(client, "/not-the-current-directory", mode);
+  const context = {
+    cwd: process.cwd(), thinkingLevel: "high", model: { provider: "test-provider", id: "test-model" },
+    sessionManager: { getSessionId: () => "conversation-id", getSessionFile: () => "/sessions/current.jsonl" },
+  };
+  await mode.switchMode("off", () => true, async () => {});
+  const result = await tools.get("bash").execute("native-context", {
+    command: 'printf "%s|%s|%s|%s|%s" "$PI_SESSION_ID" "$PI_SESSION_FILE" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"',
+  }, undefined, undefined, context);
+  assert.equal(result.content[0].text, "conversation-id|/sessions/current.jsonl|test-provider|test-model|high");
+  await mode.switchMode("on", () => true, async () => {});
+  await tools.get("bash").execute("sandbox-context", { command: "pwd" }, undefined, undefined, context);
+  assert.equal(client.execCalls[0].options.cwd, process.cwd());
+  assert.equal(client.execCalls[0].options.env.PI_SESSION_ID, undefined);
 });

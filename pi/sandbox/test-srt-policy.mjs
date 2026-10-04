@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,8 +10,10 @@ async function fixture(t) {
   const home = path.join(root, "home"), workspace = path.join(home, "workspace"), controller = path.join(root, "controller"), broker = path.join(root, "broker"), tools = path.join(root, "tools");
   for (const item of [workspace, controller, broker, tools, path.join(home, ".local/bin"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials")]) fs.mkdirSync(item, { recursive: true });
   fs.writeFileSync(path.join(home, ".zshrc"), "safe\n");
-  const socket = path.join(broker, "docker.sock"), server = net.createServer(); await new Promise((resolve) => server.listen(socket, resolve));
-  t.after(async () => { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  // Policy construction checks path identity, not socket liveness. Keep this
+  // deterministic unit fixture independent of native socket-bind permissions.
+  const socket = path.join(broker, "docker.sock"); fs.writeFileSync(socket, "");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return { home, workspace, controller, tools, socket };
 }
 test("grants complete writes only to trusted roots and exact Unix sockets", async (t) => {

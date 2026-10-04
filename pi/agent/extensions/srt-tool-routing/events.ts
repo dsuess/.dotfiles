@@ -4,6 +4,9 @@ export type SandboxHealth = "starting" | "healthy" | "restarting" | "failed" | "
 
 export interface SandboxLifecycleEvent {
   health: SandboxHealth;
+  // Execution authority is separate from controller/sidecar health.
+  mode?: "on" | "off";
+  blockedReason?: string | null;
   sidecarId: string | null;
   dockerHealthy: boolean;
   attachedRoots: number;
@@ -16,6 +19,8 @@ export interface SandboxLifecycleEvent {
 export function lifecycleFromStatus(status: any): SandboxLifecycleEvent {
   return {
     health: status?.health ?? "failed",
+    mode: status?.mode === "off" ? "off" : "on",
+    blockedReason: typeof status?.blockedReason === "string" ? status.blockedReason : null,
     sidecarId: typeof status?.sidecarId === "string" ? status.sidecarId : null,
     dockerHealthy: status?.dockerHealthy === true,
     attachedRoots: Number.isInteger(status?.attachedRoots) ? status.attachedRoots : 0,

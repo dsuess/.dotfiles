@@ -12,6 +12,8 @@ export const PROTOCOL_METHODS = Object.freeze([
   "lease.heartbeat",
   "lease.release",
   "status",
+  "policy.prepare",
+  "policy.activate",
   "fs.access",
   "fs.mkdir",
   "fs.listDir",
@@ -197,6 +199,33 @@ function validateMethod(method, params) {
     case "status":
       exactKeys(params, new Set(["policyGeneration"]), "params");
       if (params.policyGeneration !== undefined) generation(params.policyGeneration);
+      break;
+    case "policy.prepare": {
+      exactKeys(params, new Set(["config", "grants", "revision"]), "params");
+      generation(params.revision, "params.revision");
+      const config = plainObject(params.config, "params.config");
+      exactKeys(config, new Set(["version", "filesystem"]), "params.config");
+      if (config.version !== 1) throw protocolError("invalid_request", "unsupported filesystem configuration");
+      const filesystem = plainObject(config.filesystem, "params.config.filesystem");
+      exactKeys(filesystem, new Set(["readOnly", "readWrite"]), "params.config.filesystem");
+      for (const paths of [filesystem.readOnly, filesystem.readWrite]) {
+        if (!Array.isArray(paths) || paths.length > 32) throw protocolError("invalid_request", "filesystem grants must be bounded arrays");
+        for (const entry of paths) string(entry, "grant path", MAX_PATH_BYTES);
+      }
+      if (!Array.isArray(params.grants) || params.grants.length > 32) throw protocolError("invalid_request", "filesystem grants must be bounded arrays");
+      for (const grant of params.grants) {
+        plainObject(grant, "grant");
+        exactKeys(grant, new Set(["path", "canonicalPath", "access"]), "grant");
+        absolutePath(grant.path, "grant.path");
+        absolutePath(grant.canonicalPath, "grant.canonicalPath");
+        if (!["ro", "rw"].includes(grant.access)) throw protocolError("invalid_request", "invalid grant access");
+      }
+      break;
+    }
+    case "policy.activate":
+      exactKeys(params, new Set(["preparation", "revision"]), "params");
+      generation(params.preparation, "params.preparation");
+      generation(params.revision, "params.revision");
       break;
     case "fs.access":
       validatePathParams(params, ["mode"]);

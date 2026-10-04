@@ -18,6 +18,7 @@ import {
 	SANDBOX_LIFECYCLE_EVENT,
 	type SandboxLifecycleEvent,
 } from "./srt-tool-routing/events.ts";
+import { compactSandboxStatus } from "./srt-tool-routing/status-view.ts";
 import {
 	PLAN_MODE_WORKFLOW_STATE_EVENT,
 	type PlanModeWorkflowStateEvent,
@@ -202,14 +203,12 @@ export default function (pi: ExtensionAPI) {
 					const thinkStr = cf(P.overlay1, ` [${thinkingLevel}]`);
 					line += cf(P.text, ` ${I.model} ${modelId}`) + thinkStr + cf(P.text, " ");
 
-					if (sandboxLifecycle) {
-						const health = sandboxLifecycle.health;
-						const color = health === "healthy" ? P.green : health === "failed" ? P.red : P.peach;
-						const label = health === "healthy"
-							? `srt:${sandboxLifecycle.sidecarId?.slice(0, 6) ?? "ready"}`
-							: health;
-						line += cf(color, ` ${health === "healthy" ? "●" : "◌"} ${label} `);
-					}
+					const beforeSandboxWidth = visibleWidth(line);
+					const compact = sandboxLifecycle ? compactSandboxStatus(sandboxLifecycle) : undefined;
+					const sandboxSegment = compact
+						? cf(compact.color === "success" ? P.green : compact.color === "error" ? P.red : P.peach, ` ${compact.label} `)
+						: "";
+					line += sandboxSegment;
 
 					// Segment 3: Current context usage — blue accent
 					const contextDisplay = selectContextDisplay(ctx.getContextUsage());
@@ -235,9 +234,20 @@ export default function (pi: ExtensionAPI) {
 					// ── Final  separator: surface0 → crust ──
 					line += sep(P.surface0, P.crust) + R;
 
-					if (!planningActive) return [truncateToWidth(line, width)];
+					const safeWidth = Math.max(0, width);
 					const marker = R + cf(P.overlay0, "[PLANNING]") + R;
-					return [composeWithRightMarker(line, marker, width)];
+					const markerSpace = planningActive ? visibleWidth(marker) + 1 : 0;
+					// Keep off authority visible when the ordinary segment would be clipped.
+					if (compact && sandboxLifecycle?.mode === "off" &&
+						safeWidth < beforeSandboxWidth + visibleWidth(sandboxSegment) + markerSpace) {
+						const label = safeWidth >= visibleWidth(compact.label) ? compact.label
+							: safeWidth >= visibleWidth("sandbox: off") ? "sandbox: off" : "off";
+						line = R + cf(P.red, label) + R + " " + line.replace(sandboxSegment, "");
+						if (safeWidth < visibleWidth(label) + markerSpace) {
+							return [truncateToWidth(line, safeWidth, "")];
+						}
+					}
+					return [planningActive ? composeWithRightMarker(line, marker, safeWidth) : truncateToWidth(line, safeWidth, "")];
 				},
 			};
 		});

@@ -11,7 +11,7 @@ import { encodeFrame, FrameDecoder, makeRequest, validateResponse } from "./prot
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const controller = path.join(HERE, "controller.mjs");
-const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "config.json"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs")];
+const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "filesystem-configuration.mjs"), path.join(HERE, "client-policy.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "srt-compatibility-canary.mjs"), path.join(HERE, "apply-srt-workspace-write-patch.mjs"), path.join(HERE, "package.json"), path.join(HERE, "package-lock.json")];
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);
@@ -208,6 +208,10 @@ export class ControllerClient {
     try {
       if (options.adoptLease && options.renewalStartup) client.configureLeaseRenewal(options.renewalStartup);
       await client.ready;
+      if (options.effectiveSnapshot) {
+        const prepared = await client.preparePolicy(options.effectiveSnapshot);
+        await client.activatePolicy(prepared, options.effectiveSnapshot);
+      }
       return { client, status: await client.status() };
     } catch (error) {
       client.destroy();
@@ -273,7 +277,30 @@ export class ControllerClient {
       return this.requestOnce(method, params);
     }
   }
-  async status() { return (await this.request("status", { policyGeneration: this.policyGeneration })).result; }
+  async status() {
+    const status = (await this.request("status", { policyGeneration: this.policyGeneration })).result;
+    if (status.effectiveConfiguration) this.effectiveSnapshot = status.effectiveConfiguration;
+    // An inherited lease does not carry its parent's effective grants. Each
+    // connection initializes independently, even on an existing controller.
+    if (this.policyGeneration === undefined || !this.policyInitialized) {
+      this.policyGeneration = status.policyGeneration;
+      this.policyInitialized = true;
+    }
+    return status;
+  }
+  async preparePolicy(snapshot) {
+    const prepared = (await this.request("policy.prepare", { config: snapshot.config, grants: snapshot.grants, revision: snapshot.revision })).result;
+    if (!/^[a-f0-9]{64}$/.test(prepared?.preparation ?? "") || !/^[a-f0-9]{64}$/.test(prepared?.policyGeneration ?? "")) throw new Error("Controller returned an invalid policy preparation");
+    return prepared;
+  }
+  async activatePolicy(prepared, saved) {
+    const result = (await this.request("policy.activate", { preparation: prepared.preparation, revision: saved.revision })).result;
+    if (result.policyGeneration !== prepared.policyGeneration || result.effectiveRevision !== saved.revision) throw new Error("Controller did not activate the prepared policy");
+    this.policyGeneration = result.policyGeneration;
+    this.policyInitialized = true;
+    this.effectiveSnapshot = saved;
+    return result;
+  }
   async access(filePath, mode = 0) { return (await this.request("fs.access", { path: filePath, mode, policyGeneration: this.policyGeneration })).result; }
   async mkdir(filePath, options = {}) { return (await this.request("fs.mkdir", { path: filePath, recursive: Boolean(options.recursive), mode: options.mode ?? 0o755, policyGeneration: this.policyGeneration })).result; }
   async listDir(filePath) { return (await this.request("fs.listDir", { path: filePath, policyGeneration: this.policyGeneration })).result; }
@@ -291,18 +318,27 @@ export class ControllerClient {
 async function waitForClient(descriptor) { let last; for (let attempt = 0; attempt < 50; attempt += 1) { try { const client = new ControllerClient(descriptor); await client.ready; return client; } catch (error) { last = error; await new Promise((resolve) => setTimeout(resolve, 20)); } } throw last ?? new Error("controller did not become ready"); }
 export async function acquireControllerLease({ startup, clientId }) {
   const client = await waitForClient(startup);
-  const acquired = (await client.request("lease.acquire", { workspaceKey: startup.workspaceKey, clientId })).result;
-  client.descriptor.token = acquired.leaseToken;
-  client.configureLeaseRenewal(startup);
-  const status = await client.status();
-  client.policyGeneration = status.policyGeneration;
-  return {
-    client,
-    status,
-    leaseToken: acquired.leaseToken,
-    scope: { workspaceKey: startup.workspaceKey, canonicalWorkspaceRoot: startup.workspaceRoot },
-    manifest: { socketPath: startup.socketPath, manifestPath: startup.manifestPath },
-  };
+  let acquired;
+  try {
+    acquired = (await client.request("lease.acquire", { workspaceKey: startup.workspaceKey, clientId })).result;
+    client.descriptor.token = acquired.leaseToken;
+    client.configureLeaseRenewal(startup);
+    const status = await client.status();
+    client.policyGeneration = status.policyGeneration;
+    return {
+      client,
+      status,
+      leaseToken: acquired.leaseToken,
+      scope: { workspaceKey: startup.workspaceKey, canonicalWorkspaceRoot: startup.workspaceRoot },
+      manifest: { socketPath: startup.socketPath, manifestPath: startup.manifestPath },
+    };
+  } catch (error) {
+    // Loading invalid new defaults on a shared controller must not leak the
+    // newly acquired root lease or disturb existing clients.
+    if (acquired) await client.release().catch(() => {});
+    else client.destroy();
+    throw error;
+  }
 }
 export function stopStartedController(startup) { try { const manifest = readPrivateJson(startup.manifestPath); if (validateManifest(manifest, startup)) process.kill(manifest.pid, "SIGTERM"); } catch {} }
 

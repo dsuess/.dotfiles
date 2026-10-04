@@ -5,6 +5,7 @@ import {
   createFindTool,
   createGrepTool,
   createLsTool,
+  createLocalBashOperations,
   createReadTool,
   createWriteTool,
   DEFAULT_MAX_BYTES,
@@ -22,6 +23,7 @@ import {
   type ReadOperations,
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import type { ExecutionGate } from "./mode-state.ts";
 
 export const SRT_ROUTING_BUILTIN_NAMES = Object.freeze([
   "read",
@@ -166,7 +168,44 @@ function createLsOps(client: SandboxClient): LsOperations {
   };
 }
 
-const CONTROL_ENVIRONMENT = /^(?:PI_SRT_|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_|SBX_|DYLD_|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME)$/;
+const CONTROL_ENVIRONMENT = /^(?:PI_SRT_|DOCKER_|SBX_|DYLD_)|^(?:SSH_AUTH_SOCK|GPG_AGENT_INFO|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME)$/;
+
+export function sanitizeHostEnvironment(input: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(input).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string" && !entry[0].startsWith("PI_SRT_"),
+  ));
+}
+
+/** Use Pi's native shell engine, retaining host HOME/Docker while hiding routing authority. */
+export function createNativeBashOperations(): BashOperations {
+  const native = createLocalBashOperations();
+  return {
+    exec: (command, cwd, options) => native.exec(command, cwd, {
+      ...options, env: sanitizeHostEnvironment(options.env ?? process.env),
+    }),
+  };
+}
+
+export function createModeBashOperations(getClient: GetSandboxClient, gate: ExecutionGate): BashOperations {
+  const sandbox = createSandboxBashOperations(getClient);
+  const native = createNativeBashOperations();
+  return {
+    exec: (command, cwd, options) => gate.run((mode) =>
+      (mode === "off" ? native : sandbox).exec(command, cwd, options)),
+  };
+}
+
+export function createModeDispatchedTool<T extends { execute: (...args: any[]) => Promise<any> }>(
+  native: T,
+  sandboxExecute: T["execute"],
+  gate: ExecutionGate,
+): T {
+  return {
+    ...native,
+    execute: (...args: any[]) => gate.run((mode) =>
+      (mode === "off" ? native.execute : sandboxExecute)(...args)),
+  };
+}
 
 const FIXED_GUEST_ENV = Object.freeze({
   HOME: "/root",
@@ -404,64 +443,42 @@ export async function executeSandboxFind(
 
 export function registerSandboxTools(
   pi: ExtensionAPI,
-  options: { cwd: string; getClient: GetSandboxClient },
+  options: { cwd: string; getClient: GetSandboxClient; execution?: ExecutionGate },
 ): void {
+  const gate = options.execution ?? { run: (operation: any) => operation("on") };
   const baseRead = createReadTool(options.cwd);
   const baseWrite = createWriteTool(options.cwd);
   const baseEdit = createEditTool(options.cwd);
-  const baseBash = createBashTool(options.cwd);
+  const baseBash = createBashTool(options.cwd, { operations: createNativeBashOperations() });
   const baseGrep = createGrepTool(options.cwd);
   const baseFind = createFindTool(options.cwd);
   const baseLs = createLsTool(options.cwd);
 
-  pi.registerTool({
-    ...baseRead,
-    async execute(id, params, signal, onUpdate) {
-      const tool = createReadTool(options.cwd, { operations: createReadOps(options.getClient()) });
-      return tool.execute(id, params, signal, onUpdate);
-    },
-  });
-  pi.registerTool({
-    ...baseWrite,
-    async execute(id, params, signal, onUpdate) {
-      const tool = createWriteTool(options.cwd, { operations: createWriteOps(options.getClient()) });
-      return tool.execute(id, params, signal, onUpdate);
-    },
-  });
-  pi.registerTool({
-    ...baseEdit,
-    async execute(id, params, signal, onUpdate) {
-      const tool = createEditTool(options.cwd, { operations: createEditOps(options.getClient()) });
-      return tool.execute(id, params, signal, onUpdate);
-    },
-  });
-  pi.registerTool({
-    ...baseBash,
-    async execute(id, params, signal, onUpdate) {
-      const tool = createBashTool(options.cwd, {
-        operations: createSandboxBashOperations(options.getClient),
-        exposeSessionEnvironment: false,
-      });
-      return tool.execute(id, params, signal, onUpdate);
-    },
-  });
-  pi.registerTool({
-    ...baseGrep,
-    async execute(_id, params, signal) {
-      return executeSandboxGrep(options.getClient(), options.cwd, params, signal);
-    },
-  });
-  pi.registerTool({
-    ...baseFind,
-    async execute(_id, params, signal) {
-      return executeSandboxFind(options.getClient(), options.cwd, params, signal);
-    },
-  });
-  pi.registerTool({
-    ...baseLs,
-    async execute(id, params, signal, onUpdate) {
-      const tool = createLsTool(options.cwd, { operations: createLsOps(options.getClient()) });
-      return tool.execute(id, params, signal, onUpdate);
-    },
-  });
+  pi.registerTool(createModeDispatchedTool(baseRead, async (id, params, signal, onUpdate, ctx) => {
+    const tool = createReadTool(options.cwd, { operations: createReadOps(options.getClient()) });
+    return tool.execute(id, params, signal, onUpdate, ctx);
+  }, gate));
+  pi.registerTool(createModeDispatchedTool(baseWrite, async (id, params, signal, onUpdate, ctx) => {
+    const tool = createWriteTool(options.cwd, { operations: createWriteOps(options.getClient()) });
+    return tool.execute(id, params, signal, onUpdate, ctx);
+  }, gate));
+  pi.registerTool(createModeDispatchedTool(baseEdit, async (id, params, signal, onUpdate, ctx) => {
+    const tool = createEditTool(options.cwd, { operations: createEditOps(options.getClient()) });
+    return tool.execute(id, params, signal, onUpdate, ctx);
+  }, gate));
+  pi.registerTool(createModeDispatchedTool(baseBash, async (id, params, signal, onUpdate, ctx) => {
+    const tool = createBashTool(options.cwd, {
+      operations: createSandboxBashOperations(options.getClient),
+      exposeSessionEnvironment: false,
+    });
+    return tool.execute(id, params, signal, onUpdate, ctx);
+  }, gate));
+  pi.registerTool(createModeDispatchedTool(baseGrep, async (_id, params, signal, _onUpdate, ctx) =>
+    executeSandboxGrep(options.getClient(), ctx?.cwd ?? options.cwd, params, signal), gate));
+  pi.registerTool(createModeDispatchedTool(baseFind, async (_id, params, signal, _onUpdate, ctx) =>
+    executeSandboxFind(options.getClient(), ctx?.cwd ?? options.cwd, params, signal), gate));
+  pi.registerTool(createModeDispatchedTool(baseLs, async (id, params, signal, onUpdate, ctx) => {
+    const tool = createLsTool(options.cwd, { operations: createLsOps(options.getClient()) });
+    return tool.execute(id, params, signal, onUpdate, ctx);
+  }, gate));
 }
