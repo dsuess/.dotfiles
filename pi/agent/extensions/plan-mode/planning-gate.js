@@ -1,4 +1,6 @@
 import { analyzeBashMutation } from "./bash-policy.js";
+import { SERENA_INSPECTION_TOOLS } from "../srt-tool-routing/serena-profile.mjs";
+const ROUTED_INSPECTION_NAMES = new Set(SERENA_INSPECTION_TOOLS.map((name) => `mcp__serena__${name}`));
 
 export const PRESENTATION_TOOLS = Object.freeze(["show_plan"]);
 export const EXECUTION_TOOLS = Object.freeze(["plan_progress", "complete_plan", "complete_stage"]);
@@ -15,6 +17,7 @@ export const INSPECTION_TOOLS = Object.freeze([
 	"ketch_docs",
 	"ketch_crawl",
 	"ask_user_question",
+	"mcp_list",
 ]);
 export const DIRECT_MUTATION_TOOLS = new Set([
 	"write",
@@ -36,7 +39,8 @@ export function getPlanningToolNames(allToolNames, options = {}) {
 	const inspectionTools = options.fastOptimization === true
 		? INSPECTION_TOOLS.filter((name) => name !== "ask_user_question")
 		: INSPECTION_TOOLS;
-	return [...inspectionTools, "show_plan"].filter((name) => available.has(name));
+	const routed = (options.routedInspectionTools ?? []).filter((name) => ROUTED_INSPECTION_NAMES.has(name));
+	return [...inspectionTools, ...routed, "show_plan"].filter((name) => available.has(name));
 }
 
 export function getRestorableTools(snapshot, allToolNames) {

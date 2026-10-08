@@ -128,7 +128,7 @@ test("root recovery renews once, retains its lease token, and retries each rejec
 
 test("protocol permits reviewed bare executables but rejects path-qualified forms", () => {
   const request = (argv) => ({
-    v: 1, type: "request", id: 1, method: "exec", auth: LEASE,
+    v: 2, type: "request", id: 1, method: "exec", auth: LEASE,
     params: { argv, cwd: "/workspace", env: {}, timeoutMs: 100, maxOutputBytes: 1024, policyGeneration: POLICY },
   });
   assert.equal(validateRequest(request(["path-fixture", "argument"])).params.argv[0], "path-fixture");

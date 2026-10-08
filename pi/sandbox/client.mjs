@@ -11,7 +11,7 @@ import { encodeFrame, FrameDecoder, makeRequest, validateResponse } from "./prot
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const controller = path.join(HERE, "controller.mjs");
-const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "filesystem-configuration.mjs"), path.join(HERE, "client-policy.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "temp-command.mjs"), path.join(HERE, "srt-compatibility-canary.mjs"), path.join(HERE, "apply-srt-workspace-write-patch.mjs"), path.join(HERE, "package.json"), path.join(HERE, "package-lock.json")];
+const sourceFiles = [controller, path.join(HERE, "capability.mjs"), path.join(HERE, "protocol.mjs"), path.join(HERE, "stdio-sessions.mjs"), path.join(HERE, "operation-helper.mjs"), path.join(HERE, "host-configuration.mjs"), path.join(HERE, "filesystem-grants.mjs"), path.join(HERE, "filesystem-configuration.mjs"), path.join(HERE, "client-policy.mjs"), path.join(HERE, "srt-policy.mjs"), path.join(HERE, "docker-sidecar.mjs"), path.join(HERE, "docker-client-env.mjs"), path.join(HERE, "temp-command.mjs"), path.join(HERE, "srt-compatibility-canary.mjs"), path.join(HERE, "apply-srt-workspace-write-patch.mjs"), path.join(HERE, "package.json"), path.join(HERE, "package-lock.json")];
 // Darwin limits AF_UNIX paths to 104 bytes; do not put controller sockets in
 // the otherwise conventional, but too long, ~/Library/Caches hierarchy.
 const privateRoot = (key) => path.join("/tmp", `pi-srt-${process.getuid()}`, "c", key);
@@ -109,6 +109,7 @@ export class ControllerClient {
     this.policyGeneration = descriptor.policyGeneration;
     this.sequence = 0;
     this.pending = new Map();
+    this.processStreams = new Map();
     this.renewalAuthority = null;
     this.renewal = null;
     this.leaseEpoch = 0;
@@ -129,6 +130,12 @@ export class ControllerClient {
     this.socket.on("close", () => this.terminate("peer closed"));
     const decoder = new FrameDecoder((frame) => {
       const response = validateResponse(frame);
+      const processStream = this.processStreams.get(response.id);
+      if (response.type === "event" && processStream) {
+        if (response.event === "exit") this.processStreams.delete(response.id);
+        processStream(response.event, Buffer.from(response.data, "base64"));
+        return;
+      }
       const item = this.pending.get(response.id);
       if (!item) return;
       if (response.type === "event") {
@@ -162,6 +169,7 @@ export class ControllerClient {
       this.rejectReady(error);
     }
     for (const id of [...this.pending.keys()]) this.settle(id, false, error);
+    this.processStreams.clear();
     try { this.socket.destroy(); } catch {}
     for (const listener of this.terminalListeners) {
       try { listener(error); } catch {}
@@ -218,10 +226,11 @@ export class ControllerClient {
       throw error;
     }
   }
-  async requestOnce(method, params, auth = this.descriptor.token) {
+  async requestOnce(method, params, auth = this.descriptor.token, stream) {
     await this.ready;
     if (this.terminalError) throw this.terminalError;
     const id = ++this.sequence;
+    if (stream) this.processStreams.set(id, stream);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.terminate(`response timeout for ${method}`), this.deadlineFor(method, params));
       timer.unref?.();
@@ -311,6 +320,36 @@ export class ControllerClient {
   async readFile(filePath, options = {}) { const result = (await this.request("fs.readFile", { path: filePath, offset: options.offset ?? 0, limit: options.limit ?? 524288, policyGeneration: this.policyGeneration })).result; return { data: Buffer.from(result.data, "base64"), truncated: result.truncated }; }
   async writeFile(filePath, data) { return (await this.request("fs.writeFile", { path: filePath, data: Buffer.from(data).toString("base64"), policyGeneration: this.policyGeneration })).result; }
   async exec(argv, options) { await this.ready; if (options.signal?.aborted) throw Object.assign(new Error("operation cancelled"), { code: "cancelled" }); const requestId = this.sequence + 1; const abort = () => { void this.request("cancel", { requestId }).catch(() => {}); }; options.signal?.addEventListener("abort", abort, { once: true }); try { const answer = await this.request("exec", { argv, cwd: options.cwd, env: options.env ?? {}, timeoutMs: options.timeoutMs ?? 3600000, maxOutputBytes: options.maxOutputBytes ?? 16777216, policyGeneration: this.policyGeneration }); for (const [stream, data] of answer.events) options.onEvent?.(stream, data); return answer.result; } finally { options.signal?.removeEventListener("abort", abort); } }
+  async openProcess(argv, { cwd, env = {}, onEvent }) {
+    const policyGeneration = this.policyGeneration;
+    // No automatic replay: transport loss may mean the server already started
+    // or executed a request. MCP callers must reconnect explicitly.
+    let answer;
+    const stream = (name, data) => onEvent?.(name, data);
+    try {
+      answer = await this.requestOnce("process.open", { argv, cwd, env, policyGeneration }, this.descriptor.token, stream);
+    } catch (error) {
+      for (const [id, listener] of this.processStreams) if (listener === stream) this.processStreams.delete(id);
+      throw error;
+    }
+    const { handle } = answer.result;
+    if (!/^[a-f0-9]{64}$/.test(handle ?? "") || answer.result.policyGeneration !== policyGeneration) throw this.terminate("invalid stdio handle");
+    let closed = false;
+    return {
+      handle, policyGeneration,
+      send: async (data) => {
+        if (closed) throw this.transportError("stdio channel closed");
+        data = Buffer.from(data);
+        for (let offset = 0; offset < data.length; offset += 65536) await this.requestOnce("process.input", { handle, policyGeneration, data: data.subarray(offset, offset + 65536).toString("base64") });
+      },
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        try { await this.requestOnce("process.close", { handle, policyGeneration }); }
+        finally { for (const [id, listener] of this.processStreams) if (listener === stream) this.processStreams.delete(id); }
+      },
+    };
+  }
   async resetDocker() { return (await this.request("docker.reset", { policyGeneration: this.policyGeneration })).result; }
   async release() { try { await this.request("lease.release", {}); } finally { this.destroy(); } }
   destroy() { this.terminate("client destroyed"); }

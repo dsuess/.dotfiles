@@ -168,7 +168,7 @@ function createLsOps(client: SandboxClient): LsOperations {
   };
 }
 
-const CONTROL_ENVIRONMENT = /^(?:PI_SRT_|DOCKER_|SBX_|DYLD_)|^(?:SSH_AUTH_SOCK|GPG_AGENT_INFO|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME)$/;
+const CONTROL_ENVIRONMENT = /^(?:PI_SRT_|DOCKER_|SBX_|DYLD_)|^(?:SSH_AUTH_SOCK|GPG_AGENT_INFO|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME|PI_LAUNCHER_CHAIN)$/;
 
 export function sanitizeHostEnvironment(input: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(Object.entries(input).filter(

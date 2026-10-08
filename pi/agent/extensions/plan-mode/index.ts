@@ -78,6 +78,8 @@ const MAX_INVALID_SUBMISSIONS = 3;
 const MAX_VALIDATION_DETAIL_ROWS = 12;
 const SRT_ROUTING_VERIFY_TOOLS_EVENT = "srt-tool-routing:verify-tools";
 const SRT_ROUTING_BEFORE_USER_BASH_EVENT = "srt-tool-routing:before-user-bash";
+const SRT_ROUTING_PLANNING_TOOLS_EVENT = "srt-tool-routing:planning-tools";
+const PLANNING_GUARD_QUERY_EVENT = "plan-mode:query-mutation-guard";
 const SRT_ROUTING_BUILTINS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 function isGated(state: PlanModeState): boolean {
@@ -243,8 +245,14 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		return snapshotActiveTools(pi.getActiveTools());
 	}
 
+	function routedInspectionTools(): string[] {
+		const payload = { names: [] as string[] };
+		pi.events.emit(SRT_ROUTING_PLANNING_TOOLS_EVENT, payload);
+		return payload.names;
+	}
+
 	function planningToolNames(): string[] {
-		const names = getPlanningToolNames(allToolNames(), { fastOptimization: state.optimization !== null });
+		const names = getPlanningToolNames(allToolNames(), { fastOptimization: state.optimization !== null, routedInspectionTools: routedInspectionTools() });
 		return isPlanning(state) && state.counters.invalidSubmissions >= MAX_INVALID_SUBMISSIONS
 			? names.filter((name) => name !== "show_plan")
 			: names;
@@ -891,9 +899,11 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		persistModelRouting();
 	});
 
+	pi.events.on(PLANNING_GUARD_QUERY_EVENT, (query: { active: boolean }) => { query.active = isGated(state); });
+
 	pi.on("tool_call", async (event) => {
 		if (!isGated(state)) return;
-		const reason = evaluatePlanningToolCall(event.toolName, event.input, allToolNames(), { fastOptimization: state.optimization !== null });
+		const reason = evaluatePlanningToolCall(event.toolName, event.input, allToolNames(), { fastOptimization: state.optimization !== null, routedInspectionTools: routedInspectionTools() });
 		if (reason) return { block: true, reason };
 	});
 

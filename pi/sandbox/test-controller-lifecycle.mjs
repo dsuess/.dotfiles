@@ -60,13 +60,17 @@ test("controller executes a reviewed PATH fixture by bare executable name", asyn
 test("controller forwards ordinary secret values but strips control authority", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-environment-"));
   const originalNpmCache = process.env.NPM_CONFIG_CACHE;
+  const originalLauncherChain = process.env.PI_LAUNCHER_CHAIN;
   process.env.NPM_CONFIG_CACHE = "/Users/dsuess/.npm";
+  process.env.PI_LAUNCHER_CHAIN = "/parent/launcher:/installed/pi";
   let startup;
   try {
     startup = beginControllerStartup({ launchDirectory: workspace });
   } finally {
     if (originalNpmCache === undefined) delete process.env.NPM_CONFIG_CACHE;
     else process.env.NPM_CONFIG_CACHE = originalNpmCache;
+    if (originalLauncherChain === undefined) delete process.env.PI_LAUNCHER_CHAIN;
+    else process.env.PI_LAUNCHER_CHAIN = originalLauncherChain;
   }
   t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
   const attached = await acquire(startup, "environment");
@@ -76,6 +80,15 @@ test("controller forwards ordinary secret values but strips control authority", 
     onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); },
   });
   assert.equal(Buffer.concat(chunks).toString(), "raw-secret-value|||/Users/dsuess/.npm|controller-path");
+  for (const env of [{}, { PI_LAUNCHER_CHAIN: "/caller/launcher:/installed/pi" }]) {
+    const launcherChunks = [];
+    const result = await attached.client.exec(["/bin/bash", "-c", "printf '%s' \"${PI_LAUNCHER_CHAIN-unset}\""], {
+      cwd: workspace, env,
+      onEvent: (stream, data) => { if (stream === "stdout") launcherChunks.push(data); },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(Buffer.concat(launcherChunks).toString(), "unset", "inherited and override launcher history must not cross into independent commands");
+  }
   await attached.client.release();
 });
 
@@ -105,7 +118,7 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
   const workspaceBin = path.join(workspace, "bin");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-home-"));
   const userToolBin = path.join(home, ".local/bin");
-  for (const directory of [workspaceBin, userToolBin, path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
+  for (const directory of [workspaceBin, userToolBin, path.join(home, ".agents"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(workspaceBin, "workspace-tool"), "#!/bin/sh\nprintf workspace-tool\n"); fs.chmodSync(path.join(workspaceBin, "workspace-tool"), 0o755);
   fs.writeFileSync(path.join(userToolBin, "user-tool"), "#!/bin/sh\nprintf user-tool\n"); fs.chmodSync(path.join(userToolBin, "user-tool"), 0o755);
   fs.writeFileSync(path.join(home, ".serena/serena_config.yml"), "project: generated-copy\n");
@@ -121,7 +134,7 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
     process.env.PATH = originalPath;
   }
   t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); });
-  const command = `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "$PATH" "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR" "$UV_PYTHON_INSTALL_DIR" "$(command -v user-tool)" "$(user-tool)" "$(command -v workspace-tool)" "$(command -v docker)" "$(cat "$HOME/.serena/serena_config.yml")"; if printf blocked > ${JSON.stringify(path.join(userToolBin, "write-test"))}; then printf user-tool-writable; else printf user-tool-readonly; fi; if printf blocked > "$UV_TOOL_DIR/write-test"; then printf uv-tool-writable; else printf uv-tool-readonly; fi`;
+  const command = `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "$PATH" "$UV_TOOL_BIN_DIR" "$UV_TOOL_DIR" "$UV_PYTHON_INSTALL_DIR" "$(command -v user-tool)" "$(user-tool)" "$(command -v workspace-tool)" "$(command -v docker)" "$(cat "$HOME/.serena/serena_config.yml")"; if printf blocked 2>/dev/null > ${JSON.stringify(path.join(userToolBin, "write-test"))}; then printf user-tool-writable; else printf user-tool-readonly; fi; if printf blocked 2>/dev/null > "$UV_TOOL_DIR/write-test"; then printf uv-tool-writable; else printf uv-tool-readonly; fi`;
   const output = execFileSync(process.execPath, [new URL("./client-cli.mjs", import.meta.url).pathname, "bash", Buffer.from(JSON.stringify(startup)).toString("base64"), workspace, command], { encoding: "utf8" }).trimEnd().split("\n");
   assert.equal(output[0], `${path.dirname(output[7])}:${path.join(startup.runtimeRoot, `generation-${startup.generation}`, "temp-bin")}:${inheritedPath}`);
   assert.equal(output[1], fs.realpathSync(userToolBin));

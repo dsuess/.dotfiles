@@ -25,6 +25,10 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 - Grants never create Docker mounts, PATH entries, generated-HOME contents, or forwarded environment access. Do not claim automatic once/session permission prompts work without a production broker lifecycle. Use `pi-sbx` for persistent Docker management, not `/sandbox`.
 - Pi SRT routing must not add proxy-side credential masking or token substitution. Forward tool-environment secrets directly. Keep sandboxed credential files and control sockets denied, apart from reviewed policy exceptions.
 - Keep Ketch on its trusted canonical host-side path. Do not add a Ketch broker.
+- Keep routed MCP admission separate from host adapters. Admit only the reviewed canonical Visonic dev Serena profile through controller-owned stdio. Bind each definition to canonical routing provenance and a live, current-policy session. Project trust and tool names alone grant no authority.
+- Recheck reviewed MCP inputs on reconnect. Retire process groups before policy activation and on session replacement. Reject stale authority and never replay an ambiguous edit. Keep Serena under SRT after `/sandbox off`. Preserve upstream MCP behavior for `--yolo` and shell CLI dispatch.
+- Compose dynamic MCP declarations with the independent planning guard. Permit only the four reviewed inspection offerings during planning. Block all structural edits regardless of server hints. Do not restore unrelated tools during late registration or planning exit.
+- Use generated runtime paths for Serena and language-server writes, including npm cache. Do not broaden grants or change host installation permissions to satisfy startup prerequisites.
 - For launcher or routed-command changes, test the exact documented argument order and the real user-Bash path; model prose is never evidence that a shell command executed.
 
 ## Verification

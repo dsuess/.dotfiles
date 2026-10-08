@@ -16,6 +16,9 @@
   "skills": [
     "~/.agents/skills"
   ],
+  "extensions": [
+    "-builtin:mcp"
+  ],
   "packages": [
     "extensions/statusbar.ts",
     "git:github.com/peloyeje/pi-vim@83921804e626945ba027ff373c975644dfc92083",

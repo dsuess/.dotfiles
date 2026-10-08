@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createMcpExtension, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { installReviewedMcp } from "./routed-mcp.mjs";
+import { SERENA_INSPECTION_TOOLS } from "./serena-profile.mjs";
 
 import { acquireControllerLease, ControllerClient, stopStartedController } from "../../../sandbox/client.mjs";
 import { createFilesystemConfigurationService } from "../../../sandbox/filesystem-configuration.mjs";
@@ -10,6 +12,7 @@ import { createClientPolicyService, takeReloadPolicy, retainReloadPolicy } from 
 import {
   createHostAdapterManifest,
   isSrtToolRoutingReplacement,
+  isRoutingExtensionSource,
   isTrustedHostAdapter,
   verifyToolInventory,
   type ConfiguredToolInfo,
@@ -55,6 +58,8 @@ export interface RoutingPolicyService {
 
 export const SANDBOX_VERIFY_TOOLS_EVENT = "srt-tool-routing:verify-tools";
 export const SANDBOX_BEFORE_USER_BASH_EVENT = "srt-tool-routing:before-user-bash";
+export const SANDBOX_PLANNING_TOOLS_EVENT = "srt-tool-routing:planning-tools";
+export const PLANNING_GUARD_QUERY_EVENT = "plan-mode:query-mutation-guard";
 
 interface SandboxEnvironment {
   PI_SRT_ROUTING?: string;
@@ -218,6 +223,16 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     let verifyEffectivePolicy: () => Promise<void> = async () => {};
     let policyService: ReturnType<typeof createClientPolicyService> | null = null;
     let retainedPolicy: any = undefined;
+    let routedMcp: ReturnType<typeof installReviewedMcp> | null = null;
+    const inspectionNames = new Set(SERENA_INSPECTION_TOOLS.map((name: string) => `mcp__serena__${name}`));
+    const planningGuardActive = (): boolean => {
+      const query = { active: false };
+      pi.events.emit(PLANNING_GUARD_QUERY_EVENT, query);
+      return query.active;
+    };
+    const isRoutedMcp = (tool: ConfiguredToolInfo): boolean => Boolean(
+      routedMcp?.isAdmitted(tool) && isRoutingExtensionSource(tool.sourceInfo, dependencies.auditOptions),
+    );
     const clearCapabilityEnvironment = (): void => {
       for (const name of CAPABILITY_ENV_FIELDS) delete env[name];
     };
@@ -229,14 +244,28 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       return client;
     };
 
-    registerSandboxTools(pi, { cwd, getClient, execution: { run: (operation) => mode.run(operation) } });
-
-    const verifyInventory = () =>
-      verifyToolInventory(configuredTools(pi), {
-        manifest,
+    const verifyInventory = () => {
+      routedMcp?.validateCurrent();
+      return verifyToolInventory(configuredTools(pi), {
+        manifest, isRoutedMcp,
         extensionPath: dependencies.auditOptions?.extensionPath,
         agentDir: dependencies.auditOptions?.agentDir,
       });
+    };
+    const refreshMcpPermission = (): void => {
+      for (const tool of configuredTools(pi)) {
+        if (isRoutedMcp(tool) && startupReady && !fatalError && !retired) permittedNames.add(tool.name);
+        else if (tool.name.startsWith("mcp__")) permittedNames.delete(tool.name);
+      }
+    };
+    const prepareLoadout = (loadout: any) => {
+      const inventory = verifyInventory();
+      return { hiddenDeclarations: loadout.declared.map((tool: any) => tool.name)
+        .filter((name: string) => !inventory.allowedNames.has(name) || !permittedNames.has(name)) };
+    };
+    const coreFacade = Object.create(pi);
+    coreFacade.registerTool = (definition: any) => pi.registerTool({ ...definition, prepareLoadout });
+    registerSandboxTools(coreFacade, { cwd, getClient, execution: { run: (operation) => mode.run(operation) } });
 
     const emitLifecycle = (event: SandboxLifecycleEvent, ctx = lastContext): void => {
       const execution = mode.snapshot();
@@ -302,6 +331,8 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     };
 
     pi.events.on(SANDBOX_VERIFY_TOOLS_EVENT, (payload: any) => {
+      routedMcp?.syncDeclarations();
+      refreshMcpPermission();
       const result = verifyInventory();
       pi.setActiveTools(
         pi
@@ -309,6 +340,11 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
           .filter((name) => result.allowedNames.has(name) && permittedNames.has(name)),
       );
       if (result.replacementErrors.length > 0) payload.error = result.replacementErrors.join("; ");
+    });
+
+    pi.events.on(SANDBOX_PLANNING_TOOLS_EVENT, (payload: any) => {
+      const inventory = verifyInventory();
+      payload.names = [...inspectionNames].filter((name) => inventory.allowedNames.has(name) && permittedNames.has(name));
     });
 
     const startReadiness = (ctx: ExtensionContext): Promise<void> => {
@@ -514,6 +550,24 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       void pending.catch(() => {});
     });
 
+    routedMcp = installReviewedMcp(pi, {
+      factory: createMcpExtension,
+      prepareLoadout,
+      canDeclare: (name: string) => !planningGuardActive() || inspectionNames.has(name),
+      onToolsChanged: () => {
+        refreshMcpPermission();
+        if (startupReady && !retired) {
+          enforceInventory(lastContext ?? undefined);
+          pi.setActiveTools(pi.getActiveTools()); // Refresh declaration projection, never restore a broader loadout.
+        }
+      },
+      connect: async () => {
+        await readiness;
+        if (!startupReady || retired) throw new Error("Routed Serena requires a ready current-client sandbox policy");
+        return getClient();
+      },
+    });
+
     pi.on("input", async () => {
       try {
         mode.assertExecutable();
@@ -530,9 +584,11 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     pi.on("before_agent_start", async () => {
       mode.assertExecutable();
       if (mode.snapshot().mode === "on") { await readiness; getClient(); }
+      await routedMcp?.ensureConnected(lastContext);
       enforceInventory(lastContext ?? undefined);
     });
 
+    pi.on("turn_start", () => { enforceInventory(lastContext ?? undefined); });
     pi.on("agent_start", () => { mode.agentStarted(); });
     pi.on("agent_end", () => { mode.agentEnded(); });
     pi.on("tool_execution_start", (event) => { mode.toolStarted(event.toolCallId); });
@@ -541,18 +597,20 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     pi.on("tool_call", async (event) => {
       try { mode.assertExecutable(); }
       catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
+      routedMcp?.validateCurrent();
+      refreshMcpPermission();
       const tool = configuredTools(pi).find((candidate) => candidate.name === event.toolName);
       const allowed = Boolean(
         tool &&
           permittedNames.has(event.toolName) &&
           (isSrtToolRoutingReplacement(tool, dependencies.auditOptions) ||
-            isTrustedHostAdapter(tool, manifest)),
+            isTrustedHostAdapter(tool, manifest) || isRoutedMcp(tool)),
       );
       if (!allowed) {
         return {
           block: true,
           terminate: true,
-          reason: `Tool '${event.toolName}' is not a trusted SRT tool-routing replacement or host adapter.`,
+          reason: `Tool '${event.toolName}' is not a trusted SRT tool-routing replacement, host adapter, or live routed MCP tool.`,
         };
       }
     });
@@ -576,6 +634,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     });
 
     pi.on("session_shutdown", async (event, ctx) => {
+      await routedMcp?.close();
       retainReloadPolicy(sessionManager, event.reason, policyService?.retention());
       retireConversationMode(mode, sessionManager, event.reason);
       retired = true;

@@ -183,3 +183,32 @@ test("inventory rejects missing, source-spoofed, and unknown tool slots", () => 
   assert.match(rejected.replacementErrors.join("; "), /built-in slot 'bash'.*trusted SRT tool-routing extension provenance/);
   assert.equal(rejected.allowedNames.has("bash"), false);
 });
+
+test("MCP inventory admits only canonical user provenance, never server tools", (t) => {
+  const manifest = createHostAdapterManifest({ agentDir: AGENT_DIR });
+  const sourceInfo = {
+    path: path.join(AGENT_DIR, "extensions", "mcp-inventory", "index.ts"),
+    source: "auto", scope: "user", origin: "top-level", baseDir: AGENT_DIR,
+  };
+  const tool = { name: "mcp_list", parameters: {}, sourceInfo };
+  assert.equal(isTrustedHostAdapter(tool, manifest), true);
+  const spoof = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-spoof-"));
+  t.after(() => fs.rmSync(spoof, { recursive: true, force: true }));
+  const copy = path.join(spoof, "index.ts");
+  fs.copyFileSync(sourceInfo.path, copy);
+  for (const overrides of [
+    { scope: "project" }, { scope: "temporary" }, { source: "forged" },
+    { origin: "package" }, { path: copy }, { baseDir: spoof },
+  ]) {
+    assert.equal(isTrustedHostAdapter({ ...tool, sourceInfo: { ...sourceInfo, ...overrides } }, manifest), false);
+  }
+  const result = verifyToolInventory([
+    ...replacementTools(), tool, { ...tool, name: "mcp__serena__execute" },
+  ], { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR, manifest });
+  assert.deepEqual(result.replacementErrors, []);
+  assert.equal(result.allowedNames.has("mcp_list"), true);
+  assert.deepEqual(result.untrusted.map((t) => t.name), ["mcp__serena__execute"]);
+  const child = splitChildCapabilities(["read", "mcp_list", "mcp__serena__execute", "plan_progress"]);
+  assert.deepEqual(child.hostAdapters, ["mcp_list"]);
+  assert.deepEqual(child.rejected, ["mcp__serena__execute", "plan_progress"]);
+});

@@ -98,9 +98,11 @@ test("trusted host effects are explicit source-controlled data", () => {
   assert.match(effects.ask_user_question.join(" "), /user interaction/);
   assert.match(effects.subagent.join(" "), /child Pi/);
   assert.match(effects.plan_progress.join(" "), /plan\/ledger persistence/);
+  assert.match(effects.mcp_list.join(" "), /read-only.*configuration metadata/);
+  assert.match(effects.mcp_list.join(" "), /no server execution or connections/);
   assert.deepEqual(Object.keys(effects).sort(), [
     "ask_user_question", "complete_plan", "complete_stage", "ketch_code", "ketch_crawl",
-    "ketch_docs", "ketch_scrape", "ketch_search", "plan_progress", "subagent", "show_plan",
+    "ketch_docs", "ketch_scrape", "ketch_search", "mcp_list", "plan_progress", "subagent", "show_plan",
   ].sort());
 });
 
@@ -199,12 +201,14 @@ test("bash and rewritten RTK commands retain tool secrets but strip control auth
     GOOGLE_APPLICATION_CREDENTIALS: "/workspace/.gcloud/adc.json",
     LC_TIME: "C",
     NPM_CONFIG_CACHE: "/tmp/caller-npm",
+    PI_LAUNCHER_CHAIN: "/parent/launcher:/installed/pi",
   });
   assert.equal(sanitizeGuestEnvironment(undefined).PATH, undefined, "the extension does not construct a guest PATH");
   assert.equal(sanitized.GITHUB_TOKEN, "secret");
   assert.equal(sanitized.GOOGLE_APPLICATION_CREDENTIALS, "/workspace/.gcloud/adc.json");
   assert.equal(sanitized.LC_TIME, "C");
   assert.equal(sanitized.NPM_CONFIG_CACHE, "/tmp/caller-npm");
+  assert.equal(sanitized.PI_LAUNCHER_CHAIN, undefined, "independent commands must not inherit parent launcher history");
   for (const name of ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]) {
     assert.equal(sanitized[name], undefined, `${name} must not propagate SRT tool routing MITM trust`);
   }

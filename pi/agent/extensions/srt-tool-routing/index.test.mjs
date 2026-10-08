@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createPiJiti } from "../../../test-helpers.mjs";
+import { createPiJiti, piPackageRoot } from "../../../test-helpers.mjs";
+import { SERENA_PROFILE, SERENA_TOOLS } from "./serena-profile.mjs";
+const { runToolCall } = await import(path.join(piPackageRoot, "node_modules/@earendil-works/pi-agent-core/dist/index.js"));
 
 const jiti = await createPiJiti(import.meta.url);
 const extensionModule = await jiti.import(new URL("./index.ts", import.meta.url).pathname);
@@ -50,6 +52,7 @@ function createHarness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "srt-routing-extension-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const handshake = path.join(root, "ready.json");
+  const workspaceRoot = options.reviewedMcp ? SERENA_PROFILE.workspace : "/physical/workspace";
   const handlers = new Map();
   const eventHandlers = new Map();
   const definitions = new Map();
@@ -70,8 +73,14 @@ function createHarness(t, options = {}) {
     registerTool(definition) {
       definitions.set(definition.name, definition);
       sourceByName.set(definition.name, sourceInfo);
+      if (definition.exposure === "direct" && !active.includes(definition.name)) active.push(definition.name);
+      if (definition.exposure === "hidden") active = active.filter((name) => name !== definition.name);
     },
     registerCommand(name, definition) { commands.set(name, definition); },
+    getMcpServers() { return [
+      { name: "serena", config: { command: "/unapproved/spoof" }, extensionPath: "/tmp/spoof.ts" },
+      { name: "arbitrary", config: { url: "https://example.invalid/mcp" }, extensionPath: "/tmp/arbitrary.ts" },
+    ]; },
     on(name, handler) {
       if (!handlers.has(name)) handlers.set(name, []);
       handlers.get(name).push(handler);
@@ -93,6 +102,7 @@ function createHarness(t, options = {}) {
         description: definition.description,
         parameters: definition.parameters,
         promptGuidelines: definition.promptGuidelines,
+        exposure: definition.exposure ?? "direct",
         sourceInfo: sourceByName.get(name),
       }));
       tools.push({
@@ -107,12 +117,38 @@ function createHarness(t, options = {}) {
     setActiveTools(names) { active = [...names]; },
   };
   const client = options.client ?? fakeClient();
+  const mcpExecutions = [], channels = [];
+  let offerings = [...SERENA_TOOLS, "execute_shell_command"];
+  if (options.reviewedMcp) {
+    const status = client.status.bind(client);
+    client.status = async () => ({ ...await status(), workspaceRoot });
+    client.openProcess = async (_argv, transportOptions) => {
+      let closed = false;
+      const channel = {
+        policyGeneration: client.policyGeneration,
+        argv: _argv,
+        receive: transportOptions.onEvent,
+        send: async (bytes) => {
+          if (closed) throw new Error("fixture channel closed");
+          const message = JSON.parse(bytes.toString());
+          let result;
+          if (message.method === "initialize") result = { protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "fixture", version: "1" } };
+          else if (message.method === "tools/list") result = { tools: offerings.map((name) => ({ name, description: name, annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { relative_path: { type: "string" } }, additionalProperties: true } })) };
+          else if (message.method === "tools/call") { mcpExecutions.push(message.params); result = { content: [{ type: "text", text: JSON.stringify({ symbols: ["VerifiedFixtureSymbol"], name: message.params.name }) }] }; }
+          if (message.id !== undefined) queueMicrotask(() => transportOptions.onEvent("stdout", Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`)));
+        },
+        close: async () => { if (!closed) { closed = true; transportOptions.onEvent("exit", Buffer.alloc(0)); } },
+      };
+      channels.push(channel);
+      return channel;
+    };
+  }
   const env = options.env ?? {
     PI_SRT_ROUTING_SANDBOX: "1",
     PI_SRT_ROUTING_SOCKET: path.join(root, "controller.sock"),
     PI_SRT_ROUTING_LEASE: HEX_A,
     PI_SRT_ROUTING_WORKSPACE_KEY: HEX_C,
-    PI_SRT_ROUTING_WORKSPACE_ROOT: "/physical/workspace",
+    PI_SRT_ROUTING_WORKSPACE_ROOT: workspaceRoot,
     PI_SRT_ROUTING_POLICY_GENERATION: HEX_B,
     PI_SRT_ROUTING_IMAGE_GENERATION: HEX_A,
     PI_SRT_ROUTING_VM_ID: "vm-shared",
@@ -148,7 +184,7 @@ function createHarness(t, options = {}) {
           dockerHealthy: true,
           sidecarId: "vm-shared",
           workspaceKey: HEX_C,
-          workspaceRoot: "/physical/workspace",
+          workspaceRoot,
           policyGeneration: HEX_B,
           runtimeGeneration: HEX_A,
           attachedRoots: 1,
@@ -160,7 +196,8 @@ function createHarness(t, options = {}) {
   const ctx = {
     hasUI: true,
     mode: "tui",
-    cwd: "/physical/workspace",
+    cwd: workspaceRoot,
+    isProjectTrusted: () => options.reviewedMcp === true,
     sessionManager: options.sessionManager ?? {},
     isIdle: () => true,
     ui: {
@@ -171,6 +208,7 @@ function createHarness(t, options = {}) {
     shutdown() { shutdownCalls += 1; },
   };
   const emit = async (name, event = {}) => {
+    if (name === "before_agent_start") event = { systemPromptOptions: { sections: {} }, ...event };
     let result;
     for (const handler of handlers.get(name) ?? []) {
       const next = await handler(event, ctx);
@@ -186,6 +224,20 @@ function createHarness(t, options = {}) {
     handshake,
     definitions,
     commands,
+    channels,
+    mcpExecutions,
+    async changeOfferings(next) {
+      offerings = next;
+      channels.at(-1).receive("stdout", Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })}\n`));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    },
+    async runTool(name, args = {}, parentToolCallId) {
+      return runToolCall({ type: "toolCall", id: "pipeline-fixture", name, arguments: args }, {
+        tools: [...definitions.values()], assistantMessage: { role: "assistant", content: [], timestamp: Date.now() },
+        context: { messages: [], tools: [] },
+        beforeToolCall: ({ toolCall, args }) => emit("tool_call", { toolName: toolCall.name, toolCallId: toolCall.id, input: args, parentToolCallId }),
+      });
+    },
     sourceByName,
     eventHandlers,
     connectCalls,
@@ -240,6 +292,126 @@ test("unknown and source-spoofed tools are removed and blocked before execution"
     /built-in slot 'bash'.*trusted SRT tool-routing extension provenance/,
   );
   assert.equal(harness.active().includes("bash"), false);
+});
+
+test("verified late MCP offerings pass the real tool pipeline; identical names without authority fail", async (t) => {
+  const harness = createHarness(t, { reviewedMcp: true });
+  await harness.emit("session_start", { reason: "startup" });
+  assert.equal(harness.channels.length, 0, "background MCP startup follows controller readiness");
+  await harness.emit("before_agent_start");
+  const name = "mcp__serena__get_symbols_overview";
+  assert.ok(harness.active().includes(name));
+  assert.equal(harness.definitions.has("mcp__serena__execute_shell_command"), false);
+  assert.deepEqual(harness.channels.map((channel) => channel.argv), [[path.join(SERENA_PROFILE.workspace, SERENA_PROFILE.command), "pi"]], "same-name and arbitrary server registrations never start");
+  assert.equal((await harness.runTool("mcp__serena__execute_shell_command")).isError, true);
+  assert.equal((await harness.runTool("mcp__arbitrary__find_symbol")).isError, true);
+  assert.equal(harness.mcpExecutions.length, 0);
+  const result = await harness.runTool(name, { relative_path: "fixture.py" });
+  assert.equal(result.isError, false, JSON.stringify(result));
+  assert.match(result.result.content[0].text, /VerifiedFixtureSymbol/);
+  const nested = await harness.runTool(name, {}, "parent-codemode-call");
+  assert.equal(nested.isError, false);
+  harness.sourceByName.set(name, { path: "/tmp/spoofed-serena.ts", source: "auto", scope: "user", origin: "top-level", baseDir: AGENT_DIR });
+  const rejected = await harness.runTool(name);
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.result.content[0].text, /not a trusted SRT/);
+  assert.equal(harness.mcpExecutions.length, 2);
+  const projection = harness.definitions.get("read").prepareLoadout({ declared: [{ name }] });
+  assert.ok(projection.hiddenDeclarations.includes(name), "late spoofed declarations are hidden by the loadout projection");
+  harness.pi.setActiveTools([name]);
+  await harness.emit("turn_start");
+  assert.equal(harness.active().includes(name), false, "turn audit also covers a loadout without core anchors");
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("late MCP registration composes with the real planning guard and restores only reviewed edits", async (t) => {
+  const harness = createHarness(t, { reviewedMcp: true });
+  const plan = await jiti.import(new URL("../plan-mode/index.ts", import.meta.url).pathname);
+  harness.pi.registerFlag = () => {}; harness.pi.registerShortcut = () => {};
+  harness.pi.getFlag = () => undefined; harness.pi.appendEntry = () => {};
+  harness.pi.sendMessage = () => {}; harness.pi.sendUserMessage = () => {};
+  harness.pi.registerMessageRenderer = () => {}; harness.pi.registerEntryRenderer = () => {}; harness.ctx.ui.setWidget = () => {};
+  harness.ctx.sessionManager.getBranch = () => [];
+  plan.default(harness.pi);
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.commands.get("plan").handler("", harness.ctx);
+  await harness.emit("before_agent_start");
+  const read = "mcp__serena__get_symbols_overview", edit = "mcp__serena__replace_symbol_body";
+  assert.ok(harness.active().includes(read));
+  assert.equal(harness.active().includes(edit), false);
+  assert.equal((await harness.runTool(read)).isError, false);
+  const blocked = await harness.runTool(edit, {}, "nested-parent");
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.result.content[0].text, /Planning mode blocks/);
+  await harness.commands.get("plan").handler("off", harness.ctx);
+  assert.ok(harness.active().includes(edit), "planning exit restores an edit registered while guard was active");
+  assert.equal((await harness.runTool(edit)).isError, false, "server readOnlyHint does not control classification");
+  await harness.changeOfferings(["get_symbols_overview"]);
+  assert.equal(harness.active().includes(edit), false);
+  assert.equal((await harness.runTool(edit)).isError, true);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("policy refresh reconnects lazily; core off mode never grants a host Serena fallback", async (t) => {
+  const harness = createHarness(t, { reviewedMcp: true });
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.emit("before_agent_start");
+  const name = "mcp__serena__get_symbols_overview";
+  await harness.control.setMode("off", harness.ctx);
+  assert.equal((await harness.runTool(name)).isError, false);
+  harness.client.policyGeneration = "e".repeat(64);
+  await harness.channels[0].close();
+  assert.equal(harness.active().includes(name), false);
+  await harness.emit("before_agent_start");
+  assert.equal(harness.channels.length, 2);
+  assert.equal(harness.channels[1].policyGeneration, "e".repeat(64));
+  assert.equal((await harness.runTool(name)).isError, false);
+  harness.client.failTransport();
+  assert.equal((await harness.runTool(name)).isError, true);
+  assert.equal(harness.channels.length, 2, "no host transport or edit replay after controller loss");
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("verified MCP authority is retired on every conversation/runtime replacement", async (t) => {
+  for (const reason of ["reload", "new", "resume", "fork", "quit"]) {
+    const first = createHarness(t, { reviewedMcp: true });
+    await first.emit("session_start", { reason: "startup" });
+    await first.emit("before_agent_start");
+    const name = "mcp__serena__get_symbols_overview";
+    const retiredDefinition = first.definitions.get(name);
+    assert.equal((await first.runTool(name)).isError, false);
+    await first.emit("session_shutdown", { reason });
+    await assert.rejects(retiredDefinition.execute("old", {}), /retired/);
+    assert.equal(first.active().includes(name), false);
+    const next = createHarness(t, { reviewedMcp: true });
+    await next.emit("session_start", { reason });
+    await next.emit("before_agent_start");
+    assert.equal((await next.runTool(name)).isError, false);
+    assert.notEqual(next.definitions.get(name).parameters, retiredDefinition.parameters);
+    await next.emit("session_shutdown", { reason: "quit" });
+  }
+});
+
+test("baseline regression: a late direct Serena declaration is rejected without verified channel authority", async (t) => {
+  const harness = createHarness(t);
+  await harness.emit("session_start", { reason: "startup" });
+  const name = "mcp__serena__get_symbols_overview";
+  let executions = 0;
+  harness.pi.registerTool({ name, exposure: "direct", parameters: { type: "object", properties: {} }, execute: async () => { executions++; return { content: [], details: undefined }; } });
+  harness.pi.setActiveTools([...harness.active(), name]);
+  assert.ok(harness.active().includes(name), "dynamic registration can reach declarations after the inventory pass");
+  const rejected = await harness.emit("tool_call", {
+    toolName: name, toolCallId: "late-serena-baseline", input: { relative_path: "conductor/visonic_conductor/job.py", depth: 0, max_answer_chars: 3000 },
+  });
+  assert.equal(rejected.block, true);
+  assert.equal(rejected.terminate, true);
+  assert.match(rejected.reason, /not a trusted SRT tool-routing replacement, host adapter, or live routed MCP tool/);
+  assert.equal(executions, 0);
+  const result = await harness.runTool(name, { relative_path: "conductor/visonic_conductor/job.py" });
+  assert.equal(result.isError, true, "inspect the actual pipeline result, not exit status or tool visibility");
+  assert.match(result.result.content[0].text, /not a trusted SRT/);
+  await harness.emit("before_agent_start");
+  assert.equal(harness.active().includes(name), false);
 });
 
 test("user Bash runs synchronous planning preflight before any controller RPC", async (t) => {
@@ -924,5 +1096,26 @@ test("registered no-UI commands publish read-only status and errors without muta
     assert.match(messages.at(-1)[0].content, /requires interactive or RPC UI/);
   }
   assert.equal(mutations, 0);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("canonical MCP inventory remains admitted across sandbox mode transitions", async (t) => {
+  const harness = createHarness(t);
+  harness.pi.registerTool({ name: "mcp_list", parameters: { type: "object", properties: {}, additionalProperties: false } });
+  harness.sourceByName.set("mcp_list", {
+    path: path.join(AGENT_DIR, "extensions", "mcp-inventory", "index.ts"),
+    source: "auto", scope: "user", origin: "top-level", baseDir: AGENT_DIR,
+  });
+  harness.env.PI_SRT_ROUTING_HOST_TOOLS = "mcp_list";
+  await harness.emit("session_start", { reason: "startup" });
+  assert.ok(harness.active().includes("mcp_list"));
+  for (const mode of ["on", "off", "on"]) {
+    await harness.control.setMode(mode, harness.ctx);
+    assert.ok(harness.active().includes("mcp_list"));
+    const allowed = await harness.emit("tool_call", { toolName: "mcp_list", input: {} });
+    assert.notEqual(allowed?.block, true);
+    const denied = await harness.emit("tool_call", { toolName: "mcp__serena__execute", input: {} });
+    assert.equal(denied.block, true);
+  }
   await harness.emit("session_shutdown", { reason: "quit" });
 });

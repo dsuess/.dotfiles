@@ -2,13 +2,13 @@
 
 Pi, its UI, provider authentication, and trusted-provenance non-core adapters run on the host. Normal launches start with sandboxing on. The seven core file and shell tools and user Bash use one SRT process per operation.
 
-`/sandbox off` selects host execution for the current conversation. `pi --yolo` remains the explicit host-native launch path. Normal launches never silently fall back to host execution.
+`/sandbox off` selects host execution for core tools and user Bash in the current conversation. Reviewed Serena tools remain under SRT. `pi --yolo` remains the explicit host-native launch path. Normal launches never silently fall back to host execution.
 
 ## Security contract
 
 Sandbox filesystem, environment, and Docker restrictions apply while sandboxing is on. Tool provenance and integrity checks remain mandatory in both modes. The trusted controller remains sandbox-only, even when one client selects host execution.
 
-- Tool authority comes from provenance, not compatibility fingerprints. Every routed built-in slot must come from the canonical user-scoped SRT routing extension. Each allowlisted host adapter must match its canonical user-scoped source path, origin, and base directory. Unknown, missing, or source-spoofed tools remain denied.
+- Tool authority comes from provenance, not compatibility fingerprints. Every routed built-in slot must come from the canonical user-scoped SRT routing extension. Each allowlisted host adapter must match its canonical user-scoped source path, origin, and base directory. Routed MCP tools also require a reviewed profile and a live, policy-bound sandbox transport. They are not host adapters. Unknown, missing, or source-spoofed tools remain denied.
 - Tool parameter schemas and host-adapter package versions can change without an admission-list update. The `sbx` release number and commit can also change. Runtime behavior establishes compatibility. The canary verifies routing ownership, daemon health, authentication, diagnostics, SSH-agent settings, policy, MCP, templates, sidecar fields, and the Docker Engine dial. Incompatible Docker behavior blocks sidecar use. Core SRT file and shell routing remains active.
 - Artifact and integrity pins remain. The Docker shell template digest identifies the reviewed sidecar image. Capability protocol versions and controller source digests protect host/guest coherence. The SRT lockfile and verified patch preimages and postimages protect dependency and patch integrity.
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
@@ -21,6 +21,88 @@ Sandbox filesystem, environment, and Docker restrictions apply while sandboxing 
 - IP egress is unrestricted. Unix-socket access is limited to the exact private Docker broker socket and reviewed system exceptions.
 - Workspace writes are allow-only. A workspace below the real home directory remains writable; controller and broker state are never granted. Installed tool roots, including `/opt/homebrew`, `/usr/local`, `~/.local/bin`, `~/.local/share/uv/tools`, and `~/.local/share/uv/python`, are read-only. The uv credentials directory remains denied.
 - `config.json` stores versioned saved grants for explicitly shared tool-plane directories. Its initial grant is read-only `~/.agents`. `readWrite` is empty. Each client has its own effective policy snapshot. Saved grants do not replace derived workspace or tool access. Grants never create Docker sidecar mounts, PATH entries, generated-HOME files, or environment forwarding.
+
+## Agent MCP configuration inventory
+
+The agent uses `mcp_list` to inspect MCP configuration. This no-argument tool runs through a canonical, read-only host adapter.
+It does not copy trust records or grant filesystem access to routed Bash. It does not start servers, connect to URLs, or evaluate configuration commands.
+
+Each call reads the user `mcp.json` from Pi's public agent directory. It reads project `.pi/mcp.json` only when the current session trusts the project.
+Session-only trust applies. Missing or unavailable trust skips project configuration without reading it. Each child uses its own session trust.
+The inventory also includes extension-registered servers. File entries override registrations; project entries override same-name user entries. Disabled entries remain visible.
+
+The result contains:
+
+- `inventoryOnly: true` and an explicit statement that metadata does not establish upstream validity, connectivity, or callable capabilities.
+- `projectConfiguration`: `included` or `skipped-untrusted`. `included` means trust permitted the read, not that the file exists.
+- `servers`: sorted entries with `name`, `source.scope` (`user`, `project`, or `extension`), `source.path`, `enabled`, and `transport` (`stdio` or `http`).
+- `diagnostics`: categorical `scope` and `code` fields, without raw errors or configuration excerpts.
+
+The reader accepts only the metadata needed for these fields. Unsupported metadata and ambiguous transports produce diagnostics, not upstream validation results.
+The limits are 128 KiB per file, 32 entries per source and total, 128 characters per name, and 512 characters per source path.
+Serialized output stays within 32 KiB. A limit diagnostic means the inventory can be incomplete.
+Missing files are normal. Diagnostics identify malformed JSON, oversized or unreadable files, unsupported shapes or metadata, ambiguous names, unavailable registrations, and exceeded limits.
+Commands, arguments, URLs, descriptions, headers, environment values, working directories, and OAuth configuration never appear in the result.
+
+Interactive `/mcp` inspects connections in the current Pi session. Nested `pi mcp list` starts separate connection attempts with the sandbox's generated HOME.
+Neither connection workflow is equivalent to `mcp_list`. The inventory does not test Serena or make Serena tools callable.
+Arbitrary MCP tools remain unadmitted. The reviewed Serena profile below is the only routed MCP exception.
+
+## Reviewed Serena profile
+
+Normal SRT sessions replace Pi's built-in MCP session integration with the exported `createMcpExtension` and a controller-owned transport. No host transport is available through this replacement. Shell-level MCP commands and `--yolo` retain upstream behavior.
+
+The profile in `agent/extensions/srt-tool-routing/serena-profile.mjs` admits only the canonical `/Users/dsuess/src/visonic/dev` worktree. Current session trust permits the configuration read. Trust does not grant tool authority. User configuration and extension registrations cannot supply an admitted server.
+
+The profile binds the configuration source, server name, stdio command, arguments, literal environment, and working directory. It also records SHA-256 fingerprints for:
+
+- `.pi/mcp.json`
+- `.dev/run-serena-mcp.sh`
+- `.dev/install-serena.sh`
+- `.pi/serena-context.yml`
+
+Configuration commands, environment expansion, HTTP transports, extra arguments, changed fingerprints, and changed canonical file identities fail closed. `/mcp` retains status and reconnect controls. Its configuration controls cannot extend admission or write the reviewed configuration.
+
+The server must actually offer each tool, and the project configuration must expose it directly. The reviewed inspection tools are `search_for_pattern`, `get_symbols_overview`, `find_symbol`, and `find_referencing_symbols`. Planning permits only these four verified offerings.
+
+The reviewed edit tools are `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, `rename_symbol`, and `safe_delete_symbol`. The planning guard blocks all five, regardless of server hints. Planning exit restores approved edits that arrived while the guard was active. Missing offerings remain unavailable. Resources, discovery, memories, onboarding, and basic file or shell tools receive no admission.
+
+Serena uses the generated HOME, uv runtime paths, and existing filesystem policy. Its npm-backed language servers use the generated `cache/npm` directory, not host `~/.npm`. This cache mapping applies only to controller-owned stdio sessions. Core Bash retains its existing npm-cache behavior. Language-server subprocesses inherit SRT restrictions. IP egress remains unrestricted.
+
+The private channel binds each process to its client connection and effective policy generation. Lease siblings cannot write to or close that process. Limits include two live processes, 64 KiB channel chunks, and 1 MiB input/output buffers. MCP messages have a 1 MiB limit, and retained stderr has a 64 KiB limit. Startup and cleanup have deadlines. Idle servers do not occupy core operation slots.
+
+Policy activation retires old-policy processes before the new policy becomes effective. The next prompt reconnects lazily with the current client policy and repeats profile checks. `/reload`, `/new`, `/resume`, `/fork`, and quit retire server authority and process groups. Transport loss never replays a tool request. Failed cleanup blocks further execution.
+
+`/sandbox off` does not move Serena onto the host. Serena still requires a healthy controller. `--yolo` skips routed admission and retains upstream host-native MCP behavior. `mcp_list` remains metadata-only and grants no connection or tool authority.
+
+### Profile maintenance
+
+1. If a reviewed input changes, examine its launch behavior and filesystem requirements.
+2. Update the profile identity and fingerprints only after review.
+3. Run the profile, transport, routing, and planning tests.
+4. Deploy through `./install.sh config`.
+5. Run `node pi/sandbox/verify-serena.mjs` from an ordinary host terminal.
+
+The acceptance script uses bounded normal Pi launches with prompts that begin `test serena`. It checks real symbol results and independent fixture bytes. It removes only its own fixtures and compares Visonic status and tracked diffs after cleanup. The native adversarial MCP test separately checks OS-level read/write denial for the server and its subprocesses.
+
+A zero Pi exit status does not prove tool success. Inspect tool events and result content. Serena can report error text with `isError: false`. The acceptance script requires real symbols rather than a success flag alone. Failed language-server startup can leave partial generated resources. Host installation changes, permission changes, and broader grants are not valid workarounds.
+
+## MCP CLI commands
+
+The launcher forwards a leading `mcp` command to installed Pi before session controller checks. It does not add `--no-builtin-tools`. Upstream MCP CLI commands do not load extensions. Ordinary session startup still requires the controller and fails closed.
+
+This dispatch preserves the caller's HOME, working directory, arguments, and exit status. It does not remove existing OS sandbox restrictions or grant host access. Explicit `--yolo` behavior remains unchanged.
+
+Inside routed Bash, `pi mcp` retains the generated HOME. It does not receive host credentials, trust records, or controller capabilities. User configuration comes from that HOME, not the host's `~/.pi/agent/mcp.json`. Upstream can skip project `.pi/mcp.json` because the generated HOME lacks project trust. A skipped configuration does not prove a server connection.
+
+Interactive `/mcp` inspects connections in the existing host Pi session. A new `pi mcp list` process inside routed Bash does not inspect those connections. `pi mcp list` connects to enabled servers and can start subprocesses. It is not a side-effect-free inspection command.
+
+Run these commands through routed Bash to inspect CLI dispatch:
+
+```sh
+pi mcp --help
+pi mcp list --json
+```
 
 ## Temporary files
 
@@ -144,7 +226,7 @@ CAUTION: Re-enabling sandboxing affects future operations only. It cannot undo h
 
 ## Operations and troubleshooting
 
-The detached routing controller owns the workspace socket, base policy, client snapshots, leases, Docker broker, and lazy sidecar. Each routed file, shell, or Docker request starts its own short-lived SRT operation. There is no long-running per-session SRT process to restart.
+The detached routing controller owns the workspace socket, base policy, client snapshots, leases, Docker broker, and lazy sidecar. Each routed core file, shell, or Docker request starts its own short-lived SRT operation. Reviewed Serena uses a separate persistent SRT stdio process for the session.
 
 A root Pi runtime refreshes its opaque controller lease while it runs. After a long host pause, such as machine sleep or synchronous plan review, its next routed request transparently proves the original private startup capability to the same controller, reactivates the same lease token, and retries that rejected request once. This does not restart the controller, recreate the policy, or replace the sidecar. Inherited child runtimes have only the opaque lease and cannot renew it. If the root cannot prove that original authority, routing fails closed: Pi disables routed tools and shuts down rather than falling back to host tools.
 

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAX_FRAME_BYTES = 12 * 1024 * 1024;
 export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -23,6 +23,9 @@ export const PROTOCOL_METHODS = Object.freeze([
   "fs.writeFile",
   "fs.deleteFile",
   "exec",
+  "process.open",
+  "process.input",
+  "process.close",
   "cancel",
   "reload",
   "restart",
@@ -269,6 +272,20 @@ function validateMethod(method, params) {
     case "exec":
       validateExec(params);
       break;
+    case "process.open":
+      exactKeys(params, new Set(["argv", "cwd", "env", "policyGeneration"]), "params");
+      validateExec({ ...params, timeoutMs: 5000, maxOutputBytes: 65536 });
+      break;
+    case "process.input":
+    case "process.close":
+      exactKeys(params, new Set(["handle", "policyGeneration", ...(method === "process.input" ? ["data"] : [])]), "params");
+      generation(params.handle, "params.handle");
+      generation(params.policyGeneration);
+      if (method === "process.input") {
+        const data = string(params.data, "params.data", Math.ceil(65536 / 3) * 4, { empty: true });
+        if (decodeCanonicalBase64(data).length > 65536) throw protocolError("invalid_request", "stdio input chunk exceeded");
+      }
+      break;
     case "cancel":
       exactKeys(params, new Set(["requestId"]), "params");
       integer(params.requestId, "params.requestId", 1, 0x7fffffff);
@@ -314,7 +331,7 @@ export function validateResponse(value) {
     exactKeys(response, new Set(["v", "type", "id", "event", "data"]), "event");
     if (response.v !== PROTOCOL_VERSION) throw protocolError("protocol_version", "unsupported event");
     integer(response.id, "event.id", 1, 0x7fffffff);
-    if (!new Set(["stdout", "stderr"]).has(response.event)) {
+    if (!new Set(["stdout", "stderr", "exit"]).has(response.event)) {
       throw protocolError("invalid_response", "invalid stream event");
     }
     string(response.data, "event.data", MAX_FRAME_BYTES, { empty: true });

@@ -15,6 +15,7 @@ import { materializeTempCommand } from "./temp-command.mjs";
 import { resolveHostReadManifest, resolveUserToolRuntime } from "./host-configuration.mjs";
 import { createFilesystemConfigurationService } from "./filesystem-configuration.mjs";
 import { ClientPolicies } from "./client-policy.mjs";
+import { StdioSessions } from "./stdio-sessions.mjs";
 import { atomicJson, manifestFor, validateDescriptor } from "./capability.mjs";
 import { FrameDecoder, encodeFrame, makeErrorResponse, makeResponse, makeStreamEvent, validateRequest } from "./protocol.mjs";
 
@@ -78,7 +79,7 @@ const active = new Map();
 const leases = new Map();
 let operationCount = 0;
 function boundedEnvironment(overrides = {}) {
-  const blocked = /^(PI_SRT_|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_|SBX_|DYLD_|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME|UV_CACHE_DIR)$/;
+  const blocked = /^(PI_SRT_.*|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_.*|SBX_.*|DYLD_.*|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME|UV_CACHE_DIR|PI_LAUNCHER_CHAIN)$/;
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
@@ -118,6 +119,17 @@ async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxO
     if (helperRequest) child.stdin.end(JSON.stringify(helperRequest));
   });
 }
+const stdioSessions = new StdioSessions({
+  spawn: async (params, effectivePolicy) => {
+    const wrapped = await SandboxManager.wrapWithSandboxArgv(quoteBash(params.argv), "/bin/bash", { filesystem: effectivePolicy.filesystem });
+    return await new Promise((resolve, reject) => {
+      const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd: params.cwd, env: boundedEnvironment({ ...wrapped.env, ...params.env, NPM_CONFIG_CACHE: path.join(toolHomeRoot, "cache", "npm") }), shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      child.once("spawn", () => resolve(child));
+      child.once("error", reject);
+    });
+  },
+  emit: (session, name, data) => session.owner.write(encodeFrame(makeStreamEvent(session.requestId, name, data))),
+});
 function leaseError(code, message) { return Object.assign(new Error(message), { code }); }
 function activeLeaseCount(now = Date.now()) {
   let count = 0;
@@ -132,6 +144,7 @@ function validateLease(request) {
   return lease;
 }
 async function dispatch(request, socket) {
+  if (shuttingDown) throw leaseError("controller_shutdown", "controller is shutting down");
   const p = request.params;
   if (request.method === "lease.acquire") {
     if (request.auth !== descriptor.token || p.workspaceKey !== descriptor.workspaceKey) {
@@ -155,24 +168,64 @@ async function dispatch(request, socket) {
   validateLease(request);
   if (request.method === "status") { const owned = sidecar.metadata(); return { health: "healthy", workspaceKey: descriptor.workspaceKey, workspaceRoot: descriptor.workspaceRoot, ...clientPolicies.status(socket), runtimeGeneration: String(descriptor.generation).padStart(64, "0"), sidecarId: owned?.id ?? null, dockerHealthy: Boolean(owned), attachedRoots: activeLeaseCount(), pendingRestart: false, brokerHealthy: true }; }
   if (request.method === "lease.heartbeat") return { ok: true };
-  if (request.method === "lease.release") { leases.delete(request.auth); return { ok: true, final: activeLeaseCount() === 0 }; }
+  if (request.method === "lease.release") { await stdioSessions.retire(socket); leases.delete(request.auth); return { ok: true, final: activeLeaseCount() === 0 }; }
   if (request.method === "cancel") return { cancelled: await terminate([...active.values()].find((operation) => operation.socket === socket && operation.requestId === p.requestId)) };
   if (request.method === "policy.prepare") return clientPolicies.prepare(socket, p);
-  if (request.method === "policy.activate") return clientPolicies.activate(socket, p.preparation, p.revision);
+  if (request.method === "policy.activate") {
+    await stdioSessions.retire(socket);
+    const result = clientPolicies.activate(socket, p.preparation, p.revision);
+    stdioSessions.allow(socket);
+    return result;
+  }
   // Capture before any await. Subsequent refreshes cannot change this operation.
   const effectivePolicy = clientPolicies.capture(socket, p.policyGeneration).policy;
+  if (request.method === "process.open") return stdioSessions.open(socket, request.id, p, effectivePolicy);
+  if (request.method === "process.input") return stdioSessions.input(socket, p);
+  if (request.method === "process.close") return stdioSessions.close(socket, p);
   if (request.method === "docker.reset") { await sidecar.reset(); return { reset: true }; }
   if (request.method === "exec") return spawnSandbox({ ...p, requestId: request.id, socket, effectivePolicy });
   const map = { "fs.access": "access", "fs.mkdir": "mkdir", "fs.listDir": "listDir", "fs.stat": "stat", "fs.rename": "rename", "fs.readFile": "readFile", "fs.writeFile": "writeFile", "fs.deleteFile": "deleteFile" };
   const operation = map[request.method]; if (!operation) throw Object.assign(new Error("unsupported controller operation"), { code: "unknown_method" });
   return spawnSandbox({ argv: [], cwd: descriptor.workspaceRoot, env: {}, requestId: request.id, socket, timeoutMs: 60_000, maxOutputBytes: 12 * 1024 * 1024, helperRequest: { operation, params: p }, effectivePolicy });
 }
-const server = net.createServer((socket) => { const decoder = new FrameDecoder(async (value) => { let request; try { request = validateRequest(value); const result = await dispatch(request, socket); socket.write(encodeFrame(makeResponse(request.id, result))); } catch (error) { socket.write(encodeFrame(makeErrorResponse(request?.id ?? 1, error))); } }); socket.on("data", (data) => { try { decoder.push(data); } catch { socket.destroy(); } }); socket.on("close", () => { for (const [id, operation] of active) if (operation.socket === socket) void terminate(operation); }); });
+const connections = new Set();
+const server = net.createServer((socket) => {
+  connections.add(socket);
+  let authorityQueue = Promise.resolve();
+  let pendingRequests = 0;
+  const decoder = new FrameDecoder(async (value) => {
+    let request;
+    if (++pendingRequests > 32) { socket.destroy(); pendingRequests -= 1; return; }
+    try {
+      request = validateRequest(value);
+      const invoke = () => dispatch(request, socket);
+      // Serialize startup and policy retirement; input stays independent so a
+      // busy server cannot hold policy controls hostage.
+      const queued = ["process.open", "policy.activate", "lease.release"].includes(request.method);
+      const answer = queued ? authorityQueue.then(invoke) : invoke();
+      if (queued) authorityQueue = answer.catch(() => {});
+      const result = await answer;
+      if (!socket.destroyed) socket.write(encodeFrame(makeResponse(request.id, result)));
+    } catch (error) { if (!socket.destroyed) socket.write(encodeFrame(makeErrorResponse(request?.id ?? 1, error))); }
+    finally { pendingRequests -= 1; }
+  });
+  socket.on("data", (data) => { try { decoder.push(data); } catch { socket.destroy(); } });
+  socket.on("close", () => {
+    connections.delete(socket);
+    void stdioSessions.retire(socket).catch(recordFatal);
+    for (const operation of active.values()) if (operation.socket === socket) void terminate(operation);
+  });
+});
 let controllerSocketInode = null;
 server.listen(descriptor.socketPath, () => { fs.chmodSync(descriptor.socketPath, 0o600); controllerSocketInode = fs.lstatSync(descriptor.socketPath).ino; });
-function shutdown() {
-  for (const operation of active.values()) void terminate(operation);
-  server.close(); void sidecar.close();
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.close();
+  await Promise.all([stdioSessions.shutdown().catch(recordFatal), ...[...active.values()].map(terminate)]);
+  for (const socket of connections) socket.destroy();
+  await sidecar.close();
   let ownsPublishedState = false;
   try { ownsPublishedState = JSON.parse(fs.readFileSync(descriptor.manifestPath, "utf8")).pid === process.pid; } catch {}
   if (ownsPublishedState) {

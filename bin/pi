@@ -58,6 +58,13 @@ if [[ "$yolo" == true ]]; then
   exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
 fi
 
+# Upstream dispatches MCP CLI commands before session parsing and does not
+# load extensions. Preserve the caller's HOME and OS sandbox; no session
+# controller bootstrap or --no-builtin-tools flag belongs on this path.
+if [[ "${pi_args[0]-}" == "mcp" ]]; then
+  exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" "${pi_args[@]}"
+fi
+
 case "$(uname -s)" in
   Darwin) ;;
   *) fail "this runtime requires macOS Seatbelt support" ;;

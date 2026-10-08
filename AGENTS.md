@@ -18,6 +18,8 @@ Always commit a plan document in the same commit as the changes that implement i
 
 ## Correction lessons
 
+- Strip `PI_LAUNCHER_CHAIN` from routed guest environments and controller operation environments, including caller overrides. It belongs to one launcher exec chain, not independent descendant commands; keep launcher recursion checks intact.
+
 - Keep durable planning candidates, approvals, and execution records independent of the mutation guard. Use model-directed candidate presentation without coupling workflow state to guard state.
 
 - When a controller setting is read from an environment variable, add it to `spawnController()`'s explicit environment allowlist and test that forwarding.

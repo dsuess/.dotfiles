@@ -8,6 +8,7 @@ import { acquireControllerLease, beginControllerStartup, stopStartedController }
 
 test("controller confines temporary creation and protects compatibility code", async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-temp-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-native-temp-denial-"));
   const originalTmp = process.env.TMPDIR;
   let startup, client;
   t.after(async () => {
@@ -15,6 +16,7 @@ test("controller confines temporary creation and protects compatibility code", a
     finally {
       if (startup) stopStartedController(startup);
       fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
   try {
@@ -36,6 +38,18 @@ test("controller confines temporary creation and protects compatibility code", a
   const root = path.join("/tmp", `pi-srt-${process.getuid()}`, "g", startup.workspaceKey, String(startup.generation), "tmp");
   const executable = path.join(startup.runtimeRoot, `generation-${startup.generation}`, "temp-bin", "mktemp");
   for (const shellFlag of ["-c", "-lc"]) {
+    const resolved = await run("command -v mktemp", shellFlag);
+    assert.equal(resolved.exitCode, 0, resolved.stderr);
+    if (shellFlag === "-c") assert.equal(resolved.stdout.trim(), executable);
+    if (resolved.stdout.trim() !== executable) {
+      // Login startup may replace PATH; native commands must remain confined.
+      assert.equal(shellFlag, "-lc");
+      const denied = await run(`/usr/bin/mktemp ${JSON.stringify(path.join(outside, "native.XXXXXX"))}`, shellFlag);
+      assert.notEqual(denied.exitCode, 0);
+      assert.match(denied.stderr, /Operation not permitted|Permission denied/);
+      assert.deepEqual(fs.readdirSync(outside), []);
+      continue;
+    }
     const result = await run('set -e; printf "%s\\n%s\\n" "$TMPDIR" "$(command -v mktemp)"; mktemp; mktemp -d; mktemp -t prefix; mktemp -dt prefix', shellFlag);
     assert.equal(result.exitCode, 0, result.stderr);
     const [tmp, command, ...created] = result.stdout.trim().split("\n");

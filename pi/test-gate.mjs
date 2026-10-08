@@ -22,6 +22,7 @@ function run(label, command, args, cwd = root) {
 }
 
 const deterministic = [
+  ["MCP configuration inventory", "node", ["--test", "agent/extensions/mcp-inventory/inventory.test.mjs"]],
   ["plan-mode", "npm", ["--prefix", "agent/extensions/plan-mode", "run", "check"]],
   ["fzf-file-picker", "npm", ["--prefix", "agent/extensions/fzf-file-picker", "run", "check"]],
   ["git-tree-checkpoints", "npm", ["--prefix", "agent/extensions/git-tree-checkpoints", "run", "check"]],

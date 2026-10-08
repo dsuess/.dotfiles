@@ -261,7 +261,7 @@ test("constructs an inherited ephemeral child, sends the task only on stdin, and
 test("passes trusted host adapters only through the private post-handshake allowlist", async () => {
 	const proc = new FakeProcess();
 	let spawnCall;
-	await runSubagent(baseOptions({ activeTools: ["read", "ketch_search", "unknown_tool"] }), {
+	await runSubagent(baseOptions({ activeTools: ["read", "ketch_search", "mcp_list", "mcp__serena__execute", "unknown_tool"] }), {
 		spawnImpl(_command, args, options) {
 			spawnCall = { args, options };
 			queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));
@@ -272,7 +272,8 @@ test("passes trusted host adapters only through the private post-handshake allow
 	assert.ok(spawnCall.args.includes("--no-builtin-tools"));
 	assert.equal(spawnCall.args.includes("--no-tools"), false);
 	assert.equal(spawnCall.options.env.PI_SRT_ROUTING_BUILTIN_TOOLS, "read");
-	assert.equal(spawnCall.options.env.PI_SRT_ROUTING_HOST_TOOLS, "ketch_search");
+	assert.equal(spawnCall.options.env.PI_SRT_ROUTING_HOST_TOOLS, "ketch_search,mcp_list");
+	assert.equal(spawnCall.args.join(" ").includes("mcp__serena__execute"), false);
 	assert.equal(spawnCall.args.join(" ").includes("unknown_tool"), false);
 });
 

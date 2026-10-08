@@ -64,3 +64,25 @@ test("defense in depth rejects direct, unknown, and known shell mutations", () =
 	assert.equal(evaluatePlanningToolCall("bash", { command: "git status --short" }, registered), null);
 	assert.equal(evaluatePlanningToolCall("acme_unknown", {}, [...registered, "acme_unknown"]), "Planning mode blocks tool 'acme_unknown'.");
 });
+
+test("planning admits only the routing-verified reviewed inspection subset, never a server hint", () => {
+	const inspection = ["search_for_pattern", "get_symbols_overview", "find_symbol", "find_referencing_symbols"].map((name) => `mcp__serena__${name}`);
+	const edits = ["replace_symbol_body", "insert_after_symbol", "insert_before_symbol", "rename_symbol", "safe_delete_symbol"].map((name) => `mcp__serena__${name}`);
+	const tools = [...registered, ...inspection, ...edits, "mcp__serena__execute_shell_command"];
+	assert.ok(inspection.every((name) => !getPlanningToolNames(tools).includes(name)), "names alone grant nothing");
+	const options = { routedInspectionTools: [...inspection, ...edits, "mcp__serena__execute_shell_command"] };
+	for (const name of inspection) assert.equal(evaluatePlanningToolCall(name, {}, tools, options), null);
+	for (const name of [...edits, "mcp__serena__execute_shell_command"]) assert.match(evaluatePlanningToolCall(name, {}, tools, options), /blocks tool/);
+});
+
+test("MCP inventory survives normal, fast planning and restoration without server calls", () => {
+	const tools = [...registered, "mcp_list", "mcp__serena__execute"];
+	for (const fastOptimization of [false, true]) {
+		assert.ok(getPlanningToolNames(tools, { fastOptimization }).includes("mcp_list"));
+		assert.equal(evaluatePlanningToolCall("mcp_list", {}, tools, { fastOptimization }), null);
+		assert.match(evaluatePlanningToolCall("mcp__serena__execute", {}, tools, { fastOptimization }), /blocks tool/);
+	}
+	const snapshot = snapshotActiveTools(["read", "mcp_list", "show_plan"]);
+	assert.deepEqual(composeActiveTools(snapshot, ["plan_progress"], tools).active, ["read", "mcp_list", "plan_progress"]);
+	assert.deepEqual(getRestorableTools(snapshot, tools).restored, ["read", "mcp_list"]);
+});

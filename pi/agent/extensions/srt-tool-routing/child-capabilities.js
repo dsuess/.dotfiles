@@ -16,6 +16,7 @@ export const AUDITED_CHILD_HOST_ADAPTERS = Object.freeze([
   "ketch_crawl",
   "ask_user_question",
   "subagent",
+  "mcp_list",
 ]);
 
 const BUILTINS = new Set(SRT_ROUTING_CHILD_BUILTINS);

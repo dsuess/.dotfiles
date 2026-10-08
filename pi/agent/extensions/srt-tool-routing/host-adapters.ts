@@ -44,6 +44,7 @@ export const HOST_ADAPTER_NAMES = Object.freeze([
   "ketch_docs",
   "ketch_crawl",
   "ask_user_question",
+  "mcp_list",
 ] as const);
 
 interface ProvenanceCache {
@@ -82,6 +83,19 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
   const askDir = path.join(agentDir, "packages", "ask-user-question");
   const ketchDir = path.join(agentDir, "npm", "node_modules", "pi-ketch");
   const specs: AdapterSpec[] = [];
+  specs.push({
+    name: "mcp_list",
+    source: "auto",
+    scope: "user",
+    origin: "top-level",
+    sourcePath: path.join(agentDir, "extensions", "mcp-inventory", "index.ts"),
+    baseDir: agentDir,
+    hostEffects: Object.freeze([
+      "bounded read-only user MCP configuration metadata",
+      "bounded read-only project MCP configuration metadata only with current session trust",
+      "extension-registered metadata inventory; no server execution or connections",
+    ]),
+  });
 
   for (const name of ["show_plan", "plan_progress", "complete_plan", "complete_stage"]) {
     specs.push({
@@ -170,14 +184,23 @@ export function isSrtToolRoutingReplacement(
   if (!SRT_ROUTING_BUILTIN_NAMES.includes(tool.name as (typeof SRT_ROUTING_BUILTIN_NAMES)[number])) {
     return false;
   }
+  return isRoutingExtensionSource(tool.sourceInfo, options, cache);
+}
+
+/** Provenance only: routed MCP still requires separate live-session authority. */
+export function isRoutingExtensionSource(
+  sourceInfo: ToolSourceInfo,
+  options: { extensionPath?: string; agentDir?: string } = {},
+  cache?: ProvenanceCache,
+): boolean {
   const expectedPath = options.extensionPath ?? SRT_ROUTING_EXTENSION_PATH;
   const expectedAgentDir = path.resolve(options.agentDir ?? agentDirectory());
   return (
-    tool.sourceInfo.source === "auto" &&
-    tool.sourceInfo.scope === "user" &&
-    tool.sourceInfo.origin === "top-level" &&
-    canonicalMatches(tool.sourceInfo.path, expectedPath, cache) &&
-    canonicalMatches(tool.sourceInfo.baseDir ?? "", expectedAgentDir, cache)
+    sourceInfo.source === "auto" &&
+    sourceInfo.scope === "user" &&
+    sourceInfo.origin === "top-level" &&
+    canonicalMatches(sourceInfo.path, expectedPath, cache) &&
+    canonicalMatches(sourceInfo.baseDir ?? "", expectedAgentDir, cache)
   );
 }
 
@@ -191,6 +214,7 @@ export function verifyToolInventory(
   tools: ConfiguredToolInfo[],
   options: {
     manifest?: ReadonlyMap<string, AdapterSpec>;
+    isRoutedMcp?: (tool: ConfiguredToolInfo) => boolean;
     extensionPath?: string;
     agentDir?: string;
   } = {},
@@ -214,7 +238,7 @@ export function verifyToolInventory(
     }
   }
   for (const tool of tools) {
-    if (isTrustedHostAdapter(tool, manifest, cache)) allowedNames.add(tool.name);
+    if (isTrustedHostAdapter(tool, manifest, cache) || options.isRoutedMcp?.(tool)) allowedNames.add(tool.name);
   }
   return {
     allowedNames,
