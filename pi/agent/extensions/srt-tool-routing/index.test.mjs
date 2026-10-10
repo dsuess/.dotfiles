@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPiJiti, piPackageRoot } from "../../../test-helpers.mjs";
 import { SERENA_PROFILE, SERENA_TOOLS } from "./serena-profile.mjs";
+import { createWorkspaceApproval, WorkspaceApprovalStore } from "./workspace-approval.mjs";
 const { runToolCall } = await import(path.join(piPackageRoot, "node_modules/@earendil-works/pi-agent-core/dist/index.js"));
 
 const jiti = await createPiJiti(import.meta.url);
@@ -52,7 +53,15 @@ function createHarness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "srt-routing-extension-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const handshake = path.join(root, "ready.json");
-  const workspaceRoot = options.reviewedMcp ? SERENA_PROFILE.workspace : "/physical/workspace";
+  if (options.malformedApproval) {
+    fs.mkdirSync(path.join(root, ".pi/routed-mcp"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(root, ".pi/routed-mcp/approvals.json"), '{"version":99}', { mode: 0o600 });
+  }
+  const workspaceRoot = options.projectMcp ? path.join(root, "project") : options.reviewedMcp ? SERENA_PROFILE.workspace : "/physical/workspace";
+  if (options.projectMcp) {
+    fs.mkdirSync(path.join(workspaceRoot, ".pi"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, ".pi/mcp.json"), JSON.stringify({ mcpServers: options.projectMcp }));
+  }
   const handlers = new Map();
   const eventHandlers = new Map();
   const definitions = new Map();
@@ -119,12 +128,14 @@ function createHarness(t, options = {}) {
   const client = options.client ?? fakeClient();
   const mcpExecutions = [], channels = [];
   let offerings = [...SERENA_TOOLS, "execute_shell_command"];
-  if (options.reviewedMcp) {
+  if (options.reviewedMcp || options.projectMcp) {
     const status = client.status.bind(client);
     client.status = async () => ({ ...await status(), workspaceRoot });
     client.openProcess = async (_argv, transportOptions) => {
+      if (channels.filter((channel) => !channel.closed).length >= 2) throw new Error("stdio process limit reached (2)");
       let closed = false;
       const channel = {
+        get closed() { return closed; },
         policyGeneration: client.policyGeneration,
         argv: _argv,
         receive: transportOptions.onEvent,
@@ -169,6 +180,7 @@ function createHarness(t, options = {}) {
   let control;
   extensionModule.createSrtToolRoutingSandboxExtension({
     env,
+    mcpApproval: createWorkspaceApproval({ store: new WorkspaceApprovalStore(root) }),
     onControl: (value) => { control = value; },
     statusIntervalMs: options.statusIntervalMs,
     auditOptions: { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR },
@@ -197,13 +209,14 @@ function createHarness(t, options = {}) {
     hasUI: true,
     mode: "tui",
     cwd: workspaceRoot,
-    isProjectTrusted: () => options.reviewedMcp === true,
+    isProjectTrusted: () => options.projectTrusted !== false && Boolean(options.reviewedMcp || options.projectMcp),
     sessionManager: options.sessionManager ?? {},
     isIdle: () => true,
     ui: {
       theme: { fg: (_color, value) => value },
       setStatus: (...args) => status.push(args),
       notify: () => {},
+      confirm: async () => options.mcpApprove !== false,
     },
     shutdown() { shutdownCalls += 1; },
   };
@@ -301,11 +314,11 @@ test("verified late MCP offerings pass the real tool pipeline; identical names w
   await harness.emit("before_agent_start");
   const name = "mcp__serena__get_symbols_overview";
   assert.ok(harness.active().includes(name));
-  assert.equal(harness.definitions.has("mcp__serena__execute_shell_command"), false);
+  assert.equal(harness.definitions.has("mcp__serena__execute_shell_command"), true, "approved non-hidden offerings are normalized to direct exposure outside planning");
   assert.deepEqual(harness.channels.map((channel) => channel.argv), [[path.join(SERENA_PROFILE.workspace, SERENA_PROFILE.command), "pi"]], "same-name and arbitrary server registrations never start");
-  assert.equal((await harness.runTool("mcp__serena__execute_shell_command")).isError, true);
+  assert.equal((await harness.runTool("mcp__serena__execute_shell_command")).isError, false);
   assert.equal((await harness.runTool("mcp__arbitrary__find_symbol")).isError, true);
-  assert.equal(harness.mcpExecutions.length, 0);
+  assert.equal(harness.mcpExecutions.length, 1);
   const result = await harness.runTool(name, { relative_path: "fixture.py" });
   assert.equal(result.isError, false, JSON.stringify(result));
   assert.match(result.result.content[0].text, /VerifiedFixtureSymbol/);
@@ -315,7 +328,7 @@ test("verified late MCP offerings pass the real tool pipeline; identical names w
   const rejected = await harness.runTool(name);
   assert.equal(rejected.isError, true);
   assert.match(rejected.result.content[0].text, /not a trusted SRT/);
-  assert.equal(harness.mcpExecutions.length, 2);
+  assert.equal(harness.mcpExecutions.length, 3);
   const projection = harness.definitions.get("read").prepareLoadout({ declared: [{ name }] });
   assert.ok(projection.hiddenDeclarations.includes(name), "late spoofed declarations are hidden by the loadout projection");
   harness.pi.setActiveTools([name]);
@@ -1098,6 +1111,38 @@ test("registered no-UI commands publish read-only status and errors without muta
   assert.equal(mutations, 0);
   await harness.emit("session_shutdown", { reason: "quit" });
 });
+
+test("real MCP manager routes independent servers, hides configured tools and enforces capacity", async (t) => {
+  const harness = createHarness(t, { projectMcp: {
+    one: { command: "/fixture/one", exposure: "codemode" },
+    two: { command: "/fixture/two", toolExposure: { get_symbols_overview: "hidden" } },
+    three: { command: "/fixture/three" },
+  } });
+  await harness.emit("session_start", { reason: "startup" });
+  await harness.emit("before_agent_start");
+  assert.equal(harness.channels.length, 2);
+  assert.ok(harness.active().includes("read"));
+  assert.ok(!harness.active().includes("codemode"));
+  assert.equal(harness.definitions.has("mcp__two__get_symbols_overview"), false);
+  for (const name of ["mcp__one__find_symbol", "mcp__two__find_symbol"]) assert.equal((await harness.runTool(name)).isError, false);
+  harness.channels[0].receive("exit", Buffer.alloc(0));
+  assert.equal(harness.definitions.get("mcp__one__find_symbol").exposure, "hidden");
+  assert.equal(harness.definitions.get("mcp__two__find_symbol").exposure, "direct");
+  await harness.commands.get("mcp").handler("revoke", harness.ctx);
+  assert.equal((await harness.runTool("mcp__two__find_symbol")).isError, true);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+for (const options of [{ mcpApprove: false }, { projectTrusted: false }, { malformedApproval: true }]) {
+  test(`real manager starts no unapproved process: ${JSON.stringify(options)}`, async (t) => {
+    const harness = createHarness(t, { projectMcp: { fixture: { command: "/fixture/server" } }, ...options });
+    await harness.emit("session_start", { reason: "startup" });
+    await harness.emit("before_agent_start");
+    assert.equal(harness.channels.length, 0);
+    assert.ok(harness.active().includes("read"));
+    await harness.emit("session_shutdown", { reason: "quit" });
+  });
+}
 
 test("canonical MCP inventory remains admitted across sandbox mode transitions", async (t) => {
   const harness = createHarness(t);

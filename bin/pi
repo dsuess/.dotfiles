@@ -55,6 +55,15 @@ export PI_LAUNCHER_CHAIN="$chain:$real_pi"
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/Users/dsuess/.npm}"
 if [[ "$yolo" == true ]]; then
   printf 'pi: warning: SRT disabled by --yolo\n' >&2
+  # Shell MCP dispatch does not load extensions. Session bypass must override
+  # the routed launch's persistent built-in MCP exclusion explicitly.
+  select_native_mcp=true
+  for argument in ${pi_args[@]+"${pi_args[@]}"}; do
+    case "$argument" in --no-extensions|-ne) select_native_mcp=false ;; esac
+  done
+  if [[ "${pi_args[0]-}" != "mcp" && "$select_native_mcp" == true ]]; then
+    pi_args=(--extension builtin:mcp ${pi_args[@]+"${pi_args[@]}"})
+  fi
   exec /usr/bin/env PATH="${real_pi%/*}:$PATH" "$real_pi" ${pi_args[@]+"${pi_args[@]}"}
 fi
 

@@ -28,6 +28,15 @@ _Avoid_: Planning mode
 An explicit conversation-local execution mode with ordinary host-user authority.
 _Avoid_: Controller bypass mode, permanent grant
 
+**Project trust**:
+Permission for Pi to read project configuration and load project resources in the current session.
+_Avoid_: MCP approval, filesystem grant
+
+**Routed MCP approval**:
+Saved authority for project-local stdio launch definitions in one canonical workspace.
+It binds launch fingerprints, not source contents, and adds no filesystem access.
+_Avoid_: Project trust, folder grant
+
 **Planning mutation guard**:
 An independent restriction on mutations, separate from sandbox execution mode.
 _Avoid_: Sandbox permission
@@ -49,6 +58,9 @@ _Avoid_: Private sidecar
 - **Sandbox off** belongs to one conversation in one client, not the shared controller or its child agents.
 - The **Planning mutation guard** restricts mutations in both **Sandbox on** and **Sandbox off**.
 - **Sandbox on** selects **Private Docker**. **Sandbox off** selects **Host Docker**.
+- **Project trust** permits the project MCP configuration read but does not supply **Routed MCP approval**.
+- **Routed MCP approval** adds no **Saved grant** or **Effective grant** and does not change **Sandbox on** or **Sandbox off**.
+- Routed MCP processes retain sandbox authority even during **Sandbox off**. The **Planning mutation guard** remains independent.
 
 ## Example dialogue
 

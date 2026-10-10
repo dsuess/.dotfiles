@@ -29,5 +29,12 @@ test("--yolo bypasses SRT and starts Pi with native tools", (t) => {
     env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}`, PI_TEST_ARGS: argsFile },
   });
 
-  assert.equal(fs.readFileSync(argsFile, "utf8"), "\n");
+  assert.equal(fs.readFileSync(argsFile, "utf8"), "--extension\nbuiltin:mcp\n");
+  for (const flag of ["--no-extensions", "-ne"]) {
+    execFileSync(launcher, ["--yolo", flag], {
+      cwd: workspace,
+      env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}`, PI_TEST_ARGS: argsFile },
+    });
+    assert.equal(fs.readFileSync(argsFile, "utf8"), `${flag}\n`);
+  }
 });

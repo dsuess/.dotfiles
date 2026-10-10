@@ -6,9 +6,50 @@ import test from "node:test";
 import { piPackageRoot } from "../test-helpers.mjs";
 import { acquireControllerLease, beginControllerStartup, stopStartedController } from "./client.mjs";
 import { RoutedMcpTransport } from "../agent/extensions/srt-tool-routing/mcp-transport.mjs";
+import { createWorkspaceApproval, WorkspaceApprovalStore } from "../agent/extensions/srt-tool-routing/workspace-approval.mjs";
 const { McpClient } = await import(path.join(piPackageRoot, "node_modules/@earendil-works/pi-mcp/dist/index.js"));
 
-// Native acceptance harness only. Production admission never accepts this server.
+test("two explicitly approved stdio fixtures run independently through native SRT", { timeout: 30000 }, async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-approved-mcp-")));
+  const workspace = path.join(root, "workspace"); fs.mkdirSync(path.join(workspace, ".pi"), { recursive: true });
+  const fixture = path.join(workspace, "server.mjs");
+  fs.writeFileSync(fixture, `import readline from 'node:readline';
+readline.createInterface({input:process.stdin}).on('line',line=>{const request=JSON.parse(line);if(request.id===undefined)return;let result;
+if(request.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:process.argv[2],version:'1'}};
+else if(request.method==='tools/list')result={tools:[{name:'identity',description:'identity',inputSchema:{type:'object'}}]};
+else if(request.method==='tools/call')result={content:[{type:'text',text:process.argv[2]}]};
+console.log(JSON.stringify({jsonrpc:'2.0',id:request.id,result}));});`);
+  const servers = Object.fromEntries(["one", "two", "three"].map((name) => [name, { command: process.execPath, args: [fixture, name] }]));
+  fs.writeFileSync(path.join(workspace, ".pi/mcp.json"), JSON.stringify({ mcpServers: servers }));
+  const approval = createWorkspaceApproval({ store: new WorkspaceApprovalStore(root) });
+  const ctx = { cwd: workspace, hasUI: true, mode: "tui", isProjectTrusted: () => true, ui: { confirm: async () => true, notify() {} } };
+  let startup, client;
+  const transports = [], clients = [];
+  t.after(async () => {
+    await Promise.all(clients.map((mcp) => mcp.close().catch(() => {})));
+    await Promise.all(transports.map((transport) => transport.close().catch(() => {})));
+    await client?.release().catch(() => {}); if (startup) stopStartedController(startup);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await approval.initialize(ctx);
+  const admitted = approval.load().servers;
+  assert.equal(admitted.length, 3);
+  startup = beginControllerStartup({ launchDirectory: workspace });
+  ({ client } = await acquireControllerLease({ startup, clientId: "native-approved-mcp" }));
+  for (const server of admitted.slice(0, 2)) {
+    const transport = new RoutedMcpTransport({ connect: async () => client, validate: () => approval.validate(server) }); transports.push(transport);
+    const mcp = new McpClient({ name: server.entry.name, version: "1", requestTimeoutMs: 10000 }); clients.push(mcp);
+    await mcp.connect(transport);
+    assert.equal((await mcp.callTool("identity", {})).content[0].text, server.entry.name);
+  }
+  const third = new RoutedMcpTransport({ connect: async () => client, validate: () => approval.validate(admitted[2]) }); transports.push(third);
+  await assert.rejects(third.start(), /stdio process limit/);
+  await approval.revoke();
+  await assert.rejects(clients[0].callTool("identity", {}), /approval|connection closed/);
+  assert.equal(transports[0].closed, true);
+});
+
+// The adversarial fixture exercises the raw OS boundary independently of UI approval.
 test("adversarial MCP fixture and language-server-like children inherit native SRT denial", { timeout: 30000 }, async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-mcp-"));
   const outside = fs.mkdtempSync(path.join(os.homedir(), ".pi-native-mcp-outside-"));

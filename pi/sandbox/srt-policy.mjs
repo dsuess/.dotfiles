@@ -68,6 +68,9 @@ export function buildSrtPolicy(options) {
     else if (grant.access === "rw") grantAliases.forEach((item) => { reads.add(item); writes.add(item); });
     else throw new Error("filesystem grant access is invalid");
   }
+  // Explicit, narrow denies must override even a broad workspace grant. This
+  // authority store is never part of generated HOME or the Stow agent tree.
+  const approvalRoots = [...new Set([path.join(home, ".pi/routed-mcp"), path.join(path.resolve(options.home ?? os.homedir()), ".pi/routed-mcp")])];
   const socketPaths = [dockerSocket];
   if (fs.existsSync("/var/run/mDNSResponder")) socketPaths.unshift("/var/run/mDNSResponder");
   const policy = {
@@ -75,8 +78,8 @@ export function buildSrtPolicy(options) {
       // SRT's write policy is allow-only.  A home-level denyWrite masks a
       // workspace nested below home, so controller state is protected by the
       // absence of a write grant instead.
-      denyRead: [home, controllerRoot],
-      denyWrite: [controllerRoot],
+      denyRead: [home, controllerRoot, ...approvalRoots],
+      denyWrite: [controllerRoot, ...approvalRoots],
       allowRead: [...reads].sort(),
       allowWrite: [...writes].sort(),
       allowGitConfig: true,

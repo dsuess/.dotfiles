@@ -74,6 +74,8 @@ export class RoutedMcpTransport {
     this.queuedBytes += payload.length;
     const sending = this.queue.then(async () => {
       if (this.closed) throw closedError();
+      this.validate(); // Approval may be revoked while a request waits in the queue.
+      if (this.channel.policyGeneration !== this.client.policyGeneration) throw new Error("Sandboxed MCP policy generation is retired");
       await this.channel.send(payload);
     });
     this.queue = sending.catch(() => {});

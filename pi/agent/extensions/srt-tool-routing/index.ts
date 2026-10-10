@@ -105,6 +105,7 @@ interface ExtensionDependencies {
   auditOptions?: { extensionPath?: string; agentDir?: string };
   statusIntervalMs?: number;
   onControl?: (control: RoutingControl) => void;
+  mcpApproval?: any;
 }
 
 function requiredHex(value: string | undefined, name: string): string {
@@ -344,7 +345,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
 
     pi.events.on(SANDBOX_PLANNING_TOOLS_EVENT, (payload: any) => {
       const inventory = verifyInventory();
-      payload.names = [...inspectionNames].filter((name) => inventory.allowedNames.has(name) && permittedNames.has(name));
+      payload.names = [...inspectionNames].filter((name) => routedMcp?.isInspection(name) && inventory.allowedNames.has(name) && permittedNames.has(name));
     });
 
     const startReadiness = (ctx: ExtensionContext): Promise<void> => {
@@ -552,8 +553,9 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
 
     routedMcp = installReviewedMcp(pi, {
       factory: createMcpExtension,
+      approval: dependencies.mcpApproval,
       prepareLoadout,
-      canDeclare: (name: string) => !planningGuardActive() || inspectionNames.has(name),
+      canDeclare: (_name: string, reviewedInspection: boolean) => !planningGuardActive() || reviewedInspection,
       onToolsChanged: () => {
         refreshMcpPermission();
         if (startupReady && !retired) {
@@ -563,7 +565,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
       },
       connect: async () => {
         await readiness;
-        if (!startupReady || retired) throw new Error("Routed Serena requires a ready current-client sandbox policy");
+        if (!startupReady || retired) throw new Error("Routed MCP requires a ready current-client sandbox policy");
         return getClient();
       },
     });
