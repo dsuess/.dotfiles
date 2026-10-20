@@ -85,10 +85,8 @@ zle -N _dotfiles_insert_last_word
 # which clobbers fzf's Ctrl+R binding in insert mode. Restore both bindings
 # once its own initialization finishes.
 function zvm_after_init() {
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    source /opt/homebrew/Cellar/fzf/*/shell/key-bindings.zsh
-  else
-    [[ -f ~/.fzf.zsh ]] && source ~/.fzf.zsh
+  if command -v fzf &>/dev/null; then
+    source <(fzf --zsh)
   fi
   bindkey -M viins '\e.' _dotfiles_insert_last_word
 }

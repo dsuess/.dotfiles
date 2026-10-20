@@ -4,6 +4,9 @@ onboarding = false
 # tmux copy-mode -> scrollback, tmux session -> workspace.
 # Stowed to ~/.config/herdr via `stow herdr -t ~/.config/herdr`.
 
+[terminal]
+default_shell = "zsh"
+
 [theme]
 # tmux uses catppuccin-mocha
 name = "catppuccin"
