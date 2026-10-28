@@ -21,11 +21,6 @@ export interface ConfiguredToolInfo {
 
 export interface AdapterSpec {
   name: string;
-  source: string;
-  scope: "user";
-  origin: "package" | "top-level";
-  sourcePath: string;
-  baseDir: string;
   hostEffects: readonly string[];
 }
 
@@ -76,20 +71,10 @@ function agentDirectory(env: NodeJS.ProcessEnv = process.env): string {
   return path.resolve(env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent"));
 }
 
-export function createHostAdapterManifest(options: { agentDir?: string } = {}): ReadonlyMap<string, AdapterSpec> {
-  const agentDir = path.resolve(options.agentDir ?? agentDirectory());
-  const planDir = path.join(agentDir, "extensions", "plan-mode");
-  const subagentDir = path.join(agentDir, "extensions", "subagent");
-  const askDir = path.join(agentDir, "packages", "ask-user-question");
-  const ketchDir = path.join(agentDir, "npm", "node_modules", "pi-ketch");
+export function createHostAdapterManifest(): ReadonlyMap<string, AdapterSpec> {
   const specs: AdapterSpec[] = [];
   specs.push({
     name: "mcp_list",
-    source: "auto",
-    scope: "user",
-    origin: "top-level",
-    sourcePath: path.join(agentDir, "extensions", "mcp-inventory", "index.ts"),
-    baseDir: agentDir,
     hostEffects: Object.freeze([
       "bounded read-only user MCP configuration metadata",
       "bounded read-only project MCP configuration metadata only with current session trust",
@@ -100,80 +85,34 @@ export function createHostAdapterManifest(options: { agentDir?: string } = {}): 
   for (const name of ["show_plan", "plan_progress", "complete_plan", "complete_stage"]) {
     specs.push({
       name,
-      source: "auto",
-      scope: "user",
-      origin: "top-level",
-      sourcePath: path.join(planDir, "index.ts"),
-      baseDir: agentDir,
       hostEffects: Object.freeze(["validated plan/ledger persistence under the current workspace"]),
     });
   }
   specs.push({
     name: "subagent",
-    source: "auto",
-    scope: "user",
-    origin: "top-level",
-    sourcePath: path.join(subagentDir, "index.ts"),
-    baseDir: agentDir,
     hostEffects: Object.freeze(["spawn one local child Pi process", "bounded temporary prompt/output files"]),
   });
   for (const name of ["ketch_search", "ketch_scrape", "ketch_code", "ketch_docs", "ketch_crawl"]) {
     specs.push({
       name,
-      source: "npm:pi-ketch",
-      scope: "user",
-      origin: "package",
-      sourcePath: path.join(ketchDir, "src", "index.ts"),
-      baseDir: ketchDir,
       hostEffects: Object.freeze(["bounded public network research through the trusted Ketch executable"]),
     });
   }
   specs.push({
     name: "ask_user_question",
-    source: "packages/ask-user-question",
-    scope: "user",
-    origin: "package",
-    sourcePath: path.join(askDir, "index.ts"),
-    baseDir: askDir,
     hostEffects: Object.freeze(["structured user interaction", "optional persisted discussion child Pi process"]),
   });
 
   return new Map(specs.map((spec) => [spec.name, Object.freeze(spec)]));
 }
 
-function packageSourceIdentity(source: string): string {
-  if (!source.startsWith("npm:")) return source;
-  const label = source.slice("npm:".length);
-  const separator = label.startsWith("@")
-    ? label.indexOf("@", label.indexOf("/") + 1)
-    : label.indexOf("@");
-  return `npm:${separator === -1 ? label : label.slice(0, separator)}`;
-}
-
-function sourceLabelMatches(actual: ToolSourceInfo, expected: AdapterSpec): boolean {
-  if (expected.origin === "package" && expected.source.startsWith("npm:")) {
-    return packageSourceIdentity(actual.source) === packageSourceIdentity(expected.source);
-  }
-  return actual.source === expected.source;
-}
-
-function sourceMatches(sourceInfo: ToolSourceInfo, expected: AdapterSpec, cache?: ProvenanceCache): boolean {
-  return (
-    sourceLabelMatches(sourceInfo, expected) &&
-    sourceInfo.scope === expected.scope &&
-    sourceInfo.origin === expected.origin &&
-    canonicalMatches(sourceInfo.path, expected.sourcePath, cache) &&
-    canonicalMatches(sourceInfo.baseDir ?? "", expected.baseDir, cache)
-  );
-}
-
-export function isTrustedHostAdapter(
+// Host extensions already run with host permissions. Admit known adapter names
+// without duplicating Pi's package loading rules in a provenance manifest.
+export function isHostAdapter(
   tool: ConfiguredToolInfo,
   manifest: ReadonlyMap<string, AdapterSpec> = createHostAdapterManifest(),
-  cache?: ProvenanceCache,
 ): boolean {
-  const spec = manifest.get(tool.name);
-  return Boolean(spec && sourceMatches(tool.sourceInfo, spec, cache));
+  return manifest.has(tool.name);
 }
 
 export function isSrtToolRoutingReplacement(
@@ -219,7 +158,7 @@ export function verifyToolInventory(
     agentDir?: string;
   } = {},
 ): InventoryVerification {
-  const manifest = options.manifest ?? createHostAdapterManifest({ agentDir: options.agentDir });
+  const manifest = options.manifest ?? createHostAdapterManifest();
   const cache = createProvenanceCache();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const allowedNames = new Set<string>();
@@ -238,7 +177,7 @@ export function verifyToolInventory(
     }
   }
   for (const tool of tools) {
-    if (isTrustedHostAdapter(tool, manifest, cache) || options.isRoutedMcp?.(tool)) allowedNames.add(tool.name);
+    if (isHostAdapter(tool, manifest) || options.isRoutedMcp?.(tool)) allowedNames.add(tool.name);
   }
   return {
     allowedNames,
@@ -258,6 +197,4 @@ export function adapterEffects(
 export const hostAdapterInternals = Object.freeze({
   canonical,
   canonicalMatches,
-  packageSourceIdentity,
-  sourceMatches,
 });

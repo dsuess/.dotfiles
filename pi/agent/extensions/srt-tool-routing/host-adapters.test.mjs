@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,7 +8,7 @@ const jiti = await createPiJiti(import.meta.url);
 const {
   createHostAdapterManifest,
   isSrtToolRoutingReplacement,
-  isTrustedHostAdapter,
+  isHostAdapter,
   verifyToolInventory,
 } = await jiti.import(new URL("./host-adapters.ts", import.meta.url).pathname);
 const { registerSandboxTools, SRT_ROUTING_BUILTIN_NAMES } = await jiti.import(
@@ -43,18 +41,6 @@ function replacementTools() {
   }));
 }
 
-function packageFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "srt-host-adapter-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const agentDir = path.join(root, "agent");
-  const packageDir = path.join(agentDir, "npm", "node_modules", "pi-ketch");
-  const sourcePath = path.join(packageDir, "src", "index.ts");
-  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
-  fs.writeFileSync(sourcePath, "export default function ketch() {}\n");
-  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-ketch", version: "99.4.0" }));
-  return { agentDir, packageDir, sourcePath };
-}
-
 test("canonical SRT ownership accepts Pi 0.84.2 and current Bash parameter contracts", () => {
   const current = new Map();
   registerSandboxTools(
@@ -75,44 +61,23 @@ test("canonical SRT ownership accepts Pi 0.84.2 and current Bash parameter contr
   }
 });
 
-test("trusted package provenance accepts package source and metadata version drift", (t) => {
-  const fixture = packageFixture(t);
-  const manifest = createHostAdapterManifest({ agentDir: fixture.agentDir });
-  const tool = {
-    name: "ketch_search",
-    parameters: { independentlyVersioned: true },
-    sourceInfo: {
-      path: fixture.sourcePath,
-      source: "npm:pi-ketch@99.4.0",
-      scope: "user",
-      origin: "package",
-      baseDir: fixture.packageDir,
-    },
-  };
-  assert.equal(isTrustedHostAdapter(tool, manifest), true);
-});
-
-test("show_plan retains trusted parent-host provenance", () => {
-  const manifest = createHostAdapterManifest({ agentDir: AGENT_DIR });
-  const sourceInfo = {
-    path: path.join(AGENT_DIR, "extensions", "plan-mode", "index.ts"),
-    source: "auto",
-    scope: "user",
-    origin: "top-level",
-    baseDir: AGENT_DIR,
-  };
-  assert.equal(isTrustedHostAdapter({ name: "show_plan", parameters: {}, sourceInfo }, manifest), true);
-  assert.equal(isTrustedHostAdapter({
-    name: "show_plan",
-    parameters: {},
-    sourceInfo: { ...sourceInfo, scope: "project" },
-  }, manifest), false);
-
-  const verified = verifyToolInventory([
-    ...replacementTools(),
-    { name: "show_plan", parameters: {}, sourceInfo },
-  ], { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR, manifest });
-  assert.equal(verified.allowedNames.has("show_plan"), true);
+test("known host adapters do not require a manual provenance manifest", () => {
+  const manifest = createHostAdapterManifest();
+  const options = { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR, manifest };
+  for (const name of manifest.keys()) {
+    for (const sourceInfo of [undefined, replacementSource(), {
+      path: "/changed/package/index.ts", source: "changed", scope: "project", origin: "package",
+    }]) {
+      const tool = { name, parameters: { independentlyVersioned: true }, sourceInfo };
+      assert.equal(isHostAdapter(tool, manifest), true, name);
+      const result = verifyToolInventory([...replacementTools(), tool], options);
+      assert.equal(result.allowedNames.has(name), true, name);
+      assert.deepEqual(result.replacementErrors, []);
+    }
+  }
+  const withoutAdapters = verifyToolInventory(replacementTools(), options);
+  assert.deepEqual(withoutAdapters.replacementErrors, []);
+  assert.deepEqual([...withoutAdapters.allowedNames], [...SRT_ROUTING_BUILTIN_NAMES]);
 });
 
 test("workflow tools are parent-only child capabilities", () => {
@@ -122,41 +87,6 @@ test("workflow tools are parent-only child capabilities", () => {
   assert.deepEqual(capabilities.builtins, ["read"]);
   assert.deepEqual(capabilities.hostAdapters, ["ketch_search"]);
   assert.deepEqual(capabilities.rejected, ["show_plan", "plan_progress", "complete_plan", "complete_stage"]);
-});
-
-test("trusted host adapters reject every provenance-boundary mismatch", (t) => {
-  const fixture = packageFixture(t);
-  const manifest = createHostAdapterManifest({ agentDir: fixture.agentDir });
-  const otherPath = path.join(fixture.packageDir, "src", "other.ts");
-  const otherBase = path.join(fixture.agentDir, "npm", "node_modules", "other");
-  fs.writeFileSync(otherPath, "export default function other() {}\n");
-  fs.mkdirSync(otherBase, { recursive: true });
-  const sourceInfo = {
-    path: fixture.sourcePath,
-    source: "npm:pi-ketch@99.4.0",
-    scope: "user",
-    origin: "package",
-    baseDir: fixture.packageDir,
-  };
-  for (const [label, overrides] of [
-    ["path", { path: otherPath }],
-    ["package identity", { source: "npm:not-ketch@99.4.0" }],
-    ["scope", { scope: "project" }],
-    ["origin", { origin: "top-level" }],
-    ["base directory", { baseDir: otherBase }],
-  ]) {
-    assert.equal(isTrustedHostAdapter({
-      name: "ketch_search",
-      parameters: {},
-      sourceInfo: { ...sourceInfo, ...overrides },
-    }, manifest), false, label);
-  }
-  fs.rmSync(fixture.sourcePath);
-  assert.equal(isTrustedHostAdapter({
-    name: "ketch_search",
-    parameters: {},
-    sourceInfo,
-  }, manifest), false, "missing canonical source");
 });
 
 test("inventory rejects missing, source-spoofed, and unknown tool slots", () => {
@@ -184,24 +114,15 @@ test("inventory rejects missing, source-spoofed, and unknown tool slots", () => 
   assert.equal(rejected.allowedNames.has("bash"), false);
 });
 
-test("MCP inventory admits only canonical user provenance, never server tools", (t) => {
-  const manifest = createHostAdapterManifest({ agentDir: AGENT_DIR });
-  const sourceInfo = {
-    path: path.join(AGENT_DIR, "extensions", "mcp-inventory", "index.ts"),
-    source: "auto", scope: "user", origin: "top-level", baseDir: AGENT_DIR,
+test("MCP inventory is a host adapter, but server tools require separate admission", () => {
+  const manifest = createHostAdapterManifest();
+  const tool = {
+    name: "mcp_list", parameters: {},
+    sourceInfo: {
+      path: path.join(AGENT_DIR, "extensions", "mcp-inventory", "index.ts"),
+      source: "auto", scope: "user", origin: "top-level", baseDir: AGENT_DIR,
+    },
   };
-  const tool = { name: "mcp_list", parameters: {}, sourceInfo };
-  assert.equal(isTrustedHostAdapter(tool, manifest), true);
-  const spoof = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-spoof-"));
-  t.after(() => fs.rmSync(spoof, { recursive: true, force: true }));
-  const copy = path.join(spoof, "index.ts");
-  fs.copyFileSync(sourceInfo.path, copy);
-  for (const overrides of [
-    { scope: "project" }, { scope: "temporary" }, { source: "forged" },
-    { origin: "package" }, { path: copy }, { baseDir: spoof },
-  ]) {
-    assert.equal(isTrustedHostAdapter({ ...tool, sourceInfo: { ...sourceInfo, ...overrides } }, manifest), false);
-  }
   const result = verifyToolInventory([
     ...replacementTools(), tool, { ...tool, name: "mcp__serena__execute" },
   ], { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR, manifest });

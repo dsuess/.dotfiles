@@ -86,6 +86,7 @@ function createHarness(t, options = {}) {
       if (definition.exposure === "hidden") active = active.filter((name) => name !== definition.name);
     },
     registerCommand(name, definition) { commands.set(name, definition); },
+    registerToolRenderer() {},
     getMcpServers() { return [
       { name: "serena", config: { command: "/unapproved/spoof" }, extensionPath: "/tmp/spoof.ts" },
       { name: "arbitrary", config: { url: "https://example.invalid/mcp" }, extensionPath: "/tmp/arbitrary.ts" },
@@ -273,6 +274,52 @@ test("session handshake activates only requested replacements and trusted curren
   assert.equal(handshake.ok, true);
   assert.equal(handshake.sidecarId, "vm-shared");
   assert.deepEqual(handshake.tools.sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+});
+
+test("missing optional host adapters do not prevent startup", async (t) => {
+  const harness = createHarness(t);
+  delete harness.env.PI_SRT_ROUTING_HOST_TOOLS;
+  await harness.emit("session_start", { reason: "startup" });
+  assert.equal((await harness.emit("input")).action, "continue");
+  assert.equal(JSON.parse(fs.readFileSync(harness.handshake, "utf8")).ok, true);
+  assert.deepEqual(harness.active().sort(), ["bash", "read"]);
+  assert.equal(harness.shutdownCalls(), 0);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("configured host adapters remain callable without manual provenance checks", async (t) => {
+  const harness = createHarness(t);
+  harness.env.PI_SRT_ROUTING_HOST_TOOLS = "ketch_search,ask_user_question";
+  harness.pi.registerTool({ name: "ketch_search", parameters: {}, execute: async () => ({ content: [], details: undefined }) });
+  harness.sourceByName.set("ketch_search", {
+    path: "/changed/package/index.ts", source: "changed", scope: "project", origin: "package",
+  });
+  await harness.emit("session_start", { reason: "startup" });
+  assert.deepEqual(harness.active().sort(), ["bash", "ketch_search", "read"]);
+  assert.equal(await harness.emit("tool_call", { toolName: "ketch_search", toolCallId: "host-1", input: {} }), undefined);
+  assert.deepEqual(harness.definitions.get("read").prepareLoadout({ declared: [{ name: "ketch_search" }] }).hiddenDeclarations, []);
+  await harness.control.setMode("off", harness.ctx);
+  assert.equal(await harness.emit("tool_call", { toolName: "ketch_search", toolCallId: "host-2", input: {} }), undefined);
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+test("retained off mode reload does not require optional host adapters", async (t) => {
+  const sessionManager = {};
+  const first = createHarness(t, { sessionManager });
+  delete first.env.PI_SRT_ROUTING_HOST_TOOLS;
+  await first.emit("session_start", { reason: "startup" });
+  await first.emit("input");
+  await first.control.setMode("off", first.ctx);
+  await first.emit("session_shutdown", { reason: "reload" });
+
+  const reloaded = createHarness(t, { sessionManager });
+  delete reloaded.env.PI_SRT_ROUTING_HOST_TOOLS;
+  await reloaded.emit("session_start", { reason: "reload" });
+  assert.equal((await reloaded.emit("input")).action, "continue");
+  assert.equal(reloaded.control.getMode().mode, "off");
+  assert.deepEqual(reloaded.active().sort(), ["bash", "read"]);
+  assert.equal(reloaded.shutdownCalls(), 0);
+  await reloaded.emit("session_shutdown", { reason: "quit" });
 });
 
 test("unknown and source-spoofed tools are removed and blocked before execution", async (t) => {

@@ -13,7 +13,7 @@ import {
   createHostAdapterManifest,
   isSrtToolRoutingReplacement,
   isRoutingExtensionSource,
-  isTrustedHostAdapter,
+  isHostAdapter,
   verifyToolInventory,
   type ConfiguredToolInfo,
 } from "./host-adapters.ts";
@@ -237,7 +237,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
     const clearCapabilityEnvironment = (): void => {
       for (const name of CAPABILITY_ENV_FIELDS) delete env[name];
     };
-    const manifest = createHostAdapterManifest({ agentDir: dependencies.auditOptions?.agentDir });
+    const manifest = createHostAdapterManifest();
     const getClient = (): SandboxClient => {
       if (!client || fatalError) {
         throw new Error(fatalError ?? "SRT tool routing controller handshake has not completed");
@@ -359,13 +359,12 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
         // A retained explicit choice remains usable if the controller died during
         // reload. Audit replacements first; this is never a health-based fallback.
         const inventory = verifyInventory();
-        const missing = requestedHostTools.filter((name) => !inventory.allowedNames.has(name));
-        if (inventory.replacementErrors.length > 0 || missing.length > 0) {
-          const reason = [...inventory.replacementErrors, ...missing.map((name) => `Untrusted host adapter: ${name}`)].join("; ");
+        if (inventory.replacementErrors.length > 0) {
+          const reason = inventory.replacementErrors.join("; ");
           failClosed(ctx, reason);
           return Promise.reject(new Error(reason));
         }
-        permittedNames = new Set([...requested, ...requestedHostTools]);
+        permittedNames = new Set([...requested, ...requestedHostTools.filter((name) => inventory.allowedNames.has(name))]);
         pi.setActiveTools([...permittedNames]);
         enforceInventory(ctx, inventory);
       }
@@ -446,13 +445,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
             failClosed(ctx, reason);
             throw new Error(reason);
           }
-          const missingHostTools = requestedHostTools.filter((name) => !result.allowedNames.has(name));
-          if (missingHostTools.length > 0) {
-            const reason = `Requested host adapters are missing or have untrusted provenance: ${missingHostTools.join(", ")}`;
-            failClosed(ctx, reason);
-            throw new Error(reason);
-          }
-          permittedNames = new Set([...requested, ...requestedHostTools]);
+          permittedNames = new Set([...requested, ...requestedHostTools.filter((name) => result.allowedNames.has(name))]);
           pi.setActiveTools([...permittedNames]);
           enforceInventory(ctx, result);
           if (!inherited) {
@@ -606,7 +599,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
         tool &&
           permittedNames.has(event.toolName) &&
           (isSrtToolRoutingReplacement(tool, dependencies.auditOptions) ||
-            isTrustedHostAdapter(tool, manifest) || isRoutedMcp(tool)),
+            isHostAdapter(tool, manifest) || isRoutedMcp(tool)),
       );
       if (!allowed) {
         return {

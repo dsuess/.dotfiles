@@ -1,14 +1,14 @@
 # Pi SRT tool routing
 
-Pi, its UI, provider authentication, and trusted-provenance non-core adapters run on the host. Normal launches start with sandboxing on. The seven core file and shell tools and user Bash use one SRT process per operation.
+Pi, its UI, provider authentication, and known non-core adapters run on the host. Normal launches start with sandboxing on. The seven core file and shell tools and user Bash use one SRT process per operation.
 
 `/sandbox off` selects host execution for core tools and user Bash in the current conversation. Routed MCP tools remain under SRT. `pi --yolo` remains the explicit host-native launch path. Normal launches never silently fall back to host execution.
 
 ## Security contract
 
-Sandbox filesystem, environment, and Docker restrictions apply while sandboxing is on. Tool provenance and integrity checks remain mandatory in both modes. The trusted controller remains sandbox-only, even when one client selects host execution.
+Sandbox filesystem, environment, and Docker restrictions apply while sandboxing is on. Core routing provenance and runtime integrity checks remain mandatory in both modes. The trusted controller remains sandbox-only, even when one client selects host execution.
 
-- Tool authority comes from provenance, not compatibility fingerprints. Every routed built-in slot must come from the canonical user-scoped SRT routing extension. Each allowlisted host adapter must match its canonical user-scoped source path, origin, and base directory. Routed MCP tools also require saved workspace approval and a live, policy-bound sandbox transport. They are not host adapters. Unknown, missing, or source-spoofed tools remain denied.
+- Every routed built-in slot must come from the canonical user-scoped SRT routing extension. Known host adapters use name-based admission without manual package provenance checks. Missing host adapters do not block startup. Host extensions already run with host permissions. Routed MCP tools require saved workspace approval and a live, policy-bound sandbox transport. Unknown tools and source-spoofed core tools remain denied.
 - Tool parameter schemas and host-adapter package versions can change without an admission-list update. The `sbx` release number and commit can also change. Runtime behavior establishes compatibility. The canary verifies routing ownership, daemon health, authentication, diagnostics, SSH-agent settings, policy, MCP, templates, sidecar fields, and the Docker Engine dial. Incompatible Docker behavior blocks sidecar use. Core SRT file and shell routing remains active.
 - Artifact and integrity pins remain. The Docker shell template digest identifies the reviewed sidecar image. Capability protocol versions and controller source digests protect host/guest coherence. The SRT lockfile and verified patch preimages and postimages protect dependency and patch integrity.
 - The controller uses a private, versioned capability descriptor and mode-0600 manifest. The manifest stores only a token digest.
