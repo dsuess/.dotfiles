@@ -104,6 +104,49 @@ test("reload can restore its complete prior snapshot without accepting malformed
   assert.throws(() => f.policies.capture({}), /invalid JSON/);
 });
 
+test("duplicate workspace grants survive startup and reload; removing them retains derived access", async (t) => {
+  const f = fixture(t), first = {}, sibling = {}, outside = path.join(f.root, "outside"), alias = path.join(f.root, "workspace-alias");
+  fs.mkdirSync(outside); fs.symlinkSync(f.workspaceRoot, alias);
+  const config = { version: 1, filesystem: { readOnly: [alias], readWrite: [f.workspaceRoot, f.workspaceRoot] } };
+  fs.writeFileSync(f.configPath, JSON.stringify(config) + "\n");
+  const bytes = fs.readFileSync(f.configPath), original = f.policies.capture(first);
+  f.policies.capture(sibling);
+  assert.equal(original.configuration.grants.length, 3);
+  assert.equal(f.policies.status(first).filesystemGrants.length, 3);
+  assert.deepEqual(fs.readFileSync(f.configPath), bytes);
+  const external = buildSrtPolicy({ home: f.home, workspaceRoot: outside, controllerRoot: f.controllerRoot, dockerSocket: path.join(f.root, "docker.sock"), grants: original.configuration.grants });
+  assert(external.filesystem.allowWrite.includes(f.workspaceRoot));
+  assert(external.filesystem.allowRead.includes(alias));
+  assert(!external.filesystem.allowCompleteWorkspaceWrites.includes(f.workspaceRoot));
+  const candidate = f.configuration.prepare({ type: "remove", path: f.workspaceRoot });
+  const prepared = f.policies.prepare(first, candidate), saved = await f.configuration.commit(candidate);
+  f.policies.activate(first, prepared.preparation, saved.revision);
+  const removed = f.policies.capture(first);
+  assert.equal(removed.configuration.grants.length, 0);
+  assert(removed.policy.filesystem.allowWrite.includes(f.workspaceRoot));
+  assert.equal(f.policies.capture(sibling).configuration.grants.length, 3);
+  assert.equal(f.policies.status(sibling).refreshNeeded, true);
+  const restored = {}, restore = f.policies.prepare(restored, original.configuration);
+  f.policies.activate(restored, restore.preparation, original.configuration.revision);
+  assert.equal(f.policies.capture(restored).configuration.grants.length, 3);
+  const refresh = f.policies.prepare(sibling, f.configuration.read());
+  f.policies.activate(sibling, refresh.preparation, saved.revision);
+  assert.equal(f.policies.status(sibling).refreshNeeded, false);
+  assert.equal(f.policies.capture(sibling).configuration.grants.length, 0);
+});
+
+test("a valid duplicate cannot hide a retargeted alias at capture, prepare, or activation", (t) => {
+  const f = fixture(t), alias = path.join(f.home, "alias"), shared = path.join(f.home, "shared"), replacement = path.join(f.root, "replacement");
+  fs.mkdirSync(replacement); fs.symlinkSync(shared, alias);
+  fs.writeFileSync(f.configPath, JSON.stringify({ version: 1, filesystem: { readOnly: [alias], readWrite: [shared] } }));
+  const first = {}, old = f.policies.capture(first).configuration;
+  const prepared = f.policies.prepare(first, old);
+  fs.unlinkSync(alias); fs.symlinkSync(replacement, alias);
+  assert.throws(() => f.policies.capture(first), /symlink target changed/);
+  assert.throws(() => f.policies.prepare({}, old), /symlink target changed/);
+  assert.throws(() => f.policies.activate(first, prepared.preparation, old.revision), /symlink target changed/);
+});
+
 test("configuration bytes are excluded from controller replacement identity; code/dependency files remain", () => {
   const sources = clientInternals.controllerSourceFiles;
   assert.equal(sources.some((file) => path.basename(file) === "config.json"), false);

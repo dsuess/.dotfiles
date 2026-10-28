@@ -244,7 +244,7 @@ Without UI, `/sandbox` displays status. Only status, grants list, and help are a
 
 The saved configuration is `~/.pi/sandbox/config.json`, deployed through Stow from this repository's `pi/sandbox/config.json`. The schema retains `version`, `filesystem.readOnly`, and `filesystem.readWrite`. Command edits write atomically through the resolved Stow target without replacing the symlink. The edits remain visible in git. Concurrent edits use a configuration lock and revision checks.
 
-Each new client loads the current saved grants, even if it shares an existing controller. Each active client retains its own effective policy snapshot. A successful grant edit updates the saved configuration and the current client's snapshot. Repeating `grants add` for a saved path changes its access mode. Other active clients retain their snapshots until `/sandbox reload`. A saved grant edit does not restart the shared controller.
+Each new client loads the current saved grants, even if it shares an existing controller. Each active client retains its own effective policy snapshot. A successful grant edit updates the saved configuration and the current client's snapshot. Repeating `grants add` replaces all entries for the same canonical folder with one entry at the requested access level. The command retains the first saved spelling. `grants remove` removes all entries for that canonical folder. Other active clients retain their snapshots until `/sandbox reload`. A saved grant edit does not restart the shared controller.
 
 `/sandbox reload` refreshes only this client's saved grants. It is not Pi's `/reload`, a controller restart, or a Docker reset. Pi's `/reload` preserves the current effective snapshot. A new, resumed, or forked conversation loads current saved defaults, as does a process restart.
 
@@ -255,9 +255,15 @@ Grant limits:
 - Targets must be safe existing directories. Grants do not create directories or change OS file permissions.
 - Read-write access includes read access. Grants do not elevate OS privileges.
 - Validation bounds both the configured lexical path and its canonical target, including Stow and other symlink aliases.
-- Protected credential and runtime roots remain ungrantable. Workspace overlap, duplicates, and overlapping grants follow the same validation rules.
+- Folder identity uses the canonical directory path, including symlink aliases. Identical saved folders combine their effective access. Read-write includes read access.
+- A saved folder can equal the workspace. Derived workspace access remains read-write, even with a matching read-only grant.
+- Non-identical parent/child overlaps with the workspace or other grants remain invalid.
+- Every saved alias must pass lexical and canonical safety validation before policy composition. A changed symlink target blocks the snapshot, even with another valid duplicate.
+- Protected credential and runtime roots remain ungrantable, including folders identical to the workspace.
 - Removing a grant removes only configured access. It does not revoke independently derived workspace or tool access.
 - Grants do not expose host Docker sockets, credential stores, SSH agents, controller state, or additional environment values.
+
+Startup and configuration reads preserve saved bytes and all aliases. Policy composition deduplicates effective paths without rewriting saved entries. A shared grant retains its saved access level in other workspaces. Only derived workspace and common Git roots receive complete-workspace-write exceptions.
 
 Invalid grants and conflicting edits leave saved and effective grants unchanged. If disk save succeeds but activation fails, the command reports the saved/effective mismatch. Further sandboxed operations remain blocked for that client until a successful refresh. A failed revocation must not appear as effective.
 

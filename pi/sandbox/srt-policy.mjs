@@ -62,11 +62,14 @@ export function buildSrtPolicy(options) {
     assertHostReadRoot(resolved, home);
     reads.add(resolved);
   }
-  for (const grant of validateFilesystemGrants(options.grants ?? [], { ...options, home: options.home ?? home, controllerRoot: options.controllerRoot ?? options.runtimeRoot })) {
-    const grantAliases = aliases(grant.path);
-    if (grant.access === "ro") grantAliases.forEach((item) => reads.add(item));
-    else if (grant.access === "rw") grantAliases.forEach((item) => { reads.add(item); writes.add(item); });
-    else throw new Error("filesystem grant access is invalid");
+  const grants = validateFilesystemGrants(options.grants ?? [], { ...options, home: options.home ?? home, controllerRoot: options.controllerRoot ?? options.runtimeRoot });
+  // Validate every saved spelling before composing authority by canonical identity.
+  const writableFolders = new Set([workspaceRoot, ...grants.filter((grant) => grant.access === "rw").map((grant) => grant.canonicalPath)]);
+  for (const grant of grants) {
+    for (const item of aliases(grant.path)) {
+      reads.add(item);
+      if (writableFolders.has(grant.canonicalPath)) writes.add(item);
+    }
   }
   // Explicit, narrow denies must override even a broad workspace grant. This
   // authority store is never part of generated HOME or the Stow agent tree.

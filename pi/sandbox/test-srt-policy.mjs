@@ -26,8 +26,9 @@ test("grants complete writes only to trusted roots and exact Unix sockets", asyn
 });
 test("rejects protected and overlapping grants", async (t) => {
   const item = await fixture(t);
+  fs.mkdirSync(path.join(item.workspace, "nested"));
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: item.home, access: "ro" }] }), /protected/);
-  assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: item.workspace, access: "rw" }] }), /overlaps/);
+  assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.workspace, "nested"), access: "rw" }] }), /overlaps/);
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.home, ".local"), access: "ro" }] }), /user-tool credential/);
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.home, ".local/share/uv"), access: "ro" }] }), /user-tool credential/);
 });

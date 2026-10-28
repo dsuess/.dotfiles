@@ -21,7 +21,7 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 - Preserve off mode and the effective snapshot across Pi `/reload` in the same process and conversation. Reset sandbox mode on `/new`, `/resume`, `/fork`, and restart, except explicit `--yolo` launches. Replacement conversations load saved defaults. Child agents must not inherit off authority. Keep the planning mutation guard independent of sandbox mode.
 - After `/sandbox off`, display an immediate host-access warning and one persistent red `● sandbox: off — host access` indicator in the sandbox footer segment without another confirmation dialog. Controller health updates must not erase the indicator. Re-enabling affects future operations only. It cannot undo host effects or stop escaped background processes.
 - Saved filesystem grants retain the versioned `filesystem.readOnly` and `filesystem.readWrite` schema in `sandbox/config.json`. Write atomically through the resolved Stow target. Preserve deployment symlinks. Retain edits in git. Serialize edits. Reject stale revisions.
-- Validate grants as safe existing directories. Bound both lexical Stow/symlink paths and canonical targets. Preserve credential/runtime exclusions, workspace overlap rules, and duplicate/overlap rules. Read-write includes read but never changes OS permissions or privileges. Removal revokes only configured access, not derived workspace or tool access.
+- Validate grants as safe existing directories. Bound both lexical Stow/symlink paths and canonical targets. Preserve credential/runtime exclusions for every alias, even for workspace matches. Allow identical canonical folders and combine their effective authority during policy composition. Reject non-identical parent/child overlaps with the workspace or other grants. Keep saved snapshots lossless for symlink-retarget validation. Read-write includes read but never changes OS permissions or privileges. Removal revokes only configured access, not derived workspace or tool access.
 - Grants never create Docker mounts, PATH entries, generated-HOME contents, or forwarded environment access. Do not claim automatic once/session permission prompts work without a production broker lifecycle. Use `pi-sbx` for persistent Docker management, not `/sandbox`.
 - Pi SRT routing must not add proxy-side credential masking or token substitution. Forward tool-environment secrets directly. Keep sandboxed credential files and control sockets denied, apart from reviewed policy exceptions.
 - Keep Ketch host-side. Do not add a Ketch broker.
@@ -34,10 +34,14 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 - Compose dynamic MCP declarations with the independent planning guard. Block all general MCP tools during planning, regardless of names or server hints. Permit only the four inspection offerings from the original verified Serena profile. Require explicit approval for Visonic after migration. Never seed approval from committed paths. Do not restore retired or unrelated definitions during planning exit.
 - Use generated runtime paths for MCP and language-server writes, including npm cache. Do not broaden grants or change host installation permissions to satisfy startup prerequisites.
 - For launcher or routed-command changes, test the exact documented argument order and the real user-Bash path; model prose is never evidence that a shell command executed.
+- Baseline sandbox reads for Stow-managed resources must cover deployed aliases and canonical targets. Resolve reviewed targets before SRT starts. Add regression cases outside the workspace and existing read roots. Do not discover arbitrary symlink targets or grant their protected contents.
 
 ## Correction lessons
 
 - Do not make optional host extensions startup prerequisites or maintain manual package provenance manifests for them. Keep core SRT ownership and routed MCP approval checks separate.
+
+- Preserve required shared grants when correcting workspace startup failures. Deduplicate identical authority during policy composition, not by deleting saved configuration.
+- Keep derived workspace writes independent of saved grant access. Explicit grant edits must replace or remove every canonical match.
 
 ## Verification
 

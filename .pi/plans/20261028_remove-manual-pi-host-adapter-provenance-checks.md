@@ -1,48 +1,31 @@
-# Remove manual Pi host-adapter provenance checks
+# Commit existing Pi canonical filesystem grant changes
 
 ## Context
 
-The user requested removal of manual host-adapter checks after Pi reported a startup failure for Ketch tools and `ask_user_question`.
+The user requested logical commits for all existing changes under `pi/`. The host-adapter fix is already committed separately.
 
-The routing extension treats all manifest entries as startup requirements. It also compares host-adapter metadata against manually maintained package paths and source labels.
-
-Host extensions already run with host permissions. This change retains the known adapter names, core SRT provenance checks, controller readiness checks, and routed MCP approval requirements.
-
-Implementation and verification are complete. This document records the change before the requested commit.
+The remaining sandbox implementation permits saved grants for identical canonical directories, including the active workspace. It preserves every saved alias for safety checks. Explicit edits replace or remove all canonical matches. Policy composition combines access without rewriting saved configuration.
 
 ## Approach
 
-Replace manual host-adapter provenance checks with admission by known tool name. Keep optional adapter availability independent of startup readiness. Commit only the changes for this request, with this plan document.
+Commit the existing grant behavior, related regression tests, and documentation together. Keep saved access configuration and runtime preferences in separate commits. Include the existing shared-agent access plan as a historical record, without claiming its implementation is present or complete.
 
-### Part A — Remove manual host-adapter checks
-- **Ledger:** {"status":"completed","note":null,"evidence":"Implementation and documentation updated; 24 focused tests passed; real normal Pi startup published ok:true; full gate attempted and its remaining failures recorded."}
+### Part A — Verify and commit grant behavior
+- **Ledger:** {"status":"completed","note":null,"evidence":"Reviewed grant validation, explicit canonical-match edits, lossless alias snapshots, and policy composition. All 35 focused tests passed with node --test across test-client-policy, test-filesystem-configuration, test-filesystem-grant-validation, test-filesystem-grants, and test-srt-policy. npm --prefix pi run check reproduced the eight known MCP fixture, missing Visonic checkout, and controller-readiness failures (SRT routing: 199 passed, 8 failed); dedicated native gate did not run. Staged whitespace check passed. Created be05feb, fix(pi): compose filesystem grants by canonical directory; inspected its 13-file list and remaining working tree. Commit includes only Pi implementation/tests/docs and .pi planning records; excludes runtime preferences, saved access configuration, runtime prompt, and unrelated files. Historical shared-agent plan is included without asserting its absent manifest implementation is present or verified."}
 
-Admit registered known host adapters by name. Remove package provenance fields and matching helpers from the adapter manifest. Omit missing optional adapters from the active tool set instead of failing startup. Apply the behavior to normal startup and retained off-mode reloads.
+Review the grant validation, configuration editing, and policy composition changes. Run their focused tests. Stage the implementation, tests, relevant development instructions, sandbox documentation, and planning documents. Run the staged whitespace check and commit.
 
-Add regression coverage for missing adapters, changed adapter metadata, callable adapters, and retained off-mode reloads. Preserve checks for unknown tools, source-spoofed core replacements, and unapproved MCP tools. Update the security contract and repository development instructions.
-
-Acceptance: the new regression cases pass and a real normal Pi launch publishes a successful routing handshake.
-
-### Part B — Commit only this change
-- **Ledger:** {"status":"pending","note":null,"evidence":null}
-
-Commit the routing implementation, regression tests, relevant documentation hunks, and this plan document. Preserve unrelated working-tree changes, including filesystem-grant edits and the existing shared-agent access plan.
-
-Acceptance: review the staged diff, run `git diff --cached --check`, create the commit, and inspect its file list and remaining working-tree changes.
+Acceptance: the focused tests pass and the commit contains no runtime preferences, saved access configuration, or non-Pi changes.
 
 ## Verification
 
-- The initial new regression cases failed before implementation.
-- Sixteen host-adapter and routed-tool tests passed after implementation.
-- Eight focused extension tests passed, including startup, optional adapters, off-mode reload, core provenance, connection failure, and MCP admission.
-- A real launcher invocation in RPC mode completed a successful routing handshake without a model request.
-- `git diff --check` and `git diff --cached --check` passed.
-- `npm --prefix pi run check` ran but did not pass. The SRT stage reported eight failures involving MCP fixture compatibility, a missing Visonic checkout, and controller readiness. The full gate did not reach native verification.
-- No broad deployment is necessary: existing Stow links resolve to the edited repository files.
+- All 35 focused tests passed across client policy, configuration editing, grant validation, saved grants, and SRT policy.
+- The existing full Pi gate was attempted during this session. It failed on eight MCP fixture, missing Visonic checkout, and controller-readiness cases. Native verification did not run.
+- The existing shared-agent access plan reports blocked checks. Its described host-read manifest implementation is absent from the current diff and remains unverified.
+- Inspect the commit file list and remaining working-tree changes after committing.
 
 <!-- pi-plan-mode:progress:start -->
 ## Part Progress
 
-- ☑ Remove manual host-adapter checks
-- ☐ Commit only this change
+- ☑ Verify and commit grant behavior
 <!-- pi-plan-mode:progress:end -->

@@ -47,7 +47,8 @@ test("lexical and canonical workspace/controller aliases and home ancestors are 
   const item = fixture(t);
   for (const key of ["workspaceRoot", "controllerRoot"]) {
     const alias = path.join(item.root, `${key}-alias`); fs.symlinkSync(item.options[key], alias);
-    checkBoth(item, [{ path: alias, access: "rw" }], /workspace|controller/);
+    if (key === "controllerRoot") checkBoth(item, [{ path: alias, access: "rw" }], /controller/);
+    else assert.equal(validateFilesystemGrants([{ path: alias, access: "rw" }], item.options)[0].canonicalPath, fs.realpathSync(item.options.workspaceRoot));
     const child = path.join(item.options[key], "child"); fs.mkdirSync(child);
     checkBoth(item, [{ path: child, access: "ro" }], /workspace|controller/);
   }
@@ -59,10 +60,9 @@ test("bounds, directory-only scope, and lexical/canonical overlaps apply to poli
   const item = fixture(t), child = path.join(item.shared, "child"), alias = path.join(item.root, "alias");
   fs.mkdirSync(child); fs.symlinkSync(item.shared, alias);
   for (const grants of [
-    [{ path: item.shared, access: "ro" }, { path: alias, access: "rw" }],
     [{ path: alias, access: "ro" }, { path: child, access: "rw" }],
     [{ path: item.shared, access: "rw" }, { path: child, access: "ro" }],
-  ]) checkBoth(item, grants, /duplicate or overlapping/);
+  ]) checkBoth(item, grants, /overlapping/);
   for (const value of ["", "relative", "~user/path", "a".repeat(4097), `${item.shared}\0`, `${item.shared}\n`]) checkBoth(item, [{ path: value, access: "ro" }], /path/);
   checkBoth(item, [{ path: item.options.dockerSocket, access: "rw" }], /not a directory/);
   checkBoth(item, Array.from({ length: 33 }, () => ({ path: item.shared, access: "ro" })), /bounded/);
@@ -70,10 +70,48 @@ test("bounds, directory-only scope, and lexical/canonical overlaps apply to poli
   assert.throws(() => validateFilesystemGrants([{ path: item.shared, access: "execute" }], item.options), /ro or rw/);
 });
 
+test("identical canonical folders retain entries and union alias authority deterministically", (t) => {
+  const item = fixture(t), alias = path.join(item.root, "alias");
+  fs.symlinkSync(item.shared, alias);
+  const entries = [{ path: alias, access: "ro" }, { path: item.shared, access: "rw" }];
+  const grants = validateFilesystemGrants(entries, item.options);
+  assert.equal(grants.length, 2);
+  const policy = buildSrtPolicy({ ...item.options, grants });
+  for (const dir of [alias, fs.realpathSync(item.shared)]) {
+    assert(policy.filesystem.allowRead.includes(dir));
+    assert(policy.filesystem.allowWrite.includes(dir));
+    assert(!policy.filesystem.allowCompleteWorkspaceWrites.includes(dir));
+  }
+  assert.equal(new Set(policy.filesystem.allowWrite).size, policy.filesystem.allowWrite.length);
+  assert.equal(buildSrtPolicy({ ...item.options, grants: [...grants].reverse().concat(grants) }).generation, policy.generation);
+});
+
+test("workspace matches preserve derived writes and all safety exclusions", (t) => {
+  const item = fixture(t), alias = path.join(item.root, "workspace-alias");
+  fs.symlinkSync(item.options.workspaceRoot, alias);
+  for (const access of ["ro", "rw"]) {
+    const config = { version: 1, filesystem: { readOnly: access === "ro" ? [alias] : [], readWrite: access === "rw" ? [alias] : [] } };
+    const grants = validateFilesystemConfiguration(config, item.options);
+    const policy = buildSrtPolicy({ ...item.options, grants });
+    assert(policy.filesystem.allowWrite.includes(fs.realpathSync(item.options.workspaceRoot)));
+    assert(policy.filesystem.allowWrite.includes(alias));
+    const direct = buildSrtPolicy({ ...item.options, grants: [{ path: item.options.workspaceRoot, access }] });
+    assert.equal(direct.generation, buildSrtPolicy(item.options).generation);
+  }
+  const secret = path.join(item.home, ".ssh"); fs.mkdirSync(secret);
+  checkBoth({ ...item, options: { ...item.options, workspaceRoot: secret } }, [{ path: secret, access: "rw" }, { path: secret, access: "ro" }], /credential|protected/);
+  // A protected lexical alias stays forbidden even when its target is the workspace.
+  fs.symlinkSync(item.options.workspaceRoot, path.join(item.home, ".aws"));
+  checkBoth(item, [{ path: item.options.workspaceRoot, access: "ro" }, { path: path.join(item.home, ".aws"), access: "rw" }], /credential|protected/);
+  const parent = path.join(item.root, "parent"), workspace = path.join(parent, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  checkBoth({ ...item, options: { ...item.options, workspaceRoot: workspace } }, [{ path: parent, access: "rw" }], /workspace/);
+});
+
 test("policy refuses a stale validated grant after a symlink moves", (t) => {
   const item = fixture(t), alias = path.join(item.root, "alias"), replacement = path.join(item.root, "replacement");
   fs.mkdirSync(replacement); fs.symlinkSync(item.shared, alias);
-  const grants = validateFilesystemGrants([{ path: alias, access: "ro" }], item.options);
+  const grants = validateFilesystemGrants([{ path: item.shared, access: "rw" }, { path: alias, access: "ro" }], item.options);
   fs.unlinkSync(alias); fs.symlinkSync(replacement, alias);
   assert.throws(() => buildSrtPolicy({ ...item.options, grants }), /symlink target changed/);
 });

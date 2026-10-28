@@ -59,9 +59,9 @@ export function filesystemGrantContext(options = {}) {
     workspaceRoots: [...new Set([path.resolve(options.workspaceRoot), workspaceRoot])],
     controllerRoots: [...new Set([path.resolve(options.controllerRoot ?? options.runtimeRoot), controllerRoot])] };
 }
-function assertSafe(pathname, context) {
+function assertSafe(pathname, context, canonicalPath = pathname) {
   if (pathname === path.parse(pathname).root || context.homes.some((root) => within(root, pathname))) throw new Error("filesystem grant overlaps protected home root; choose a narrower directory");
-  if (context.workspaceRoots.some((root) => overlaps(pathname, root))) throw new Error("filesystem grant overlaps workspace; workspace access is derived, not a saved grant");
+  if (canonicalPath !== context.workspaceRoot && context.workspaceRoots.some((root) => overlaps(pathname, root))) throw new Error("filesystem grant overlaps workspace; only identical canonical folders are allowed");
   if (context.controllerRoots.some((root) => overlaps(pathname, root))) throw new Error("filesystem grant overlaps controller state");
   for (const root of context.protectedRoots) {
     if (!overlaps(pathname, root.path)) continue;
@@ -74,7 +74,6 @@ export function resolveFilesystemGrant(value, access, options = {}) {
   const context = options.protectedRoots ? options : filesystemGrantContext(options);
   const lexicalPath = path.resolve(expandHome(value, context.home));
   if (lexicalPath.length > MAX_PATH_LENGTH) throw new Error("filesystem grant path is too long after home expansion");
-  assertSafe(lexicalPath, context);
   let canonicalPath;
   try {
     if (!fs.statSync(lexicalPath).isDirectory()) throw new Error("filesystem grant is not a directory");
@@ -84,6 +83,7 @@ export function resolveFilesystemGrant(value, access, options = {}) {
     throw new Error("filesystem grant directory does not exist or cannot be accessed; create it separately before granting access");
   }
   if (canonicalPath.length > MAX_PATH_LENGTH) throw new Error("filesystem grant canonical path is too long");
+  assertSafe(lexicalPath, context, canonicalPath);
   assertSafe(canonicalPath, context);
   return Object.freeze({ path: lexicalPath, canonicalPath, access });
 }
@@ -101,7 +101,8 @@ export function validateFilesystemGrants(entries, options = {}) {
   for (let index = 0; index < grants.length; index += 1) {
     const first = grants[index];
     for (const second of grants.slice(index + 1)) {
-      if ([first.path, first.canonicalPath].some((one) => [second.path, second.canonicalPath].some((two) => overlaps(one, two)))) throw new Error("sandbox filesystem grants contain duplicate or overlapping paths; remove the existing grant first");
+      if (first.canonicalPath === second.canonicalPath) continue;
+      if ([first.path, first.canonicalPath].some((one) => [second.path, second.canonicalPath].some((two) => overlaps(one, two)))) throw new Error("sandbox filesystem grants contain overlapping paths; remove the existing grant first");
     }
   }
   return Object.freeze(grants);

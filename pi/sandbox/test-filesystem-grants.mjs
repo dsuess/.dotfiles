@@ -60,15 +60,17 @@ test("configuration bytes do not replace the controller, while protocol source s
   assert.notEqual(sourceDigest(files), codeBefore);
 });
 
-test("fails closed for missing, malformed, duplicate, overlapping, and unsafe grants", (t) => {
+test("fails closed for missing, malformed, overlapping, and unsafe grants", (t) => {
   const item = fixture(t);
   assert.throws(() => loadFilesystemGrants({ configPath: path.join(item.root, "missing.json"), home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller }), /missing/);
   assert.throws(() => item.load({ version: 1, filesystem: { readOnly: [] }, extra: true }), /invalid shape/);
   assert.throws(() => item.load(config(["relative"])), /absolute or home-relative/);
-  assert.throws(() => item.load(config([item.shared, item.shared])), /duplicate or overlapping/);
-  assert.throws(() => item.load(config([item.shared], [item.shared])), /duplicate or overlapping/);
+  assert.equal(item.load(config([item.shared, item.shared])).length, 2);
+  assert.equal(item.load(config([item.shared], [item.shared])).length, 2);
+  const child = path.join(item.shared, "child"); fs.mkdirSync(child);
+  assert.throws(() => item.load(config([item.shared], [child])), /overlapping/);
   assert.throws(() => item.load(config([item.root])), /protected|workspace|controller/);
-  assert.throws(() => item.load(config([item.workspace])), /workspace/);
+  assert.equal(item.load(config([item.workspace]))[0].canonicalPath, fs.realpathSync(item.workspace));
   assert.throws(() => item.load(config([item.controller])), /controller/);
   assert.throws(() => item.load(config([path.join(item.home, ".ssh")])), /directory does not exist|credential/);
   fs.mkdirSync(path.join(item.home, ".ssh"));

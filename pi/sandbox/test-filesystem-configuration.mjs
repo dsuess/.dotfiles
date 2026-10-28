@@ -38,6 +38,43 @@ test("add, change access, and remove round-trip through a Stow target without ch
   assert.deepEqual(fs.readdirSync(item.root).filter((name) => name.includes(".lock") || name.includes(".tmp")), []);
 });
 
+test("duplicate canonical entries are replaced or removed together, preserving the first spelling", async (t) => {
+  const item = fixture(t), alias = path.join(item.home, "shared-alias");
+  fs.symlinkSync(item.shared, alias);
+  const config = { version: 1, filesystem: { readOnly: ["~/.agents", "~/shared-alias", item.shared], readWrite: [item.shared, alias] } };
+  const bytes = JSON.stringify(config) + "\n";
+  fs.writeFileSync(item.target, bytes);
+  const saved = item.service.read();
+  assert.equal(saved.grants.length, 5);
+  assert.equal(fs.readFileSync(item.target, "utf8"), bytes, "reads never normalize saved bytes");
+  for (const access of ["ro", "rw"]) {
+    const changed = item.service.prepare({ type: "add", path: item.shared, access }, saved);
+    assert.deepEqual(changed.config.filesystem, {
+      readOnly: access === "ro" ? ["~/.agents", "~/shared-alias"] : ["~/.agents"],
+      readWrite: access === "rw" ? ["~/shared-alias"] : [],
+    });
+  }
+  const removed = await item.service.commit(item.service.prepare({ type: "remove", path: alias }, saved));
+  assert.deepEqual(removed.config.filesystem, { readOnly: ["~/.agents"], readWrite: [] });
+  assert.equal(fs.readlinkSync(item.configPath), item.target);
+  fs.writeFileSync(item.target, bytes);
+  const changed = await item.service.commit(item.service.prepare({ type: "add", path: item.shared, access: "rw" }));
+  assert.deepEqual(changed.config.filesystem, { readOnly: ["~/.agents"], readWrite: ["~/shared-alias"] });
+});
+
+test("duplicate aliases remain checked before preparing or committing unrelated edits", async (t) => {
+  const item = fixture(t), alias = path.join(item.home, "shared-alias"), replacement = path.join(item.root, "replacement");
+  fs.mkdirSync(replacement); fs.symlinkSync(item.shared, alias);
+  fs.writeFileSync(item.target, JSON.stringify({ version: 1, filesystem: { readOnly: [alias], readWrite: [item.shared] } }));
+  const saved = item.service.read();
+  const candidate = item.service.prepare({ type: "add", access: "ro", path: "~/.agents" }, saved);
+  const bytes = fs.readFileSync(item.target);
+  fs.unlinkSync(alias); fs.symlinkSync(replacement, alias);
+  assert.throws(() => item.service.prepare({ type: "remove", path: item.shared }, saved), /symlink target changed/);
+  await assert.rejects(item.service.commit(candidate), /symlink target changed/);
+  assert.deepEqual(fs.readFileSync(item.target), bytes);
+});
+
 test("invalid changes and stale revisions preserve saved bytes", async (t) => {
   const item = fixture(t), original = item.service.read(), bytes = fs.readFileSync(item.target);
   for (const change of [

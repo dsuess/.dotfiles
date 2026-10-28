@@ -39,19 +39,15 @@ export function prepareFilesystemGrantChange(saved, change, options = {}) {
   validateFilesystemGrants(saved.grants, options); // detect aliases changed since read
   if (!change || !["add", "remove"].includes(change.type)) throw new Error("filesystem grant change must be add or remove");
   const requested = resolveFilesystemGrant(change.path, change.type === "add" ? change.access : "ro", options);
-  const index = existing.findIndex((grant) => grant.path === requested.path || grant.canonicalPath === requested.canonicalPath);
+  const spellings = [...saved.config.filesystem.readOnly, ...saved.config.filesystem.readWrite];
+  const index = existing.findIndex((grant) => grant.canonicalPath === requested.canonicalPath);
   if (change.type === "remove" && index === -1) throw new Error("No saved grant matches this directory; derived workspace access cannot be removed here");
-  const config = { version: 1, filesystem: { readOnly: [...saved.config.filesystem.readOnly], readWrite: [...saved.config.filesystem.readWrite] } };
-  if (index !== -1) {
-    const previous = existing[index];
-    const key = previous.access === "ro" ? "readOnly" : "readWrite";
-    const entryIndex = existing.slice(0, index).filter((grant) => grant.access === previous.access).length;
-    const [entry] = config.filesystem[key].splice(entryIndex, 1);
-    // Preserve the saved lexical/Stow spelling when changing access via an alias.
-    if (change.type === "add") config.filesystem[change.access === "ro" ? "readOnly" : "readWrite"].push(entry);
-  } else {
-    config.filesystem[change.access === "ro" ? "readOnly" : "readWrite"].push(change.path);
-  }
+  const config = { version: 1, filesystem: { readOnly: [], readWrite: [] } };
+  existing.forEach((grant, entryIndex) => {
+    if (grant.canonicalPath !== requested.canonicalPath) config.filesystem[grant.access === "ro" ? "readOnly" : "readWrite"].push(spellings[entryIndex]);
+  });
+  // Explicit edits collapse all matches, retaining the first saved Stow spelling.
+  if (change.type === "add") config.filesystem[change.access === "ro" ? "readOnly" : "readWrite"].push(index === -1 ? change.path : spellings[index]);
   const grants = validateFilesystemConfiguration(config, options);
   return Object.freeze({ ...saved, config: immutableConfig(config), grants, expectedRevision: saved.revision });
 }
