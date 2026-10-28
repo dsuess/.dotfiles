@@ -7,6 +7,9 @@
     "downscalePercent": 100
   },
   "showLineNumber": false,
-  "newFileLocation": "current",
-  "attachmentFolderPath": "./Attachments"
+  "newFileLocation": "root",
+  "attachmentFolderPath": "./Attachments",
+  "tabSize": 2,
+  "useTab": false,
+  "readableLineLength": false
 }

@@ -49,3 +49,5 @@
     path = ~/.gitconfig.local
 [branch]
 	autoSetupMerge = simple
+[remote "origin"]
+	fetch = +refs/heads/*:refs/remotes/origin/*

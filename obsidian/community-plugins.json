@@ -1,5 +1,7 @@
 [
   "open-in-terminal",
   "ink",
-  "obsidian-tomorrows-daily-note"
+  "obsidian-tomorrows-daily-note",
+  "obsidian-tasks-plugin",
+  "slash-commander"
 ]
