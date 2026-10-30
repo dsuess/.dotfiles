@@ -273,9 +273,8 @@ async function childSystemPrompt(current: string): Promise<string> {
 export function registerDiscussionChildRuntime(pi: ExtensionAPI): void {
   if (!isDiscussionChild()) return;
   const stripExcluded = () => pi.setActiveTools(pi.getActiveTools().filter((name) => !CHILD_TOOL_EXCLUSIONS.has(name)));
-  stripExcluded();
-  // Registration completes before session_start; run again then so this package's
-  // own ask_user_question registration cannot become active in the child.
+  // Active-tool APIs require an initialized runtime. Filter at session_start,
+  // after this package's own ask_user_question registration completes.
   pi.on("session_start", stripExcluded);
   pi.on("before_agent_start", async (event) => {
     stripExcluded();

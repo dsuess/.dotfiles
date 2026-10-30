@@ -16,6 +16,8 @@ A child is created from the session entry before the assistant message that cont
 
 The child gets the current model, thinking level, effective system prompt, trust decision, cwd, and compatible active tools. Its built-ins use the parent SRT tool routing controller. Native Pi built-ins remain disabled. The child excludes `ask_user_question`, subagent delegation, and parent workflow tools. Parent `PI_SESSION_*` variables are cleared before launch.
 
+Extension registration installs the child handlers without access to active-tool APIs. These APIs require an initialized Pi runtime. The child filters active tools at `session_start`, after questionnaire tool registration, and before each agent run. A tool-call guard also blocks excluded tools at execution time.
+
 `/resolve [optional outcome]` is child-only. It saves a bounded observable transcript/outcome and calls the current child model once with a single classification tool. The classifier can return context-only, an exact single option, exact multi-options, or a custom answer. Invalid labels, invalid question shape, blank custom text, malformed tool output, or provider failure become context-only. Ctrl+D and other ordinary exits save no resolution.
 
 The parent consumes only a resolution newer than the one it already consumed. Returned outcomes are shown inside the normal question dialog. Valid suggestions require the normal confirmation action. Child and classifier usage is attached once to the final parent tool result.
