@@ -56,6 +56,7 @@ test("/sandbox reports live controller state without settings or lifecycle mutat
     async exec() { return { exitCode: 0, signal: null, outputBytes: 0, sidecarId: null }; },
   };
   const pi = {
+    registerToolRenderer() {},
     registerTool(definition) { definitions.set(definition.name, definition); },
     registerCommand(name, definition) { commands.set(name, definition); },
     on(name, handler) { if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(handler); },

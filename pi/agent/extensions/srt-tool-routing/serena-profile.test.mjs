@@ -63,7 +63,8 @@ test("every reviewed file fingerprint and canonical identity is rechecked", (t) 
   assert.equal(readReviewedSerena(context, profile).name, "serena");
 });
 
-test("real approved Visonic launch inputs still match the reviewed profile", () => {
+test("real approved Visonic launch inputs still match the reviewed profile", (t) => {
+  if (!fs.existsSync(SERENA_PROFILE.workspace)) { t.skip("Reviewed Visonic checkout is not installed on this machine"); return; }
   const entry = readReviewedSerena({ cwd: SERENA_PROFILE.workspace, projectTrusted: true });
   assert.equal(entry.name, "serena");
   assert.equal(Object.keys(entry.config.toolExposure).length, 9);

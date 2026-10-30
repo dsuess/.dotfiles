@@ -119,6 +119,12 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
   const workspaceBin = path.join(workspace, "bin");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-home-"));
   const userToolBin = path.join(home, ".local/bin");
+  // The controller validates saved home-relative grants before startup. Give
+  // this synthetic HOME the same directory layout without touching real grants.
+  const saved = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
+  for (const grant of [...saved.filesystem.readOnly, ...saved.filesystem.readWrite]) {
+    if (grant.startsWith("~/")) fs.mkdirSync(path.join(home, grant.slice(2)), { recursive: true });
+  }
   for (const directory of [workspaceBin, userToolBin, path.join(home, ".agents"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(workspaceBin, "workspace-tool"), "#!/bin/sh\nprintf workspace-tool\n"); fs.chmodSync(path.join(workspaceBin, "workspace-tool"), 0o755);
   fs.writeFileSync(path.join(userToolBin, "user-tool"), "#!/bin/sh\nprintf user-tool\n"); fs.chmodSync(path.join(userToolBin, "user-tool"), 0o755);

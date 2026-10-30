@@ -168,12 +168,15 @@ function isMatchingBoundary(message, contract) {
 	return hashExecutionBoundary(message.content) === contract.boundaryHash;
 }
 
-export function isolateExecutionMessages(messages, contract, state) {
+export function isolateExecutionMessages(messages, contract, state, archiveHandoff = null) {
 	const boundaryIndex = messages.findIndex((message) => isMatchingBoundary(message, contract));
-	if (boundaryIndex >= 0) return messages.slice(boundaryIndex);
+	if (boundaryIndex >= 0) {
+		const tail = messages.slice(boundaryIndex).filter((message) => message?.role !== "compactionSummary");
+		return archiveHandoff ? [tail[0], archiveHandoff, ...tail.slice(1)] : tail;
+	}
 	const compactionSummaryIndex = messages.findLastIndex((message) => message?.role === "compactionSummary");
-	if (compactionSummaryIndex >= 0) return [buildExecutionBoundaryMessage(contract, state), ...messages.slice(compactionSummaryIndex + 1)];
-	return [buildExecutionBoundaryMessage(contract, state)];
+	const tail = compactionSummaryIndex >= 0 ? messages.slice(compactionSummaryIndex + 1) : [];
+	return [buildExecutionBoundaryMessage(contract, state), ...(archiveHandoff ? [archiveHandoff] : []), ...tail];
 }
 
 export function buildStageInstruction(state) {

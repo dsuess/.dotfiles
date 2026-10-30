@@ -18,6 +18,7 @@ export const INSPECTION_TOOLS = Object.freeze([
 	"ketch_crawl",
 	"ask_user_question",
 	"mcp_list",
+	"session_history",
 ]);
 export const DIRECT_MUTATION_TOOLS = new Set([
 	"write",

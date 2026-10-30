@@ -22,6 +22,7 @@ function run(label, command, args, cwd = root) {
 }
 
 const deterministic = [
+  ["session archives", "node", ["--test", "agent/extensions/session-archive/archive.test.mjs", "agent/extensions/session-archive/adversarial.test.mjs", "agent/extensions/session-archive/compact.test.mjs", "agent/extensions/session-archive/runtime.test.mjs"]],
   ["MCP configuration inventory", "node", ["--test", "agent/extensions/mcp-inventory/inventory.test.mjs"]],
   ["plan-mode", "npm", ["--prefix", "agent/extensions/plan-mode", "run", "check"]],
   ["fzf-file-picker", "npm", ["--prefix", "agent/extensions/fzf-file-picker", "run", "check"]],
@@ -42,7 +43,10 @@ async function main() {
   const mode = process.argv[2] ?? "all";
   if (mode !== "deterministic" && mode !== "all") throw new Error(`Unknown test-gate mode: ${mode}`);
   for (const [label, command, args, cwd] of deterministic) await run(label, command, args, cwd);
-  if (mode === "all") await run("SRT native routing", "npm", ["--prefix", "sandbox", "run", "test:native"]);
+  if (mode === "all") {
+    await run("session archive native isolation", "node", ["--test", "agent/extensions/session-archive/native.test.mjs"]);
+    await run("SRT native routing", "npm", ["--prefix", "sandbox", "run", "test:native"]);
+  }
 }
 
 main().catch((error) => {

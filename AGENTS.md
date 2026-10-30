@@ -18,6 +18,8 @@ Always commit a plan document in the same commit as the changes that implement i
 
 ## Correction lessons
 
+- Let Obsidian install and update plugin binaries. Track only selected plugin `data.json` settings; never copy or replace entire vault plugin directories.
+
 - Strip `PI_LAUNCHER_CHAIN` from routed guest environments and controller operation environments, including caller overrides. It belongs to one launcher exec chain, not independent descendant commands; keep launcher recursion checks intact.
 
 - Keep durable planning candidates, approvals, and execution records independent of the mutation guard. Use model-directed candidate presentation without coupling workflow state to guard state.
@@ -136,7 +138,7 @@ Target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iC
 
 `./install.sh config` performs a safe round-trip for obsidian:
 
-1. Requires `obsidian/` to have no uncommitted git changes (clean baseline).
+1. Requires managed Obsidian settings to have no uncommitted git changes (clean baseline). Plugin-code removals and updates do not block deployment.
 2. Pulls the canonical vault's tracked config back into the repo (`OBSIDIAN_VAULT`, default `notes`).
 3. If that pull changed anything, it **errors** — the device changed config that isn't committed. Run `git diff obsidian/`, then commit (or `git checkout obsidian/` to discard) and re-run.
 4. Otherwise it copies the repo config as real files into every vault's `.obsidian/`.
@@ -145,6 +147,7 @@ So config edited in Obsidian on any device (iCloud brings it down to the Mac's `
 
 Key files:
 
+- `plugins/*/data.json` — selected plugin settings only. Obsidian manages plugin installation and updates; plugin JavaScript, manifests, and CSS are not tracked or deployed.
 - `appearance.json` — theme, ribbon, and **`enabledCssSnippets`** (list of snippet filenames without `.css`)
 - `snippets/` — CSS snippet files; each `.css` file here is available in Obsidian's Appearance settings
 

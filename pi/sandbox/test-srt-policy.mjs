@@ -45,3 +45,18 @@ test("keeps user-tool runtime roots read-only and excludes uv credentials", asyn
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, hostReadManifest: { files: [], roots: [path.join(item.home, ".local")] } }), /user-tool credential/);
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, hostReadManifest: { files: [], roots: [path.join(item.home, ".local/share/uv")] } }), /user-tool credential/);
 });
+
+test("private session archives stay denied through folded Stow aliases and broad workspace reads", async (t) => {
+  const item = await fixture(t);
+  const agentTarget = path.join(item.workspace, "pi/agent");
+  fs.mkdirSync(agentTarget, { recursive: true });
+  fs.mkdirSync(path.join(item.home, ".pi"));
+  fs.symlinkSync(agentTarget, path.join(item.home, ".pi/agent"));
+  const policy = buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket });
+  for (const root of [path.join(item.home, ".pi/agent/session-archives"), path.join(fs.realpathSync(agentTarget), "session-archives")]) {
+    assert.ok(policy.filesystem.denyRead.includes(root));
+    assert.ok(policy.filesystem.denyWrite.includes(root));
+    assert.ok(!policy.filesystem.allowRead.includes(root));
+    assert.ok(!policy.filesystem.allowWrite.includes(root));
+  }
+});

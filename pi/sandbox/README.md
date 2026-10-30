@@ -320,3 +320,11 @@ sbx --app-name pi-srt template ls --json
 ```
 
 Authenticate only with `sbx --app-name pi-srt login`. If `sbx` reports a credential-refresh cooldown, wait for the cooldown to expire. Then run the dedicated-app login again. Do not use an unscoped `sbx login`. Make sure that the dedicated app has an allow-all policy and an empty MCP registry. Make sure that the reviewed shell template digest is available. The native canary verifies SSH-agent forwarding, sidecar fields, and the private Docker dial. If template or capability data changes, review the change before you reset the sidecar. Never use `chown` or `chmod` on Homebrew or user tool installations as a sandbox workaround. Do not manually create links. Deploy only through `./install.sh config`.
+
+### Private session history adapter
+
+`session_history` is a known optional host adapter. It performs bounded, read-only retrieval from private session archives referenced on the current branch. It accepts no arbitrary paths or commands. Independent children do not inherit parent history.
+
+The adapter is not a startup prerequisite. Ordinary routed tools remain sandboxed. Explicit read/write denies protect `~/.pi/agent/session-archives/` and its resolved Stow target, even under broad workspace grants. Existing filesystem grants remain unchanged.
+
+See [session archives](../agent/extensions/session-archive/README.md) for retrieval examples and disk retention.

@@ -86,3 +86,9 @@ test("MCP inventory survives normal, fast planning and restoration without serve
 	assert.deepEqual(composeActiveTools(snapshot, ["plan_progress"], tools).active, ["read", "mcp_list", "plan_progress"]);
 	assert.deepEqual(getRestorableTools(snapshot, tools).restored, ["read", "mcp_list"]);
 });
+
+test("session history is an optional read-only planning inspection tool", () => {
+	assert.ok(getPlanningToolNames([...registered, "session_history"]).includes("session_history"));
+	assert.equal(evaluatePlanningToolCall("session_history", {}, [...registered, "session_history"]), null);
+	assert.ok(!getPlanningToolNames(registered).includes("session_history"));
+});

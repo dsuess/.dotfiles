@@ -273,3 +273,21 @@ test("a matching durable boundary remains discoverable after reload and branch r
 			: []);
 	assert.equal(isolateExecutionMessages(messages, contract, state).length, 2);
 });
+
+test("structured current-branch archive handoff survives after the contract without mixed summaries", async () => {
+	const { verifiedHandoff } = await import("../../session-archive/handoff.js");
+	const metadata = { kind: "pi-session-archive", schema: 1, archiveId: "a".repeat(32), firstKeptEntryId: "kept" };
+	const entry = { type: "compaction", firstKeptEntryId: "kept", details: metadata };
+	const handoff = verifiedHandoff([entry]);
+	assert.ok(handoff);
+	const mixed = { role: "compactionSummary", summary: "planning secrets" };
+	const tail = [{ role: "assistant", content: [{ type: "toolCall", id: "call", name: "read", arguments: {} }] }, { role: "toolResult", toolCallId: "call", content: [] }];
+	const result = isolateExecutionMessages([mixed, ...tail], contract, state, handoff);
+	assert.equal(result[0].customType, EXECUTION_BOUNDARY_MESSAGE);
+	assert.equal(result[1], handoff);
+	assert.deepEqual(result.slice(2), tail);
+	assert.doesNotMatch(JSON.stringify(result), /planning secrets/);
+	assert.equal(verifiedHandoff([{ ...entry, details: undefined, summary: handoff.summary }]), null);
+	assert.equal(verifiedHandoff([entry, { type: "compaction", summary: "generic" }]), null);
+	assert.equal(verifiedHandoff([{ ...entry, firstKeptEntryId: "mismatch" }]), null);
+});

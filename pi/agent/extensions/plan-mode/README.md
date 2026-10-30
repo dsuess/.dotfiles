@@ -217,3 +217,11 @@ npm run check
 ```
 
 Deployment must use GNU Stow through `./install.sh config`; do not create manual symlinks.
+
+### Archive-handoff exception
+
+`session_history` is an optional read-only planning inspection tool. It retrieves only archives referenced on the current branch.
+
+Approved execution reconstructs archive navigation from structured compaction metadata, not a text prefix. The approved contract stays first, followed by the handoff and retained execution messages. Generic mixed planning summaries remain excluded. Pending approval cancels automatic compaction regardless of archive-handler order.
+
+See [session archives](../session-archive/README.md) for storage, retrieval, and fallback behavior.

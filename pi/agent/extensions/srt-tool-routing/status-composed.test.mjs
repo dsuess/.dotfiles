@@ -59,6 +59,7 @@ test("real sandbox lifecycle producer drives the real custom statusbar consumer"
   const statusCalls = [];
   const lifecycle = [];
   const pi = {
+    registerToolRenderer() {},
     events: {
       on(name, handler) {
         if (!bus.has(name)) bus.set(name, []);

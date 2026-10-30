@@ -7,6 +7,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { verifiedHandoff } from "../session-archive/handoff.js";
 import { showPlanActionDialog } from "./action-dialog.ts";
 import { analyzeBashMutation } from "./bash-policy.js";
 import { PLAN_MODE_DIRECT_TOGGLE_EVENT, PLAN_MODE_WORKFLOW_STATE_EVENT } from "./events.ts";
@@ -1039,12 +1040,12 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		}
 	});
 
-	pi.on("context", async (event) => {
+	pi.on("context", async (event, ctx) => {
 		if (isPlanning(state)) return;
 		const messages = event.messages.filter((message) =>
 			!(message.role === "custom" && "customType" in message && message.customType === PLAN_MODE_CONTEXT_TYPE));
 		if (executionContract && state.execution?.runId === executionContract.runId) {
-			return { messages: isolateExecutionMessages(messages, executionContract, state) };
+			return { messages: isolateExecutionMessages(messages, executionContract, state, verifiedHandoff(ctx.sessionManager.getBranch())) };
 		}
 		if (rejectedExecutionRestore) return { messages: [] };
 		return { messages };

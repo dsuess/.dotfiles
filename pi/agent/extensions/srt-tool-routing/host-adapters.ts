@@ -40,6 +40,7 @@ export const HOST_ADAPTER_NAMES = Object.freeze([
   "ketch_crawl",
   "ask_user_question",
   "mcp_list",
+  "session_history",
 ] as const);
 
 interface ProvenanceCache {
@@ -73,6 +74,10 @@ function agentDirectory(env: NodeJS.ProcessEnv = process.env): string {
 
 export function createHostAdapterManifest(): ReadonlyMap<string, AdapterSpec> {
   const specs: AdapterSpec[] = [];
+  specs.push({
+    name: "session_history",
+    hostEffects: Object.freeze(["bounded read-only private archive retrieval authorized by current-branch compaction references; no arbitrary paths or parent-history inheritance"]),
+  });
   specs.push({
     name: "mcp_list",
     hostEffects: Object.freeze([

@@ -355,6 +355,7 @@ test("unknown and source-spoofed tools are removed and blocked before execution"
 });
 
 test("verified late MCP offerings pass the real tool pipeline; identical names without authority fail", async (t) => {
+  if (!fs.existsSync(SERENA_PROFILE.workspace)) { t.skip("Reviewed Visonic checkout is not installed on this machine"); return; }
   const harness = createHarness(t, { reviewedMcp: true });
   await harness.emit("session_start", { reason: "startup" });
   assert.equal(harness.channels.length, 0, "background MCP startup follows controller readiness");
@@ -385,6 +386,7 @@ test("verified late MCP offerings pass the real tool pipeline; identical names w
 });
 
 test("late MCP registration composes with the real planning guard and restores only reviewed edits", async (t) => {
+  if (!fs.existsSync(SERENA_PROFILE.workspace)) { t.skip("Reviewed Visonic checkout is not installed on this machine"); return; }
   const harness = createHarness(t, { reviewedMcp: true });
   const plan = await jiti.import(new URL("../plan-mode/index.ts", import.meta.url).pathname);
   harness.pi.registerFlag = () => {}; harness.pi.registerShortcut = () => {};
@@ -413,6 +415,7 @@ test("late MCP registration composes with the real planning guard and restores o
 });
 
 test("policy refresh reconnects lazily; core off mode never grants a host Serena fallback", async (t) => {
+  if (!fs.existsSync(SERENA_PROFILE.workspace)) { t.skip("Reviewed Visonic checkout is not installed on this machine"); return; }
   const harness = createHarness(t, { reviewedMcp: true });
   await harness.emit("session_start", { reason: "startup" });
   await harness.emit("before_agent_start");
@@ -433,6 +436,7 @@ test("policy refresh reconnects lazily; core off mode never grants a host Serena
 });
 
 test("verified MCP authority is retired on every conversation/runtime replacement", async (t) => {
+  if (!fs.existsSync(SERENA_PROFILE.workspace)) { t.skip("Reviewed Visonic checkout is not installed on this machine"); return; }
   for (const reason of ["reload", "new", "resume", "fork", "quit"]) {
     const first = createHarness(t, { reviewedMcp: true });
     await first.emit("session_start", { reason: "startup" });

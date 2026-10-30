@@ -133,3 +133,12 @@ test("MCP inventory is a host adapter, but server tools require separate admissi
   assert.deepEqual(child.hostAdapters, ["mcp_list"]);
   assert.deepEqual(child.rejected, ["mcp__serena__execute", "plan_progress"]);
 });
+
+test("session history is optional host retrieval and an isolated child capability", () => {
+  const manifest = createHostAdapterManifest();
+  assert.match(manifest.get("session_history").hostEffects.join(" "), /current-branch/);
+  const capabilities = splitChildCapabilities(["session_history", "plan_progress"]);
+  assert.deepEqual(capabilities.hostAdapters, ["session_history"]);
+  assert.deepEqual(capabilities.rejected, ["plan_progress"]);
+  assert.deepEqual(verifyToolInventory(replacementTools(), { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR }).replacementErrors, []);
+});

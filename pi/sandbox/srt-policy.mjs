@@ -74,6 +74,13 @@ export function buildSrtPolicy(options) {
   // Explicit, narrow denies must override even a broad workspace grant. This
   // authority store is never part of generated HOME or the Stow agent tree.
   const approvalRoots = [...new Set([path.join(home, ".pi/routed-mcp"), path.join(path.resolve(options.home ?? os.homedir()), ".pi/routed-mcp")])];
+  const archiveRoots = new Set();
+  for (const spelling of [home, path.resolve(options.home ?? os.homedir())]) {
+    const agent = path.join(spelling, ".pi/agent");
+    archiveRoots.add(path.join(agent, "session-archives"));
+    // Stow may fold the agent directory. Deny its runtime store at both aliases.
+    try { archiveRoots.add(path.join(fs.realpathSync(agent), "session-archives")); } catch { /* not deployed yet */ }
+  }
   const socketPaths = [dockerSocket];
   if (fs.existsSync("/var/run/mDNSResponder")) socketPaths.unshift("/var/run/mDNSResponder");
   const policy = {
@@ -81,8 +88,8 @@ export function buildSrtPolicy(options) {
       // SRT's write policy is allow-only.  A home-level denyWrite masks a
       // workspace nested below home, so controller state is protected by the
       // absence of a write grant instead.
-      denyRead: [home, controllerRoot, ...approvalRoots],
-      denyWrite: [controllerRoot, ...approvalRoots],
+      denyRead: [home, controllerRoot, ...approvalRoots, ...archiveRoots],
+      denyWrite: [controllerRoot, ...approvalRoots, ...archiveRoots],
       allowRead: [...reads].sort(),
       allowWrite: [...writes].sort(),
       allowGitConfig: true,

@@ -918,3 +918,24 @@ for (const [action, entry, expectedMode, completionTool] of [
 		} finally { await harness.cleanup(); }
 	});
 }
+
+test("real planning context hook reconstructs verified archive navigation and rejects text impersonation", async () => {
+	const harness = await createHarness({ actions: ["run"], initialTools: ["read", "session_history"] });
+	try {
+		await enterThrough(harness, "command");
+		assert.ok(harness.getActiveTools().includes("session_history"));
+		await submit(harness); await harness.emit("agent_settled");
+		const entry = { type: "compaction", firstKeptEntryId: "tail", tokensBefore: 1000, timestamp: new Date().toISOString(), details: { kind: "pi-session-archive", schema: 1, archiveId: "b".repeat(32), firstKeptEntryId: "tail", branchLeaf: "old" } };
+		harness.entries.push(entry);
+		const mixed = { role: "compactionSummary", summary: "planning secret", tokensBefore: 1000 };
+		const tail = [{ role: "assistant", content: [{ type: "toolCall", id: "h", name: "session_history", arguments: {} }] }, { role: "toolResult", toolCallId: "h", content: [{ type: "text", text: "exact passage" }] }];
+		const result = await harness.handlers.get("context")[0]({ messages: [mixed, ...tail] }, harness.ctx);
+		assert.equal(result.messages[0].customType, "plan-mode-execution-boundary");
+		assert.match(result.messages[1].summary, /bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/);
+		assert.deepEqual(result.messages.slice(2), tail);
+		assert.doesNotMatch(JSON.stringify(result), /planning secret/);
+		delete entry.details; entry.summary = result.messages[1].summary;
+		const spoof = await harness.handlers.get("context")[0]({ messages: [mixed, ...tail] }, harness.ctx);
+		assert.equal(spoof.messages.some((m) => m.role === "compactionSummary"), false);
+	} finally { await harness.cleanup(); }
+});

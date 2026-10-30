@@ -374,45 +374,54 @@ sync_obsidian() {
     local docs="$1"
     local canonical="$docs/$OBSIDIAN_VAULT/.obsidian"
 
-    # 1. Clean baseline so drift is detectable.
-    if [[ -n "$(git status --porcelain obsidian)" ]]; then
-        echo "❌ obsidian/ has uncommitted changes — commit or stash first." >&2
-        exit 1
+    # Manage individual config files, never Obsidian-installed plugin code.
+    # Keep only the plugin settings already selected for tracking.
+    local files=() f relative vault obsidian_dir stage
+    while IFS= read -r f; do
+        case "$f" in
+            obsidian/plugins/*/data.json) files+=("$f") ;;
+            obsidian/plugins/*) ;;
+            obsidian/*) files+=("$f") ;;
+        esac
+    done < <(git ls-files --cached --others --exclude-standard obsidian)
+    ((${#files[@]})) || return 0
+
+    # 1. Clean baseline for managed settings only. Plugin updates are irrelevant.
+    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+        echo "❌ Managed Obsidian settings have uncommitted changes — commit or stash first." >&2
+        return 1
     fi
 
-    # 2. Pull the canonical vault's tracked config back into the repo.
-    #    Stage via a dereferencing copy (-L) so legacy stow symlinks that point
-    #    back into the repo resolve to real content instead of self-referencing
-    #    (or destroying) the repo file. `-e` skips broken/dangling links.
+    # 2. Pull only managed files. Dereference legacy links before replacing them.
     if [[ -d "$canonical" ]]; then
-        local stage; stage="$(mktemp -d)"
-        for f in obsidian/*; do
-            base="$(basename "$f")"
-            [[ -e "$canonical/$base" ]] || continue
-            cp -RL "$canonical/$base" "$stage/$base"
-            rm -rf "$f"
-            cp -R "$stage/$base" obsidian/
+        stage="$(mktemp -d)"
+        for f in "${files[@]}"; do
+            relative="${f#obsidian/}"
+            [[ -e "$canonical/$relative" ]] || continue
+            mkdir -p "$stage/$(dirname "$relative")"
+            cp -L "$canonical/$relative" "$stage/$relative"
+            cp "$stage/$relative" "$f"
         done
         rm -rf "$stage"
-
-        # 3. Any change means the device drifted — stop and let the user commit.
-        if [[ -n "$(git status --porcelain obsidian)" ]]; then
-            echo "❌ The '$OBSIDIAN_VAULT' vault has config changes not in the repo." >&2
-            echo "   Review: git diff obsidian/  — commit (or 'git checkout obsidian/' to discard), then re-run." >&2
-            exit 1
+        if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
+            echo "❌ The '$OBSIDIAN_VAULT' vault has managed settings changes not in the repo." >&2
+            echo "   Review: git diff obsidian/ — commit or discard those settings, then re-run." >&2
+            return 1
         fi
     else
         echo "⚠️  Vault '$OBSIDIAN_VAULT' config not found; skipping drift check." >&2
     fi
 
-    # 4. Deploy repo → all vaults as real files.
+    # 3. Copy managed settings without removing plugin directories or binaries.
     for vault in "$docs"/*/; do
         obsidian_dir="${vault}.obsidian"
         [[ -d "$obsidian_dir" ]] || continue
-        echo "📋 Copying obsidian config into $obsidian_dir"
-        for f in obsidian/*; do
-            rm -rf "$obsidian_dir/$(basename "$f")"
-            cp -R "$f" "$obsidian_dir/"
+        echo "📋 Copying Obsidian settings into $obsidian_dir"
+        for f in "${files[@]}"; do
+            relative="${f#obsidian/}"
+            mkdir -p "$obsidian_dir/$(dirname "$relative")"
+            rm -f "$obsidian_dir/$relative"
+            cp "$f" "$obsidian_dir/$relative"
         done
     done
 }
