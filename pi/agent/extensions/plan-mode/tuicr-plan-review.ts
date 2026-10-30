@@ -4,11 +4,14 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripLedgerMutationsWithMap } from "./ledger.js";
 
 const MINIMUM_TUICR_VERSION = [0, 19, 1] as const;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const PLAN_REVIEW_THEME_NAME = "pi-plan-review-mocha";
 const PLAN_REVIEW_THEME_SOURCE = new URL("./tuicr-plan-review-theme.toml", import.meta.url);
+const PLAN_DIFF_THEME_NAME = "pi-plan-diff-mocha";
+const PLAN_DIFF_THEME_SOURCE = new URL("./tuicr-plan-diff-theme.toml", import.meta.url);
 const PLAN_REVIEW_SYNTAX_THEME_NAME = "pi-plan-review-mocha-markdown.tmTheme";
 const PLAN_REVIEW_SYNTAX_THEME_SOURCE = new URL(`./${PLAN_REVIEW_SYNTAX_THEME_NAME}`, import.meta.url);
 
@@ -23,11 +26,22 @@ export interface TuicrPlanComment {
 	commentType: string | null;
 	lifecycleState: "local_draft" | "pushed_draft" | "submitted";
 	content: string;
+	historical?: boolean;
+	sourceLine?: number | null;
+	sourceEndLine?: number | null;
+	sourceContext?: string | null;
 }
 
 export type TuicrPlanReviewResult =
 	| { ok: true; comments: TuicrPlanComment[] }
 	| { ok: false; error: string; level: "info" | "warning" };
+
+export interface ReviewOptions {
+	mode?: "full" | "revision";
+	baselinePlan?: string;
+	baselineRevision?: number;
+	currentRevision?: number;
+}
 
 type Spawn = (
 	command: string,
@@ -81,7 +95,7 @@ function capturedCommand(spawn: Spawn, args: readonly string[], env: NodeJS.Proc
 	});
 }
 
-function checkCompatibility(spawn: Spawn): ProcessOutcome {
+function checkCompatibility(spawn: Spawn, mode: "full" | "revision" = "full"): ProcessOutcome {
 	const version = capturedCommand(spawn, ["--version"]);
 	const versionFailure = commandFailure("tuicr --version", version);
 	if (versionFailure) return { ok: false, error: versionFailure };
@@ -90,8 +104,12 @@ function checkCompatibility(spawn: Spawn): ProcessOutcome {
 		return { ok: false, error: `tuicr 0.19.1 or newer is required (found ${version.stdout?.trim() || "an unknown version"})` };
 	}
 
+	const requiredRootHelp = mode === "revision"
+		? ["--theme", "--no-update-check", "review"]
+		: ["--file", "--theme", "--no-update-check", "review"];
+
 	const checks: Array<{ args: string[]; label: string; required: string[] }> = [
-		{ args: ["--help"], label: "tuicr --help", required: ["--file", "--theme", "--no-update-check", "review"] },
+		{ args: ["--help"], label: "tuicr --help", required: requiredRootHelp },
 		{ args: ["review", "list", "--help"], label: "tuicr review list --help", required: ["--all"] },
 		{ args: ["review", "comments", "--help"], label: "tuicr review comments --help", required: ["--session"] },
 	];
@@ -102,7 +120,23 @@ function checkCompatibility(spawn: Spawn): ProcessOutcome {
 		const help = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 		const missing = check.required.filter((token) => !help.includes(token));
 		if (missing.length > 0) return { ok: false, error: `${check.label} is missing required interface ${missing.join(", ")}` };
+		if (mode === "revision" && check.label === "tuicr --help") {
+			if (!help.includes("-w") && !help.includes("--working-tree")) {
+				return { ok: false, error: "tuicr --help is missing required interface -w or --working-tree" };
+			}
+		}
 	}
+
+	if (mode === "revision") {
+		const gitCheck = spawn("git", ["--version"], {
+			cwd: process.cwd(),
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		const gitFailure = commandFailure("git --version", gitCheck);
+		if (gitFailure) return { ok: false, error: `git is required for revision diff review: ${gitFailure}` };
+	}
+
 	return { ok: true };
 }
 
@@ -148,7 +182,22 @@ function nullableLine(value: unknown, field: string): number | null {
 	return value as number;
 }
 
-export function normalizeTuicrComments(values: unknown[], canonicalPlanPath: string): TuicrPlanComment[] {
+function getSourceContext(markdown: string, startLine: number, endLine: number): string {
+	const lines = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+	return lines.slice(Math.max(0, startLine - 1), endLine).join("\n");
+}
+
+export function normalizeTuicrComments(
+	values: unknown[],
+	canonicalPlanPath: string,
+	options?: {
+		currMapping?: { authoredToSourceLine: number[] };
+		baseMapping?: { authoredToSourceLine: number[] };
+		currMarkdown?: string;
+		baseMarkdown?: string;
+		baselineRevision?: number;
+	},
+): TuicrPlanComment[] {
 	const comments: TuicrPlanComment[] = [];
 	const ids = new Set<string>();
 	let reviewedPath: string | null = null;
@@ -170,6 +219,11 @@ export function normalizeTuicrComments(values: unknown[], canonicalPlanPath: str
 		const endLine = nullableLine(value.end_line, "end_line");
 		const side = nullableString(value.side, "side");
 		let location: TuicrCommentLocation;
+		let historical = false;
+		let sourceContext: string | null = null;
+		let mappedStart: number | null = null;
+		let mappedEnd: number | null = null;
+
 		if (commentPath === null) {
 			if (value.location !== "review" || startLine !== null || endLine !== null || side !== null) {
 				throw new Error(`tuicr comment ${value.id} has an invalid review-level location`);
@@ -188,20 +242,51 @@ export function normalizeTuicrComments(values: unknown[], canonicalPlanPath: str
 			if (value.location !== expectedLocation) throw new Error(`tuicr comment ${value.id} has inconsistent location fields`);
 			if (reviewedPath !== null && reviewedPath !== commentPath) throw new Error("tuicr returned comments for multiple files in a single-file review");
 			reviewedPath = commentPath;
+
+			mappedStart = startLine;
+			mappedEnd = endLine;
+
+			if (side === "new") {
+				if (options?.currMapping) {
+					mappedStart = options.currMapping.authoredToSourceLine[startLine - 1] ?? startLine;
+					mappedEnd = options.currMapping.authoredToSourceLine[endLine - 1] ?? endLine;
+				}
+				if (options?.currMarkdown) {
+					sourceContext = getSourceContext(options.currMarkdown, mappedStart, mappedEnd);
+				}
+			} else {
+				// side === "old"
+				historical = true;
+				if (options?.baseMapping) {
+					mappedStart = options.baseMapping.authoredToSourceLine[startLine - 1] ?? startLine;
+					mappedEnd = options.baseMapping.authoredToSourceLine[endLine - 1] ?? endLine;
+				}
+				if (options?.baseMarkdown) {
+					sourceContext = getSourceContext(options.baseMarkdown, mappedStart, mappedEnd);
+				}
+			}
+
 			location = {
-				kind: startLine === endLine ? "line" : "range",
+				kind: mappedStart === mappedEnd ? "line" : "range",
 				path: canonicalPlanPath,
-				startLine,
-				endLine,
+				startLine: mappedStart,
+				endLine: mappedEnd,
 				side,
 			};
 		}
+
 		comments.push({
 			id: value.id,
 			location,
 			commentType: commentType === "none" ? null : commentType,
 			lifecycleState,
 			content: value.content.trim(),
+			...(historical ? { historical: true } : {}),
+			...(sourceContext !== null && mappedStart !== null ? {
+				sourceLine: mappedStart,
+				sourceEndLine: mappedEnd,
+				sourceContext,
+			} : {}),
 		});
 	}
 	return comments;
@@ -225,22 +310,55 @@ async function prepareIsolatedConfiguration(configHome: string): Promise<void> {
 			encoding: "utf8",
 			mode: 0o600,
 		}),
+		writeFile(path.join(themes, `${PLAN_DIFF_THEME_NAME}.toml`), await readFile(PLAN_DIFF_THEME_SOURCE, "utf8"), {
+			encoding: "utf8",
+			mode: 0o600,
+		}),
 		writeFile(path.join(themes, PLAN_REVIEW_SYNTAX_THEME_NAME), await readFile(PLAN_REVIEW_SYNTAX_THEME_SOURCE, "utf8"), {
 			encoding: "utf8",
 			mode: 0o600,
 		}),
 	]);
+
+	const configPath = path.join(target, "config.toml");
+	let existingConfig = "";
+	try {
+		existingConfig = await readFile(configPath, "utf8");
+	} catch {
+		// No existing config to preserve
+	}
+	const overrideConfig = [
+		existingConfig.trimEnd(),
+		"",
+		"# Overrides for isolated plan review",
+		'diff_view = "unified"',
+		"wrap = true",
+		"ignore_whitespace = false",
+		"",
+	].filter(Boolean).join("\n");
+	await writeFile(configPath, overrideConfig, { encoding: "utf8", mode: 0o600 });
 }
 
 function isolatedEnvironment(reviewRoot: string, configHome: string): NodeJS.ProcessEnv {
-	return {
+	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		HOME: path.join(reviewRoot, "home"),
 		XDG_CONFIG_HOME: configHome,
 		XDG_DATA_HOME: path.join(reviewRoot, "data"),
 		XDG_CACHE_HOME: path.join(reviewRoot, "cache"),
 		XDG_STATE_HOME: path.join(reviewRoot, "state"),
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_SYSTEM: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
 	};
+	delete env.GIT_DIR;
+	delete env.GIT_WORK_TREE;
+	delete env.GIT_INDEX_FILE;
+	delete env.GIT_OBJECT_DIRECTORY;
+	delete env.GIT_EXTERNAL_DIFF;
+	delete env.GIT_DIFF_OPTS;
+	delete env.PI_LAUNCHER_CHAIN;
+	return env;
 }
 
 async function verifyUnchanged(filePath: string, expectedHash: string, label: string): Promise<void> {
@@ -253,12 +371,18 @@ export async function runTuicrPlanReview(
 	canonicalPlanPath: string,
 	validatedPlan: string,
 	dependencies: ReviewDependencies = {},
+	options: ReviewOptions = {},
 ): Promise<TuicrPlanReviewResult> {
 	if (ctx.mode !== "tui") {
 		return { ok: false, error: "Plan Review requires interactive TUI mode; use Change to send revision feedback in this host", level: "warning" };
 	}
-	const spawn: Spawn = dependencies.spawn ?? ((command, args, options) => spawnSync(command, [...args], options) as SpawnSyncReturns<string>);
-	const compatibility = checkCompatibility(spawn);
+	const mode = options.mode ?? "full";
+	if (mode === "revision" && !options.baselinePlan) {
+		return { ok: false, error: "Revision diff review requires a comparison baseline", level: "warning" };
+	}
+
+	const spawn: Spawn = dependencies.spawn ?? ((command, args, opts) => spawnSync(command, [...args], opts) as SpawnSyncReturns<string>);
+	const compatibility = checkCompatibility(spawn, mode);
 	if (!compatibility.ok) {
 		return { ok: false, error: `${compatibility.error}. Install or upgrade tuicr, or use Change instead`, level: "warning" };
 	}
@@ -271,13 +395,70 @@ export async function runTuicrPlanReview(
 		reviewRoot = await mkdtemp(path.join(os.tmpdir(), "pi-plan-tuicr-"));
 		const home = path.join(reviewRoot, "home");
 		const configHome = path.join(reviewRoot, "config");
-		const snapshotDir = path.join(reviewRoot, "snapshot");
-		await Promise.all([mkdir(home, { recursive: true, mode: 0o700 }), mkdir(snapshotDir, { recursive: true, mode: 0o700 })]);
+		await mkdir(home, { recursive: true, mode: 0o700 });
 		await prepareIsolatedConfiguration(configHome);
-		const snapshotPath = path.join(snapshotDir, path.basename(canonicalPlanPath));
-		await writeFile(snapshotPath, validatedPlan, { encoding: "utf8", flag: "wx", mode: 0o600 });
-		await verifyUnchanged(snapshotPath, expectedHash, "The review snapshot");
 		const env = isolatedEnvironment(reviewRoot, configHome);
+
+		let reviewCwd: string;
+		let reviewArgs: string[];
+		let snapshotPath: string | undefined;
+		let repoDir: string | undefined;
+		let baseAuthored: { authoredMarkdown: string; authoredToSourceLine: number[] } | undefined;
+		let currAuthored: { authoredMarkdown: string; authoredToSourceLine: number[] } | undefined;
+		let expectedBaseAuthoredHash = "";
+		let expectedCurrAuthoredHash = "";
+
+		const gitEnv: NodeJS.ProcessEnv = {
+			...env,
+			GIT_AUTHOR_NAME: "Pi Plan Review",
+			GIT_AUTHOR_EMAIL: "plan-review@local",
+			GIT_COMMITTER_NAME: "Pi Plan Review",
+			GIT_COMMITTER_EMAIL: "plan-review@local",
+		};
+
+		if (mode === "revision") {
+			repoDir = path.join(reviewRoot, "repo");
+			await mkdir(repoDir, { recursive: true, mode: 0o700 });
+
+			const gitInit = spawn("git", ["init", "-b", "main"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			const initErr = commandFailure("git init", gitInit);
+			if (initErr) throw new Error(initErr);
+
+			spawn("git", ["config", "user.name", "Pi Plan Review"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			spawn("git", ["config", "user.email", "plan-review@local"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			spawn("git", ["config", "commit.gpgsign", "false"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			spawn("git", ["config", "core.whitespace", ""], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+
+			baseAuthored = stripLedgerMutationsWithMap(options.baselinePlan!);
+			currAuthored = stripLedgerMutationsWithMap(validatedPlan);
+
+			expectedBaseAuthoredHash = hashBytes(baseAuthored.authoredMarkdown);
+			expectedCurrAuthoredHash = hashBytes(currAuthored.authoredMarkdown);
+
+			const planFile = path.join(repoDir, "plan.md");
+			await writeFile(planFile, baseAuthored.authoredMarkdown, { encoding: "utf8", mode: 0o600 });
+			await verifyUnchanged(planFile, expectedBaseAuthoredHash, "The baseline snapshot");
+
+			spawn("git", ["add", "plan.md"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			const gitCommit = spawn("git", ["commit", "--no-gpg-sign", "--no-verify", "-m", "baseline"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			const commitErr = commandFailure("git commit", gitCommit);
+			if (commitErr) throw new Error(commitErr);
+
+			await writeFile(planFile, currAuthored.authoredMarkdown, { encoding: "utf8", mode: 0o600 });
+			await verifyUnchanged(planFile, expectedCurrAuthoredHash, "The current review snapshot");
+
+			reviewCwd = repoDir;
+			reviewArgs = ["-w", "-p", "plan.md", "--theme", PLAN_DIFF_THEME_NAME, "--no-update-check"];
+		} else {
+			const snapshotDir = path.join(reviewRoot, "snapshot");
+			await mkdir(snapshotDir, { recursive: true, mode: 0o700 });
+			snapshotPath = path.join(snapshotDir, path.basename(canonicalPlanPath));
+			await writeFile(snapshotPath, validatedPlan, { encoding: "utf8", flag: "wx", mode: 0o600 });
+			await verifyUnchanged(snapshotPath, expectedHash, "The review snapshot");
+
+			reviewCwd = snapshotDir;
+			reviewArgs = ["--file", snapshotPath, "--theme", PLAN_REVIEW_THEME_NAME, "--no-update-check"];
+		}
 
 		let launch: ProcessOutcome | undefined;
 		try {
@@ -285,8 +466,8 @@ export async function runTuicrPlanReview(
 				let processOutcome: ProcessOutcome;
 				tui.stop();
 				try {
-					const result = spawn("tuicr", ["--file", snapshotPath, "--theme", PLAN_REVIEW_THEME_NAME, "--no-update-check"], {
-						cwd: snapshotDir,
+					const result = spawn("tuicr", reviewArgs, {
+						cwd: reviewCwd,
 						env,
 						encoding: "utf8",
 						stdio: "inherit",
@@ -307,8 +488,18 @@ export async function runTuicrPlanReview(
 		}
 		if (!launch) throw new Error("tuicr review was cancelled before launch");
 		if (!launch.ok) throw new Error(launch.error ?? "tuicr review failed");
+
 		await verifyUnchanged(canonicalPlanPath, expectedHash, "The canonical plan");
-		await verifyUnchanged(snapshotPath, expectedHash, "The review snapshot");
+		if (mode === "revision") {
+			const planFile = path.join(repoDir!, "plan.md");
+			await verifyUnchanged(planFile, expectedCurrAuthoredHash, "The review snapshot");
+			const baseCheck = spawn("git", ["show", "HEAD:plan.md"], { cwd: repoDir, env: gitEnv, encoding: "utf8" });
+			if (hashBytes((baseCheck.stdout ?? "").trimEnd()) !== hashBytes(baseAuthored.authoredMarkdown.trimEnd())) {
+				throw new Error("The baseline snapshot changed during tuicr review");
+			}
+		} else {
+			await verifyUnchanged(snapshotPath!, expectedHash, "The review snapshot");
+		}
 
 		const listed = capturedCommand(spawn, ["review", "list", "--all"], env);
 		const listFailure = commandFailure("tuicr review list", listed);
@@ -322,12 +513,22 @@ export async function runTuicrPlanReview(
 			const retrieved = capturedCommand(spawn, ["review", "comments", "--session", session.path], env);
 			const commentsFailure = commandFailure("tuicr review comments", retrieved);
 			if (commentsFailure) throw new Error(commentsFailure);
-			const comments = normalizeTuicrComments(parseJsonArray(retrieved.stdout ?? "", "tuicr review comments"), canonicalPlanPath);
+			const comments = normalizeTuicrComments(
+				parseJsonArray(retrieved.stdout ?? "", "tuicr review comments"),
+				canonicalPlanPath,
+				mode === "revision" ? {
+					currMapping: currAuthored,
+					baseMapping: baseAuthored,
+					currMarkdown: validatedPlan,
+					baseMarkdown: options.baselinePlan,
+					baselineRevision: options.baselineRevision,
+				} : undefined,
+			);
 			if (comments.length === 0) outcome = { ok: false, error: "No saved tuicr comments were found; approval remains pending", level: "info" };
 			else outcome = { ok: true, comments };
 		}
+
 		await verifyUnchanged(canonicalPlanPath, expectedHash, "The canonical plan");
-		await verifyUnchanged(snapshotPath, expectedHash, "The review snapshot");
 	} catch (error) {
 		outcome = { ok: false, error: error instanceof Error ? error.message : String(error), level: "warning" };
 	}

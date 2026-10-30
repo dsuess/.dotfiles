@@ -145,15 +145,41 @@ The complete saved plan is rendered as a durable transcript block, then the acti
 - **Implement (fast)** — create a source-equivalent parallel revision, then start it without another approval dialog.
 - **Implement in stages** — hard pause after every derived stage (one Part per stage).
 - **Discuss** — send exact free-form revision feedback without starting implementation or changing the current guard choice.
-- **Review** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
+- **Review changes** — inspect the real revision diff against the comparison baseline in tuicr with wrapped unified layout and visible diff colors (available when an exact nonempty comparison is available).
+- **Review full plan** — suspend Pi and open the validated plan revision as an isolated single-file tuicr review in the same terminal.
 
 **Implement plan** remains first and is the default action. Escape leaves approval pending. Nonces reject stale queued commands and older revisions.
+
+### Revision comparison and change review
+
+When successive candidate revisions are presented in the same plan lineage:
+
+- **Candidate revision:** one successfully saved and presented plan in a plan lineage.
+- **Comparison baseline:** the immediately preceding candidate revision on the active conversation branch, within that lineage.
+- **Authored plan:** canonical Markdown without extension-managed `Ledger` rows and the generated `## Part Progress` report.
+- **Change map:** a deterministic overview of changed sections and Parts in document order, showing added and removed source line counts with defined units (e.g. `+2 lines, -1 line`).
+
+In Pi's transcript:
+- First candidates show `Plan candidate — revision 1` with the complete plan.
+- Revised candidates show `Plan candidate — revision N (compared with revision M)` above a compact change map and the marked current plan.
+- The gutter uses a green addition marker (`+`) for added blocks, an amber edit marker (`~`) for modified blocks, and quiet spaces for unchanged blocks, pairing colors with text symbols so color is not the only signal.
+- Wrapped continuation lines retain their block's gutter marker without altering authored text.
+- Deleted content is omitted from the current plan body; deletion counts appear in the change map, and exact removed text is inspected through **Review changes**.
+- Identical authored content displays `Plan candidate — revision N (no authored changes since revision M)`.
+- If baseline data is absent or invalid, Pi explicitly displays `Plan candidate — revision N (comparison unavailable)`.
+
+In tuicr:
+- **Review changes** runs against a disposable Git repository where the comparison baseline is committed and the current authored plan is in the working tree. This produces a genuine old/new diff in tuicr without touching the project repository.
+- Revision review uses a dedicated theme (`pi-plan-diff-mocha`) with green addition foregrounds and soft green backgrounds, red deletion foregrounds and soft red backgrounds, readable line numbers, and distinct hunk headers. Diff backgrounds and syntax backgrounds are both styled so syntax highlighting cannot erase diff meaning. The review is configured for wrapped unified layout (`diff_view = "unified"`, `wrap = true`) and exact whitespace comparison (`ignore_whitespace = false`).
+- **Review full plan** uses the neutral Mocha theme (`pi-plan-review-mocha`) where addition backgrounds match the base and line numbers are hidden, avoiding treating the full document as an all-added diff.
+- Quitting tuicr without adding comments returns cleanly to the approval action dialog without consuming the approval nonce, incrementing review counters, or triggering a model turn.
+- If comments are saved, old-side comments (comments on deleted lines) are marked `[historical]`, mapped to baseline canonical line numbers, and include their original baseline source context. New-side comments map directly to the current canonical plan lines. Edits through `:edit`, canonical drift, or snapshot changes are rejected before comments are accepted.
 
 The fast action reads and hash-checks the approved source before it starts. It requires a canonical plan and `subagent` in the original tool snapshot. The optimizer uses the planning profile and cannot ask questions. It can inspect the repository, split a source Part, and add the schedule. It cannot change approved scope or combine source Parts.
 
 Before the extension writes a fast revision, it compares the title, Context, answers, Approach preamble, Critical Files, and Verification. For each source Part, mapped Part bodies must join to the same normalized text. The source Part order stays unchanged. Within those safety constraints, the optimizer minimizes critical-path waves: it places each Part in the earliest wave allowed by a concrete predecessor output and does not treat source order, shared context, eventual integration, or general caution as dependencies. Keeping a source Part verbatim preserves scope; it does not require sequential execution. The optimizer may split a broad Part only through an exact source-preserving partition that unlocks useful concurrency. A rejected fast submission returns bounded, machine-readable validator rows and model-visible stable codes with available line and message context, so the optimizer can correct the schedule or mapping on its next attempt. If the optimizer stops, fails validation three times, or reaches its retry limit, the extension restores the original unconsumed approval. It never executes the source plan on this failure path.
 
-Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--file`, `--theme`, and `review` CLI interfaces, gives each round private data/cache/state storage, and copies the user's normal tuicr configuration into that isolated round. Plan review installs a Catppuccin Mocha theme and compact Markdown syntax theme in that private configuration. Because tuicr models file annotation as an all-added diff, addition backgrounds remain on the Mocha base instead of tinting the full plan green. Its dim foreground also matches the base to visually hide tuicr's unavoidable line-number digits; the empty gutter remains, and other dim text can be hidden in this disposable review session. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `show_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Discuss** is the supported fallback.
+Review is available only in interactive TUI mode; RPC omits it, and print/JSON cannot prompt. Pi verifies tuicr's required `--theme`, `--no-update-check`, `review`, and (`-w` or `--file`) CLI interfaces, gives each round private data/cache/state storage, and copies the user's normal tuicr configuration into that isolated round. Plan review installs Catppuccin Mocha themes and compact Markdown syntax theme in that private configuration. The snapshot matches the validated revision, while the canonical `.pi/plans/...` file remains under `show_plan` ownership. Editing the snapshot with `:edit`, ambiguous persisted sessions, malformed output, process failure, cleanup failure, or missing/empty comments rejects the round without consuming approval or incrementing review counters. `/plan-actions` can retry, and **Discuss** is the supported fallback.
 
 Saved review-, file-, line-, and range-level comments are returned as one structured planner turn with stable IDs, anchors, side, lifecycle state, content, and optional advisory types. Types do not create a directive/question protocol. The planner acknowledges and reconciles every comment against repository evidence in the supplied original order. Its visible response uses one block per comment:
 

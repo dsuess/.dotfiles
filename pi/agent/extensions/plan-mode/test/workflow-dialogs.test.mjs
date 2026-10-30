@@ -41,7 +41,7 @@ async function createHarness({
 
 	function nextAction() { return actions[actionIndex++] ?? "cancel"; }
 	function driveSelection(component, action) {
-		const downCounts = { run: 0, fast: 1, staged: 2, change: 3, review: 4, continue: 0, feedback: 1, stop: 3 };
+		const downCounts = { run: 0, fast: 1, staged: 2, change: 3, "review-changes": 4, "review-full": 5, review: 4, continue: 0, feedback: 1, stop: 3 };
 		if (action === "cancel") { component.handleInput("\x1b"); return; }
 		for (let index = 0; index < (downCounts[action] ?? 0); index += 1) component.handleInput("\x1b[B");
 		component.handleInput("\r");
@@ -80,8 +80,8 @@ async function createHarness({
 		sendUserMessage(message, options) { sentUserMessages.push({ message, options }); },
 	};
 	extension.default(pi, {
-		async runPlanReview(_ctx, planPath, validatedPlan) {
-			reviewInvocations.push({ planPath, validatedPlan });
+		async runPlanReview(_ctx, planPath, validatedPlan, _deps, options) {
+			reviewInvocations.push({ planPath, validatedPlan, options });
 			return reviewResults[reviewIndex++] ?? { ok: false, error: "No fake review result", level: "warning" };
 		},
 	});
@@ -701,6 +701,56 @@ test("failed tuicr attempts remain pending and a later valid comment set consume
 		assert.equal(harness.latestState().plan.revision, 2);
 		assert.equal(harness.latestState().approval.consumed, false);
 		assert.equal(harness.latestState().counters.reviewRounds, 1);
+	} finally { await harness.cleanup(); }
+});
+
+test("revision review diff action becomes available on revised plan and sends revision feedback with baseline context", async () => {
+	const revisionComments = [
+		{ id: "del-1", location: { kind: "line", path: "/test/plan.md", startLine: 12, endLine: 12, side: "old" }, commentType: "issue", lifecycleState: "submitted", content: "Don't remove this check", historical: true, sourceLine: 12, sourceEndLine: 12, sourceContext: "Original check." },
+		{ id: "add-1", location: { kind: "line", path: "/test/plan.md", startLine: 14, endLine: 14, side: "new" }, commentType: "note", lifecycleState: "submitted", content: "Clarify error code", sourceLine: 14, sourceEndLine: 14, sourceContext: "New error handling." },
+	];
+	const harness = await createHarness({
+		actions: ["review-changes", "cancel", "review-changes"],
+		reviewResults: [
+			{ ok: false, error: "No saved tuicr comments were found; approval remains pending", level: "info" },
+			{ ok: true, comments: revisionComments },
+		],
+	});
+	try {
+		await enterThrough(harness, "command");
+		await submit(harness);
+		assert.equal(harness.latestState().plan.revision, 1);
+
+		// Submit a revision with changes
+		const revised = PART_PLAN.replace("Regression checks preserve failed-write values", "Updated regression checks preserve failed-write values");
+		const resubmitted = await submit(harness, revised);
+		assert.equal(resubmitted.details.accepted, true);
+		assert.equal(harness.latestState().plan.revision, 2);
+
+		// First inspection with empty comments returns to action dialog, which is cancelled to keep pending
+		await harness.commands.get("plan-actions").handler("", harness.ctx);
+		assert.equal(harness.latestState().approval.consumed, false);
+		assert.equal(harness.sentUserMessages.length, 0);
+
+		// Second inspection with comments consumes approval and sends revision feedback
+		await harness.commands.get("plan-actions").handler("", harness.ctx);
+		assert.equal(harness.latestState().approval, null);
+		assert.equal(harness.sentUserMessages.length, 1);
+		const prompt = harness.sentUserMessages[0].message;
+		assert.match(prompt, /\[PLAN REVIEW COMMENTS\]/);
+		assert.match(prompt, /Revision: 2 \(vs baseline revision 1\)/);
+		assert.match(prompt, /The user reviewed the revision diff in tuicr/);
+		assert.match(prompt, /Comments on deleted lines are marked with \[historical\]/);
+
+		const serialized = prompt.slice(
+			prompt.indexOf("Comments (JSON):\n") + "Comments (JSON):\n".length,
+			prompt.indexOf("\n\nBefore show_plan, provide a final complete resolution block for every comment."),
+		);
+		const parsedComments = JSON.parse(serialized);
+		assert.equal(parsedComments.length, 2);
+		assert.equal(parsedComments[0].historical, true);
+		assert.equal(parsedComments[0].location.side, "old");
+		assert.equal(parsedComments[1].location.side, "new");
 	} finally { await harness.cleanup(); }
 });
 

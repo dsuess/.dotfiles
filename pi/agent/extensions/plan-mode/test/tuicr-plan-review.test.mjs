@@ -47,15 +47,24 @@ function sessionFor(options) {
 
 function compatibleSpawn(scenario = {}) {
 	const calls = [];
-	const spawn = (_command, args, options) => {
-		calls.push({ args: [...args], options });
+	const spawn = (command, args, options) => {
+		calls.push({ command, args: [...args], options });
+		if (command === "git") {
+			if (args[0] === "--version") return scenario.gitVersion ?? processResult({ stdout: "git version 2.40.0\n" });
+			if (args[0] === "init") return processResult();
+			if (args[0] === "config") return processResult();
+			if (args[0] === "add") return processResult();
+			if (args[0] === "commit") return processResult();
+			if (args[0] === "show") return scenario.gitShow ? scenario.gitShow(args, options) : processResult({ stdout: scenario.baseAuthored ?? "# Review plan\n\n## Context\n\nOld line.\n" });
+			return processResult();
+		}
 		if (args[0] === "--version") return scenario.version ?? processResult({ stdout: "tuicr 0.19.1\n" });
 		if (args.length === 1 && args[0] === "--help") {
-			return scenario.rootHelp ?? processResult({ stdout: "--file --theme --no-update-check review" });
+			return scenario.rootHelp ?? processResult({ stdout: "--file --theme -w --working-tree --no-update-check review" });
 		}
 		if (args.join(" ") === "review list --help") return processResult({ stdout: "--all" });
 		if (args.join(" ") === "review comments --help") return processResult({ stdout: "--session" });
-		if (args[0] === "--file") {
+		if (args[0] === "--file" || args[0] === "-w") {
 			scenario.onLaunch?.(args, options);
 			return scenario.launch ?? processResult();
 		}
@@ -67,7 +76,7 @@ function compatibleSpawn(scenario = {}) {
 			if (scenario.comments) return scenario.comments(args, options);
 			return processResult({ stdout: JSON.stringify([rawComment()]) });
 		}
-		throw new Error(`Unexpected tuicr call: ${args.join(" ")}`);
+		throw new Error(`Unexpected tuicr call: ${command} ${args.join(" ")}`);
 	};
 	return { calls, spawn };
 }
@@ -277,4 +286,134 @@ test("normalizes review, file, line, and range comments with advisory types", ()
 	assert.equal(comments[0].content, "Overall feedback.");
 	assert.equal(comments[2].location.side, "old");
 	assert.equal(comments[3].location.path, canonical);
+});
+
+test("revision diff review runs in disposable Git repo with diff theme and maps old/new side comments", async () => {
+	const baselinePlan = "# Review plan\n\n## Context\n\nOld line.\n";
+	const currentPlan = "# Review plan\n\n## Context\n\nNew line.\nAdded line.\n";
+	const harness = await createHarness();
+	await writeFile(harness.planPath, currentPlan, "utf8");
+
+	const fake = compatibleSpawn({
+		baseAuthored: "# Review plan\n\n## Context\n\nOld line.\n",
+		comments: () => processResult({
+			stdout: JSON.stringify([
+				rawComment({ id: "c-old", location: "plan.md:5 [old]", start_line: 5, end_line: 5, side: "old", content: "Why delete this?" }),
+				rawComment({ id: "c-new", location: "plan.md:5-6", start_line: 5, end_line: 6, side: "new", content: "Great addition." }),
+			]),
+		}),
+	});
+
+	try {
+		const result = await runTuicrPlanReview(harness.ctx, harness.planPath, currentPlan, { spawn: fake.spawn }, {
+			mode: "revision",
+			baselinePlan,
+			baselineRevision: 1,
+			currentRevision: 2,
+		});
+
+		assert.equal(result.ok, true, result.error);
+		assert.equal(result.comments.length, 2);
+
+		// Verify old-side comment mapping
+		const oldComment = result.comments.find((c) => c.id === "c-old");
+		assert.ok(oldComment);
+		assert.equal(oldComment.historical, true);
+		assert.equal(oldComment.location.side, "old");
+		assert.equal(oldComment.location.path, harness.planPath);
+		assert.equal(oldComment.sourceLine, 5);
+		assert.equal(oldComment.sourceContext, "Old line.");
+
+		// Verify new-side comment mapping
+		const newComment = result.comments.find((c) => c.id === "c-new");
+		assert.ok(newComment);
+		assert.equal(newComment.historical, undefined);
+		assert.equal(newComment.location.side, "new");
+		assert.equal(newComment.location.path, harness.planPath);
+		assert.equal(newComment.sourceLine, 5);
+		assert.equal(newComment.sourceEndLine, 6);
+		assert.equal(newComment.sourceContext, "New line.\nAdded line.");
+
+		// Verify tuicr was launched with -w and diff theme
+		const tuicrLaunch = fake.calls.find((call) => call.command === "tuicr" && call.args[0] === "-w");
+		assert.ok(tuicrLaunch);
+		assert.ok(tuicrLaunch.args.includes("pi-plan-diff-mocha"));
+		assert.ok(tuicrLaunch.args.includes("--no-update-check"));
+
+		assert.equal(readFileSync(harness.planPath, "utf8"), currentPlan);
+	} finally { await harness.cleanup(); }
+});
+
+test("revision diff review reports missing git without opening TUI", async () => {
+	const baselinePlan = "# Review plan\n\n## Context\n\nOld line.\n";
+	const currentPlan = "# Review plan\n\n## Context\n\nNew line.\n";
+	const harness = await createHarness();
+
+	const fake = compatibleSpawn({
+		gitVersion: processResult({ status: 1, error: new Error("git: command not found") }),
+	});
+
+	try {
+		const result = await runTuicrPlanReview(harness.ctx, harness.planPath, currentPlan, { spawn: fake.spawn }, {
+			mode: "revision",
+			baselinePlan,
+			baselineRevision: 1,
+			currentRevision: 2,
+		});
+
+		assert.equal(result.ok, false);
+		assert.match(result.error, /git is required for revision diff review/);
+		assert.equal(harness.customCalls, 0);
+	} finally { await harness.cleanup(); }
+});
+
+test("revision diff review reports empty comments as approval pending", async () => {
+	const baselinePlan = "# Review plan\n\n## Context\n\nOld line.\n";
+	const currentPlan = "# Review plan\n\n## Context\n\nNew line.\n";
+	const harness = await createHarness();
+	await writeFile(harness.planPath, currentPlan, "utf8");
+
+	const fake = compatibleSpawn({
+		baseAuthored: "# Review plan\n\n## Context\n\nOld line.",
+		comments: () => processResult({ stdout: "[]" }),
+	});
+
+	try {
+		const result = await runTuicrPlanReview(harness.ctx, harness.planPath, currentPlan, { spawn: fake.spawn }, {
+			mode: "revision",
+			baselinePlan,
+			baselineRevision: 1,
+			currentRevision: 2,
+		});
+
+		assert.equal(result.ok, false);
+		assert.equal(result.level, "info");
+		assert.match(result.error, /No saved tuicr comments were found; approval remains pending/);
+	} finally { await harness.cleanup(); }
+});
+
+test("revision diff review rejects working tree snapshot edits made through tuicr", async () => {
+	const baselinePlan = "# Review plan\n\n## Context\n\nOld line.\n";
+	const currentPlan = "# Review plan\n\n## Context\n\nNew line.\n";
+	const harness = await createHarness();
+	await writeFile(harness.planPath, currentPlan, "utf8");
+
+	const fake = compatibleSpawn({
+		baseAuthored: "# Review plan\n\n## Context\n\nOld line.",
+		onLaunch(_args, options) {
+			writeFileSync(path.join(options.cwd, "plan.md"), "# Modified by editor", "utf8");
+		},
+	});
+
+	try {
+		const result = await runTuicrPlanReview(harness.ctx, harness.planPath, currentPlan, { spawn: fake.spawn }, {
+			mode: "revision",
+			baselinePlan,
+			baselineRevision: 1,
+			currentRevision: 2,
+		});
+
+		assert.equal(result.ok, false);
+		assert.match(result.error, /changed during tuicr review/);
+	} finally { await harness.cleanup(); }
 });

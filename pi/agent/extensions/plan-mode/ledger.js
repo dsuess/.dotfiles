@@ -23,18 +23,48 @@ function outsideFenceLines(lines) {
 	return outside;
 }
 
+export function stripLedgerMutationsWithMap(markdown) {
+	const { report } = splitManagedProgressReport(markdown);
+	const normalized = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+	const allLines = normalized.split("\n");
+	const coreLimit = report !== null
+		? allLines.findIndex((line) => line === "<!-- pi-plan-mode:progress:start -->")
+		: allLines.length;
+	const coreLines = allLines.slice(0, coreLimit >= 0 ? coreLimit : allLines.length);
+	const outside = outsideFenceLines(coreLines);
+	const kept = [];
+	const authoredToSourceLine = [];
+	for (let index = 0; index < coreLines.length; index += 1) {
+		const line = coreLines[index];
+		if (outside[index] && /^- \*\*Ledger:\*\*/.test(line)) continue;
+		kept.push(line);
+		authoredToSourceLine.push(index + 1);
+	}
+	while (kept.length > 0 && kept[kept.length - 1] === "") {
+		kept.pop();
+		authoredToSourceLine.pop();
+	}
+	const sourceToAuthoredLine = new Array(allLines.length + 1).fill(null);
+	for (let i = 0; i < authoredToSourceLine.length; i += 1) {
+		sourceToAuthoredLine[authoredToSourceLine[i]] = i + 1;
+	}
+	return {
+		authoredMarkdown: kept.join("\n"),
+		authoredToSourceLine,
+		sourceToAuthoredLine,
+	};
+}
+
 export function stripLedgerMutations(markdown) {
-	const { coreMarkdown } = splitManagedProgressReport(markdown);
-	const lines = coreMarkdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-	const outside = outsideFenceLines(lines);
-	return lines
-		.flatMap((line, index) => outside[index] && /^- \*\*Ledger:\*\*/.test(line) ? [] : [line])
-		.join("\n")
-		.trimEnd();
+	return stripLedgerMutationsWithMap(markdown).authoredMarkdown;
+}
+
+export function authoredPlanHash(markdown) {
+	return createHash("sha256").update(stripLedgerMutations(markdown), "utf8").digest("hex");
 }
 
 export function immutablePlanHash(markdown) {
-	return createHash("sha256").update(stripLedgerMutations(markdown), "utf8").digest("hex");
+	return authoredPlanHash(markdown);
 }
 
 export function updateLedgerMarkdown(currentMarkdown, approvedMarkdown, partId, ledgerItem) {

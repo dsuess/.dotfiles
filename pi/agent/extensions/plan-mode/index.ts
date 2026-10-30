@@ -31,7 +31,7 @@ import {
 	PRESENTATION_TOOLS,
 	snapshotActiveTools,
 } from "./planning-gate.js";
-import { synchronizeLedgerMarkdown } from "./ledger.js";
+import { authoredPlanHash, synchronizeLedgerMarkdown } from "./ledger.js";
 import {
 	PLAN_MODE_MODEL_ROUTING_ENTRY,
 	captureModelProfile,
@@ -43,7 +43,7 @@ import {
 import { createSettingsModelDefaults, type ModelDefaultsBoundary } from "./settings-defaults.ts";
 import { parsePlanDocument, validateFastPlanRevision } from "./plan-document.js";
 import { atomicReplaceFile, persistPlan, PlanStoreError, restorePlanFile } from "./plan-store.js";
-import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer } from "./plan-renderer.ts";
+import { PLAN_DISPLAY_ENTRY, STAGE_SUMMARY_ENTRY, registerPlanRenderer, type PlanComparisonBaseline, type PlanDisplayEntry } from "./plan-renderer.ts";
 import { buildProgressRows, getDocumentProgressTasks } from "./progress-widget.js";
 import { buildFastOptimizationPrompt, buildPlanningPrompt, PLAN_MODE_CONTEXT_TYPE } from "./prompts.ts";
 import { showStageDialog } from "./stage-dialog.ts";
@@ -73,7 +73,7 @@ import {
 	showPlan,
 } from "./state.js";
 import type { PlanModeState, TransitionResult } from "./state.ts";
-import { runTuicrPlanReview, type TuicrPlanReviewResult } from "./tuicr-plan-review.ts";
+import { runTuicrPlanReview, type ReviewOptions, type TuicrPlanReviewResult } from "./tuicr-plan-review.ts";
 
 const MAX_INVALID_SUBMISSIONS = 3;
 const MAX_VALIDATION_DETAIL_ROWS = 12;
@@ -123,7 +123,13 @@ function formatStoreError(error: unknown): string {
 }
 
 interface PlanModeDependencies {
-	runPlanReview?: (ctx: ExtensionContext, canonicalPlanPath: string, validatedPlan: string) => Promise<TuicrPlanReviewResult>;
+	runPlanReview?: (
+		ctx: ExtensionContext,
+		canonicalPlanPath: string,
+		validatedPlan: string,
+		dependencies?: any,
+		options?: ReviewOptions,
+	) => Promise<TuicrPlanReviewResult>;
 	modelDefaults?: ModelDefaultsBoundary;
 }
 
@@ -543,7 +549,44 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		pi.sendUserMessage(`Revise the saved plan at ${state.plan?.path}. Apply this exact user feedback:\n\n${text}\n\nRe-read the current plan, use grill-with-docs for any newly exposed decision, and submit the complete revised canonical plan with show_plan. Do not implement.`);
 	}
 
-	async function requestPlanReview(ctx: ExtensionContext, nonce: string): Promise<boolean> {
+	function getActiveCandidateBaseline(
+		branch: readonly { type: string; customType?: string; data?: unknown }[],
+		plan: { path: string; hash: string; revision: number },
+	): PlanComparisonBaseline | null {
+		for (let index = branch.length - 1; index >= 0; index -= 1) {
+			const entry = branch[index];
+			if (entry.type !== "custom" || entry.customType !== PLAN_DISPLAY_ENTRY) continue;
+			const data = entry.data as PlanDisplayEntry;
+			if (data.path === plan.path && data.hash === plan.hash) {
+				if (data.baseline !== undefined) return data.baseline;
+				if (data.revision > 1) {
+					for (let j = index - 1; j >= 0; j -= 1) {
+						const prevEntry = branch[j];
+						if (prevEntry.type !== "custom" || prevEntry.customType !== PLAN_DISPLAY_ENTRY) continue;
+						const prevData = prevEntry.data as PlanDisplayEntry;
+						if (prevData.path === plan.path && prevData.revision === data.revision - 1 && typeof prevData.markdown === "string") {
+							return {
+								revision: prevData.revision,
+								path: prevData.path,
+								hash: prevData.hash,
+								authoredHash: prevData.authoredHash ?? authoredPlanHash(prevData.markdown),
+								markdown: prevData.markdown,
+							};
+						}
+					}
+				}
+				return null;
+			}
+		}
+		return null;
+	}
+
+	async function requestPlanReview(
+		ctx: ExtensionContext,
+		nonce: string,
+		reviewMode: "full" | "revision" = "full",
+		baseline: PlanComparisonBaseline | null = null,
+	): Promise<boolean> {
 		if (!state.plan) return false;
 		if (state.counters.reviewRounds >= 10 && ctx.hasUI) {
 			const confirmed = await ctx.ui.confirm("Many plan revisions", "Continue beyond 10 refinement/review rounds?");
@@ -556,18 +599,46 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}`, "error");
 			return false;
 		}
-		const review = await (dependencies.runPlanReview ?? runTuicrPlanReview)(ctx, state.plan.path, validatedPlan);
+
+		if (reviewMode === "revision" && !baseline) {
+			ctx.ui.notify("No revision comparison baseline is available.", "warning");
+			return false;
+		}
+
+		const review = await (dependencies.runPlanReview ?? runTuicrPlanReview)(
+			ctx,
+			state.plan.path,
+			validatedPlan,
+			{},
+			reviewMode === "revision" ? {
+				mode: "revision",
+				baselinePlan: baseline!.markdown,
+				baselineRevision: baseline!.revision,
+				currentRevision: state.plan.revision,
+			} : { mode: "full" },
+		);
 		if (!review.ok) {
 			ctx.ui.notify(`Plan review: ${review.error}`, review.level);
 			return false;
 		}
+
+		if (!hasPendingApproval(state) || state.approval?.nonce !== nonce) {
+			ctx.ui.notify("The pending plan approval changed during review.", "warning");
+			return false;
+		}
+
 		const planPath = state.plan.path;
 		const result = requestRevision(state, nonce, "review") as TransitionResult;
 		if (!result.ok) { ctx.ui.notify(result.error.message, "warning"); return false; }
 		commitTransition(result);
 		refreshToolComposition(ctx);
 		updateStatus(ctx);
-		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\nPlan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr. Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Respond with one visible resolution block per comment in the supplied original order. In each block, reproduce the exact comment content as a Markdown blockquote, prefixing every line of a multi-line comment with \"> \", and put \`**Resolution:**\` immediately below it. Use this shape:\n\n> Exact user question or comment\n\n**Resolution:** Grounded answer, reconciliation, and plan impact.\n\nThe quoted user text—not an anchor, stable ID, or opaque hash—is the visible label. Stable IDs may support internal inventory checks only: do not present an ID-only bullet or hash-led answer. Inventory and explicitly answer every user question, including natural-language interrogatives and requests for a choice. Ground each resolution in repository evidence, a stated assumption, or a user decision, and say whether it changes the plan. Never silently convert an answerable question into plan text. Batch every user-owned decision that remains open through the normal collect-then-batch clarification workflow. Do not submit while any question or required user decision is open; remain in planning mode until the complete discussion closes.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nBefore show_plan, provide a final complete resolution block for every comment. After every question has an explicit answer or agreed resolution, continue the planning discussion and call show_plan only when the complete revised candidate is ready. Do not edit the saved plan with ordinary mutation tools and do not implement.`);
+
+		const revisionHeader = reviewMode === "revision" && baseline
+			? `Plan: ${planPath}\nRevision: ${state.plan.revision} (vs baseline revision ${baseline.revision})\n\nThe user reviewed the revision diff in tuicr. Comments on deleted lines are marked with [historical] and include their baseline line context so they are not mistaken for comments on current text.`
+			: `Plan: ${planPath}\n\nThe user reviewed an isolated snapshot of this exact validated revision in tuicr.`;
+
+		pi.sendUserMessage(`[PLAN REVIEW COMMENTS]\n${revisionHeader} Acknowledge every structured comment, then reconcile all of them against repository evidence. Comment types are advisory context, not directives or blocking-question markers. Respond with one visible resolution block per comment in the supplied original order. In each block, reproduce the exact comment content as a Markdown blockquote, prefixing every line of a multi-line comment with \"> \", and put \`**Resolution:**\` immediately below it. Use this shape:\n\n> Exact user question or comment\n\n**Resolution:** Grounded answer, reconciliation, and plan impact.\n\nThe quoted user text—not an anchor, stable ID, or opaque hash—is the visible label. Stable IDs may support internal inventory checks only: do not present an ID-only bullet or hash-led answer. Inventory and explicitly answer every user question, including natural-language interrogatives and requests for a choice. Ground each resolution in repository evidence, a stated assumption, or a user decision, and say whether it changes the plan. Never silently convert an answerable question into plan text. Batch every user-owned decision that remains open through the normal collect-then-batch clarification workflow. Do not submit while any question or required user decision is open; remain in planning mode until the complete discussion closes.\n\nComments (JSON):\n${JSON.stringify(review.comments, null, 2)}\n\nBefore show_plan, provide a final complete resolution block for every comment. After every question has an explicit answer or agreed resolution, continue the planning discussion and call show_plan only when the complete revised candidate is ready. Do not edit the saved plan with ordinary mutation tools and do not implement.`);
 		return true;
 	}
 
@@ -584,8 +655,20 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			next.approval!.presented = true;
 			commitState(next);
 		}
+
+		const branch = ctx.sessionManager.getBranch();
+		const baseline = state.plan ? getActiveCandidateBaseline(branch, state.plan) : null;
+		let allowReviewChanges = false;
+		if (baseline && approvedPlanMarkdown) {
+			try {
+				allowReviewChanges = authoredPlanHash(baseline.markdown) !== authoredPlanHash(approvedPlanMarkdown);
+			} catch {
+				allowReviewChanges = false;
+			}
+		}
+
 		for (;;) {
-			const choice = await showPlanActionDialog(ctx);
+			const choice = await showPlanActionDialog(ctx, { allowReviewChanges });
 			if (choice.action === "cancel") return;
 			if (choice.action === "run" || choice.action === "staged") {
 				await handoffExecution(ctx, nonce, choice.action === "run" ? "all" : "staged");
@@ -596,7 +679,8 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 				return;
 			}
 			if (choice.action === "discuss") { await requestPlanDiscuss(ctx, nonce, choice.text); return; }
-			if (choice.action === "review" && await requestPlanReview(ctx, nonce)) return;
+			if (choice.action === "review-changes" && await requestPlanReview(ctx, nonce, "revision", baseline)) return;
+			if (choice.action === "review" && await requestPlanReview(ctx, nonce, "full")) return;
 		}
 	}
 
@@ -816,12 +900,56 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					: showPlan(transitionSource, submission)) as TransitionResult;
 				if (!result.ok) throw new PlanStoreError(result.error.code, result.error.message);
 
+				let baseline: PlanComparisonBaseline | null = null;
+				const priorPlan = transitionSource.plan;
+				const isSameLineage =
+					priorPlan !== null &&
+					priorPlan.path === stored.path &&
+					!isActiveExecution(transitionSource) &&
+					transitionSource.execution === null &&
+					transitionSource.outcome === null;
+
+				if (isSameLineage && priorPlan) {
+					const baselineRevision = optimizing && transitionSource.optimization
+						? transitionSource.optimization.sourceRevision
+						: priorPlan.revision;
+					const baselineHash = optimizing && transitionSource.optimization
+						? transitionSource.optimization.sourceHash
+						: priorPlan.hash;
+
+					let baselineMarkdown: string | null = approvedPlanMarkdown;
+					if (!baselineMarkdown || createHash("sha256").update(baselineMarkdown, "utf8").digest("hex") !== priorPlan.hash) {
+						const branch = ctx.sessionManager.getBranch();
+						for (let i = branch.length - 1; i >= 0; i -= 1) {
+							const entry = branch[i];
+							if (entry.type !== "custom" || entry.customType !== PLAN_DISPLAY_ENTRY) continue;
+							const data = entry.data as { markdown?: string; path?: string; hash?: string; revision?: number };
+							if (data.path === stored.path && data.revision === baselineRevision && typeof data.markdown === "string") {
+								baselineMarkdown = data.markdown;
+								break;
+							}
+						}
+					}
+
+					if (baselineMarkdown) {
+						baseline = {
+							revision: baselineRevision,
+							path: stored.path,
+							hash: baselineHash,
+							authoredHash: authoredPlanHash(baselineMarkdown),
+							markdown: baselineMarkdown,
+						};
+					}
+				}
+
 				approvedPlanMarkdown = stored.markdown;
 				pi.appendEntry(PLAN_DISPLAY_ENTRY, {
 					markdown: stored.markdown,
 					path: stored.path,
 					revision: result.state.plan?.revision ?? 1,
 					hash: stored.hash,
+					authoredHash: authoredPlanHash(stored.markdown),
+					...(baseline ? { baseline } : {}),
 				});
 				if (optimizing) {
 					await queueInPlaceExecution(ctx, structuredClone(result.state), stored.markdown, "all");

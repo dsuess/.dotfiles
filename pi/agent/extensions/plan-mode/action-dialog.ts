@@ -7,7 +7,12 @@ export type PlanAction =
 	| { action: "staged" }
 	| { action: "discuss"; text: string }
 	| { action: "review" }
+	| { action: "review-changes" }
 	| { action: "cancel" };
+
+export interface ActionDialogOptions {
+	allowReviewChanges?: boolean;
+}
 
 const BASE_ITEMS: SelectItem[] = [
 	{ value: "run", label: "Implement plan", description: "Execute every stage in the current session" },
@@ -16,20 +21,33 @@ const BASE_ITEMS: SelectItem[] = [
 	{ value: "discuss", label: "Discuss", description: "Continue an open planning conversation" },
 ];
 
-function actionItems(ctx: ExtensionContext): SelectItem[] {
+function actionItems(ctx: ExtensionContext, options: ActionDialogOptions = {}): SelectItem[] {
 	if (ctx.mode !== "tui") {
 		return BASE_ITEMS.map((item) => item.value === "discuss"
 			? { ...item, description: "Continue planning (tuicr Review requires interactive TUI mode)" }
 			: item);
 	}
+	const reviewItems: SelectItem[] = [];
+	if (options.allowReviewChanges) {
+		reviewItems.push({
+			value: "review-changes",
+			label: "Review changes",
+			description: "Inspect revision diff with tuicr",
+		});
+	}
+	reviewItems.push({
+		value: "review",
+		label: "Review full plan",
+		description: "Comment on an isolated full plan snapshot with tuicr",
+	});
 	return [
 		...BASE_ITEMS,
-		{ value: "review", label: "Review", description: "Comment on an isolated plan snapshot with tuicr" },
+		...reviewItems,
 	];
 }
 
-async function selectAction(ctx: ExtensionContext): Promise<string | undefined> {
-	const items = actionItems(ctx);
+async function selectAction(ctx: ExtensionContext, options: ActionDialogOptions = {}): Promise<string | undefined> {
+	const items = actionItems(ctx, options);
 	if (ctx.mode !== "tui") {
 		if (!ctx.hasUI) return undefined;
 		const labels = items.map((item) => `${item.label} — ${item.description ?? ""}`);
@@ -60,9 +78,9 @@ async function selectAction(ctx: ExtensionContext): Promise<string | undefined> 
 	});
 }
 
-export async function showPlanActionDialog(ctx: ExtensionContext): Promise<PlanAction> {
+export async function showPlanActionDialog(ctx: ExtensionContext, options: ActionDialogOptions = {}): Promise<PlanAction> {
 	for (;;) {
-		const action = await selectAction(ctx);
+		const action = await selectAction(ctx, options);
 		if (!action) return { action: "cancel" };
 		if (action !== "discuss") return { action } as PlanAction;
 		const text = await ctx.ui.editor("Discuss the candidate plan", "");
