@@ -1,10 +1,10 @@
 {
-  "lastChangelogVersion": "1.0.0",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-astra",
+  "lastChangelogVersion": "1.4.0",
+  "defaultProvider": "litellm",
+  "defaultModel": "gpt-6.1-sol",
   "defaultThinkingLevel": "medium",
-  "defaultThinkingProvider": "openai-codex",
-  "defaultThinkingModel": "gpt-6-astra",
+  "defaultThinkingProvider": "litellm",
+  "defaultThinkingModel": "gpt-6.1-sol",
   "enabledModels": [
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-6.1-sol",
@@ -29,6 +29,6 @@
     "npm:pi-tuicr",
     "packages/ask-user-question"
   ],
-  "hideThinkingBlock": false,
+  "hideThinkingBlock": true,
   "theme": "dark"
 }
