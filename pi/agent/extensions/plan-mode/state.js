@@ -308,6 +308,15 @@ export function acceptFastOptimization(state, submission) {
 	});
 }
 
+export function reopenCandidate(state, nonce) {
+	if (!state.plan || state.approval || state.execution || state.outcome !== null || state.optimization || typeof nonce !== "string" || !nonce) {
+		return rejection(state, "no_reopenable_candidate", "No unexecuted candidate can be reopened");
+	}
+	return apply(state, "reopen_candidate", (next) => {
+		next.approval = { nonce, planHash: next.plan.hash, revision: next.plan.revision, consumed: false, presented: true };
+	});
+}
+
 export function requestRevision(state, nonce, source = "discuss") {
 	const approvalError = requireApproval(state, nonce, "requestRevision");
 	if (approvalError) return approvalError;

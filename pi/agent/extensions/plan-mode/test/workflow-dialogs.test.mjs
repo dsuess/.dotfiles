@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -178,6 +178,28 @@ test("candidate stays in planning, defers automatic compaction, and ordinary inp
 		assert.equal(harness.latestState().approval, null);
 		await harness.emit("agent_settled");
 		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, dialogs);
+	} finally { await harness.cleanup(); }
+});
+
+test("explicit actions reopen a discussed candidate without enabling the guard or execution", async () => {
+	const harness = await createHarness({ actions: ["cancel", "cancel"] });
+	try {
+		await enterThrough(harness, "command"); await submit(harness); await harness.emit("agent_settled");
+		const original = structuredClone(harness.latestState());
+		await harness.commands.get("plan").handler("off", harness.ctx);
+		await harness.emit("input", { source: "user", text: "Explain the trade-off." });
+		assert.equal(harness.latestState().approval, null);
+		await harness.commands.get("plan-actions").handler("stale-token", harness.ctx);
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 1);
+		await harness.commands.get("plan-actions").handler("", harness.ctx);
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
+		assert.equal(harness.latestState().mode, "normal");
+		assert.equal(harness.latestState().execution, null);
+		assert.deepEqual(harness.latestState().plan, original.plan);
+		assert.deepEqual(harness.latestState().ledger, original.ledger);
+		assert.equal(harness.latestState().approval.presented, true);
+		await harness.emit("agent_settled");
+		assert.equal(harness.timeline.filter((item) => item.type === "dialog").length, 2);
 	} finally { await harness.cleanup(); }
 });
 
@@ -774,18 +796,19 @@ test("review confirmation beyond ten rounds leaves approval pending until explic
 		}] }],
 	});
 	try {
-		const planPath = path.join(harness.cwd, ".pi/plans/late.md");
+		const planPath = path.join(await realpath(harness.cwd), ".pi/plans/late.md");
 		await mkdir(path.dirname(planPath), { recursive: true });
 		await writeFile(planPath, PART_PLAN, "utf8");
 		const hash = createHash("sha256").update(PART_PLAN).digest("hex");
 		const planning = stateModule.enterPlanning(stateModule.createInitialState(), ["read", "bash"]).state;
 		const approval = stateModule.showPlan(planning, {
-			path: planPath, slug: "late", hash, title: "Late", intent: "Late", approvalNonce: "approval",
-			stages: [{ id: "1", description: "Only", taskIds: ["1"] }],
-			tasks: [{ id: "1", title: "Only task", status: "pending" }],
+			path: planPath, slug: "late", hash, title: "Add Reliable Cache Invalidation", intent: "Late", approvalNonce: "approval",
+			stages: ["A", "B", "C"].map((id) => ({ id, description: id, taskIds: [id] })),
+			tasks: ["A", "B", "C"].map((id) => ({ id, title: id, status: "pending" })),
 		}).state;
 		approval.counters.reviewRounds = 10;
 		approval.approval.presented = true;
+		harness.entries.push({ type: "custom", customType: "plan-mode-plan-display", data: { path: planPath, hash, revision: 1, markdown: PART_PLAN } });
 		harness.entries.push({ type: "custom", customType: "plan-mode-state", data: approval });
 		await harness.emit("session_tree");
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
@@ -794,7 +817,7 @@ test("review confirmation beyond ten rounds leaves approval pending until explic
 		assert.equal(harness.reviewInvocations.length, 0);
 		await harness.commands.get("plan-actions").handler("", harness.ctx);
 		assert.equal(harness.latestState().mode, "planning");
-		assert.equal(harness.latestState().counters.reviewRounds, 11);
+		assert.equal(harness.latestState().counters.reviewRounds, 11, JSON.stringify(harness.notifications));
 		assert.equal(harness.reviewInvocations.length, 1);
 	} finally { await harness.cleanup(); }
 });

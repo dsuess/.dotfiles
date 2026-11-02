@@ -12,7 +12,7 @@ The planning workflow and the mutation guard are separate. The workflow owns inv
 - `--plan` — start a session with the mutation guard enabled.
 - `Shift+Tab` — toggle the mutation guard.
 - Command palette **Plan** row — toggle the mutation guard without enqueueing `/plan` or starting an agent turn.
-- `/plan-actions` — reopen actions for the pending candidate, with or without the guard enabled.
+- `/plan-actions` — reopen actions for the active branch's validated, unexecuted candidate, with or without the guard enabled.
 - `/plan-stage-actions` — reopen the active staged checkpoint.
 - `/plan-resume` — resume a paused implementation session.
 
@@ -46,7 +46,7 @@ Validated plans are saved under:
 
 `<project>/.pi/plans/YYYYMMDD_<intent-slug>.md`
 
-`YYYYMMDD` is the local calendar date when a new target is first allocated. Discussion and review revisions retain the current validated path. After implementation handoff, the next candidate gets a new durable path. The extension infers this lineage from workflow lifecycle state, not titles or a model-supplied flag.
+`YYYYMMDD` is the local calendar date when a new target is first allocated. Discussion and review revisions retain the current path when it still matches the validated revision. If it is missing or changed, a complete revised submission uses a fresh path and starts at revision 1. Changed files are never overwritten. After implementation handoff, the next candidate gets a new durable path. The extension infers this lineage from workflow lifecycle state, not titles or a model-supplied flag.
 
 The model never supplies an output path. Slugs are bounded kebab-case. Unrelated collisions use `-2` through a maximum of 100 probes. Writes validate containment and symlinks. They enforce a 256 KiB plan limit and use atomic replacement in the same directory. A failed write retains the last validated revision.
 
@@ -129,13 +129,17 @@ The planner can inspect, answer, and ask questions across any number of turns. I
 
 A successful `show_plan` call saves and renders one candidate. It also enables the mutation guard and opens one decision dialog. A validation or persistence failure leaves the prior guard, candidate, and execution unchanged.
 
-**Discuss** clears the pending nonce and sends open-ended feedback. The planner can answer or investigate without immediate resubmission. A later ready revision uses the same validated file. A review revision follows the same rule. Any ordinary user input while a candidate is pending has the same discussion effect.
+**Discuss** clears the pending nonce and sends open-ended feedback. The planner can answer or investigate without immediate resubmission. A later ready revision uses the same validated file when it matches. A review revision follows the same rule. Any ordinary user input while a candidate is pending has the same discussion effect. It does not reopen a dialog or start execution.
+
+After discussion, explicit `/plan-actions` validates the active branch's durable candidate and issues a fresh approval token. It preserves the guard and ledger. If the file is missing, the command restores the exact transcript copy. If its content changed, the command preserves that file and saves the branch copy to a fresh path at revision 1. The notification identifies that path. Disk edits are never implicitly approved. If the exact branch copy is unavailable, submit a complete plan again.
 
 After handoff to implementation, a later candidate gets a new durable file. If an active or paused run exists, successful presentation marks that run as superseded. The old session entries and plan file remain as durable history. A failed presentation does not supersede the run. The extension does not run concurrent or stacked workflows.
 
 `show_plan` can include optional initial progress for each Part. The extension validates Part IDs, uniqueness, statuses, notes, and required terminal evidence. It writes progress only to managed Ledger metadata and the generated Part Progress report. Model-authored managed progress Markdown remains invalid.
 
 Automatic threshold or overflow compaction waits while a candidate decision is pending. Manual `/compact` remains available. Pending actions remain valid if the user later disables the guard. `/plan-actions` can reopen them in either guard state.
+
+Tree navigation restores workflow state from the selected branch, not its descendants. Git checkpoints can capture tracked and non-ignored text plan files at prompt boundaries. Their optional code restoration runs before workflow restoration; **Keep current code** leaves files as they are. Checkpoints do not restore approval tokens. Explicit recovery also works without Git and when plans are ignored.
 
 ## Approval actions
 

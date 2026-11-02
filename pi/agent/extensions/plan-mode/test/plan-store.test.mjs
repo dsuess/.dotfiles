@@ -353,3 +353,26 @@ test("validates size and title before writing and bounds collision probing", asy
 		);
 	});
 });
+
+test("conflict allocation preserves drift and rejects unsafe revision targets", async () => {
+ await withProject(async (project, root) => {
+  const first = await persistPlan({ cwd: project, ...baseOptions });
+  await writeFile(first.path, "manual edits");
+  const revised = await persistPlan({ cwd: project, ...baseOptions, existingPlan: first, allocateOnRevisionConflict: true });
+  assert.notEqual(revised.path, first.path);
+  assert.equal(await readFile(first.path, "utf8"), "manual edits");
+  const recovered = await restorePlanFile({ cwd: project, path: first.path, markdown: first.markdown, expectedHash: first.hash, title: baseOptions.title, allocateOnDrift: true });
+  assert.notEqual(recovered.path, revised.path);
+  assert.equal(await readFile(recovered.path, "utf8"), first.markdown);
+  await rm(first.path);
+  const missing = await persistPlan({ cwd: project, ...baseOptions, existingPlan: first, allocateOnRevisionConflict: true });
+  assert.notEqual(missing.path, first.path);
+  const outside = path.join(root, "outside.md");
+  await writeFile(outside, "outside");
+  await symlink(outside, first.path);
+  await assert.rejects(persistPlan({ cwd: project, ...baseOptions, existingPlan: first, allocateOnRevisionConflict: true }), { code: "unsafe_revision_target" });
+  await assert.rejects(restorePlanFile({ cwd: project, path: first.path, markdown: first.markdown, expectedHash: first.hash, title: baseOptions.title, allocateOnDrift: true }), { code: "unsafe_revision_target" });
+  await assert.rejects(persistPlan({ cwd: project, ...baseOptions, existingPlan: { path: outside, hash: first.hash }, allocateOnRevisionConflict: true }), { code: "path_escape" });
+  assert.equal(await readFile(outside, "utf8"), "outside");
+ });
+});

@@ -149,11 +149,12 @@ async function verifyRevisionTarget(path, plansRoot, expectedHash) {
 	return target;
 }
 
-async function allocateTarget(plansRoot, baseSlug, maxCollisionProbes) {
+async function allocateTarget(plansRoot, baseSlug, maxCollisionProbes, excludedTarget = null) {
 	for (let probe = 1; probe <= maxCollisionProbes; probe += 1) {
 		const suffix = probe === 1 ? "" : `-${probe}`;
 		const stem = baseSlug.slice(0, MAX_SLUG_LENGTH - suffix.length).replace(/-+$/g, "") || "plan";
 		const target = join(plansRoot, `${stem}${suffix}.md`);
+		if (target === excludedTarget) continue;
 		try {
 			const reservation = await open(target, "wx", 0o600);
 			await reservation.close();
@@ -208,6 +209,8 @@ export async function restorePlanFile(options) {
 		expectedHash,
 		title,
 		configDirName = ".pi",
+		allocateOnDrift = false,
+		maxCollisionProbes = MAX_COLLISION_PROBES,
 	} = options ?? {};
 	if (typeof cwd !== "string" || !cwd) throw new PlanStoreError("invalid_cwd", "A project working directory is required");
 	const parsed = parsePlanDocument(markdown);
@@ -227,13 +230,19 @@ export async function restorePlanFile(options) {
 		}
 		const current = await readFile(target, "utf8");
 		if (hashContent(current) !== expectedHash) {
-			throw new PlanStoreError("revision_drift", "The saved plan changed since its validated revision");
+			if (!allocateOnDrift) throw new PlanStoreError("revision_drift", "The saved plan changed since its validated revision");
+			const allocated = await allocateTarget(plansRoot, basename(target, ".md"), maxCollisionProbes);
+			await atomicWrite(allocated.target, markdown, { targetReserved: true });
+			await verifyWrittenPlan(allocated.target, expectedHash);
+			return { path: allocated.target, slug: allocated.slug, restored: true, relocated: true };
 		}
 		return { path: target, restored: false };
 	} catch (error) {
 		if (error?.code !== "ENOENT") throw error;
 	}
-	await atomicWrite(target, markdown);
+	const reservation = await open(target, "wx", 0o600);
+	await reservation.close();
+	await atomicWrite(target, markdown, { targetReserved: true });
 	await verifyWrittenPlan(target, expectedHash);
 	return { path: target, restored: true };
 }
@@ -250,6 +259,7 @@ export async function persistPlan(options) {
 		renameFile,
 		now = () => new Date(),
 		progress = [],
+		allocateOnRevisionConflict = false,
 	} = options ?? {};
 	if (typeof cwd !== "string" || !cwd) throw new PlanStoreError("invalid_cwd", "A project working directory is required");
 	if (typeof title !== "string" || !title.trim()) throw new PlanStoreError("invalid_title", "Plan title cannot be empty");
@@ -284,11 +294,16 @@ export async function persistPlan(options) {
 	let slug;
 	let targetReserved = false;
 	if (existingPlan) {
-		target = await verifyRevisionTarget(existingPlan.path, plansRoot, existingPlan.hash);
-		slug = basename(target, ".md");
-	} else {
+		try {
+			target = await verifyRevisionTarget(existingPlan.path, plansRoot, existingPlan.hash);
+			slug = basename(target, ".md");
+		} catch (error) {
+			if (!allocateOnRevisionConflict || !["revision_drift", "ENOENT"].includes(error?.code)) throw error;
+		}
+	}
+	if (!target) {
 		const datedBaseSlug = `${formatLocalDate(now())}_${baseSlug}`;
-		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, datedBaseSlug, maxCollisionProbes));
+		({ target, slug, reserved: targetReserved } = await allocateTarget(plansRoot, datedBaseSlug, maxCollisionProbes, existingPlan ? resolve(existingPlan.path) : null));
 	}
 
 	const hash = hashContent(persistedMarkdown);

@@ -64,6 +64,7 @@ import {
 	getStageTaskIds,
 	hasDurableFeedbackPending,
 	recordInvalidSubmission,
+	reopenCandidate,
 	requestRevision,
 	resetInvalidSubmissions,
 	resolveStageCheckpoint,
@@ -421,14 +422,15 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 			return markdown;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException)?.code !== "ENOENT" || !approvedPlanMarkdown) throw error;
-			const restored = await restorePlanFile({
+			const plan = state.plan;
+			const restored = await withFileMutationQueue(plan.path, () => restorePlanFile({
 				cwd: ctx.cwd,
 				configDirName: CONFIG_DIR_NAME,
-				path: state.plan.path,
+				path: plan.path,
 				markdown: approvedPlanMarkdown,
-				expectedHash: state.plan.hash,
-				title: state.plan.title,
-			});
+				expectedHash: plan.hash,
+				title: plan.title,
+			}));
 			if (restored.restored && ctx.hasUI) ctx.ui.notify("Recovered the missing plan file from the validated transcript copy.", "warning");
 			return approvedPlanMarkdown;
 		}
@@ -642,13 +644,65 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 		return true;
 	}
 
+	function validatedBranchCandidate(ctx: ExtensionContext): string {
+		if (!state.plan) throw new Error("No candidate plan is active");
+		const plan = state.plan;
+		const branch = ctx.sessionManager.getBranch();
+		const entry = [...branch].reverse().find((item) => item.type === "custom" && item.customType === PLAN_DISPLAY_ENTRY &&
+			item.data?.path === plan.path && item.data?.hash === plan.hash && item.data?.revision === plan.revision);
+		const markdown = (entry?.data as PlanDisplayEntry | undefined)?.markdown;
+		if (typeof markdown !== "string" || createHash("sha256").update(markdown, "utf8").digest("hex") !== plan.hash) {
+			throw new Error("No matching validated candidate exists on the active branch; submit the complete plan again");
+		}
+		const parsed = parsePlanDocument(markdown);
+		if (!parsed.ok || parsed.document.title !== plan.title) throw new Error("The branch candidate is not a valid plan with the expected title");
+		const parts = parsed.document.parts;
+		if (parts.map((part: any) => part.id).join("\0") !== plan.taskIds.join("\0") ||
+			parts.some((part: any) => {
+				const item = state.ledger[part.id];
+				return !item || item.status !== part.status || item.note !== part.note || item.evidence !== part.evidence;
+			}) || Object.keys(state.ledger).length !== parts.length) {
+			throw new Error("The branch candidate does not match the active Part ledger");
+		}
+		return markdown;
+	}
+
 	async function openPlanActions(args: string | undefined, ctx: ExtensionContext): Promise<void> {
 		const supplied = args?.trim();
+		if (!ctx.hasUI) return;
+		if (!supplied) {
+			const transition = hasPendingApproval(state)
+				? { ok: true, state: structuredClone(state) } as TransitionResult
+				: reopenCandidate(state, randomBytes(18).toString("base64url")) as TransitionResult;
+			if (!transition.ok) { ctx.ui.notify("No matching plan approval is pending.", "warning"); return; }
+			try {
+				const markdown = validatedBranchCandidate(ctx);
+				const plan = state.plan!;
+				const recovered = await withFileMutationQueue(plan.path, () => restorePlanFile({
+					cwd: ctx.cwd, configDirName: CONFIG_DIR_NAME, path: plan.path,
+					markdown, expectedHash: plan.hash, title: plan.title, allocateOnDrift: true,
+				}));
+				const next = transition.state;
+				next.approval!.presented = true;
+				if (recovered.relocated) {
+					next.plan!.path = recovered.path;
+					next.plan!.slug = recovered.slug;
+					next.plan!.revision = 1;
+					next.approval!.revision = 1;
+					pi.appendEntry(PLAN_DISPLAY_ENTRY, { markdown, path: recovered.path, revision: 1, hash: plan.hash, authoredHash: authoredPlanHash(markdown) });
+				}
+				approvedPlanMarkdown = markdown;
+				commitState(next);
+				if (recovered.restored) ctx.ui.notify(`Recovered the validated candidate at ${recovered.path}.`, "warning");
+			} catch (error) {
+				ctx.ui.notify(`The candidate plan is unavailable: ${formatStoreError(error)}; submit the complete plan again.`, "error"); return;
+			}
+			updateStatus(ctx);
+		}
 		if (!hasPendingApproval(state) || (supplied && supplied !== state.approval.nonce)) {
-			if (ctx.hasUI) ctx.ui.notify("No matching plan approval is pending.", "warning");
+			ctx.ui.notify("No matching plan approval is pending.", "warning");
 			return;
 		}
-		if (!ctx.hasUI) return;
 		const nonce = state.approval.nonce;
 		if (!state.approval.presented) {
 			const next = structuredClone(state);
@@ -850,7 +904,7 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					});
 				}
 				const canReviseCurrentCandidate = Boolean(state.plan && !state.execution && state.outcome === null);
-				const stored = await persistPlan({
+				const savePlan = () => persistPlan({
 					cwd: ctx.cwd,
 					configDirName: CONFIG_DIR_NAME,
 					intent: params.intent,
@@ -858,7 +912,11 @@ export default function planModeExtension(pi: ExtensionAPI, dependencies: PlanMo
 					markdown: params.markdown,
 					progress: optimizedProgress ?? params.progress ?? [],
 					existingPlan: canReviseCurrentCandidate ? { path: state.plan!.path, hash: state.plan!.hash } : null,
+					allocateOnRevisionConflict: !optimizing && canReviseCurrentCandidate,
 				});
+				const stored = canReviseCurrentCandidate
+					? await withFileMutationQueue(state.plan!.path, savePlan)
+					: await savePlan();
 				const nonce = randomBytes(18).toString("base64url");
 				const stages = stored.document.stages.map((stage) => ({
 					id: stage.id,
