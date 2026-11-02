@@ -82,6 +82,7 @@ describe("discussion fork runtime", () => {
     vi.stubEnv("HERDR_FUTURE_CAPABILITY", "future");
     vi.stubEnv("PI_HERDR_STATUS_PORT", "12345");
     vi.stubEnv("NON_HERDR_CHILD_CAPABILITY", "preserved");
+    vi.stubEnv("PI_SRT_ROUTING", "1");
     vi.stubEnv("PI_SRT_ROUTING_SOCKET", "/tmp/controller.sock");
     vi.stubEnv("PI_SRT_ROUTING_LEASE", "a".repeat(64));
     vi.stubEnv("PI_SRT_ROUTING_WORKSPACE_KEY", "b".repeat(64));

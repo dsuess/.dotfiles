@@ -411,7 +411,8 @@ export async function runDiscussionFork(
       request.thinkingLevel,
       request.projectTrusted ? "--approve" : "--no-approve",
     ];
-    args.push(...childToolCliArgs(capabilities));
+    const env = childEnvironment(files.systemPath, capabilities.builtins, capabilities.hostAdapters, planningMode);
+    args.push(...childToolCliArgs(capabilities, env));
 
     const getInvocation = dependencies.getInvocation ?? getPiInvocation;
     const spawnProcess = dependencies.spawnProcess ?? ((command, childArgs, options) => spawn(command, childArgs, options) as ChildProcess);
@@ -422,12 +423,7 @@ export async function runDiscussionFork(
       cwd: request.cwd,
       shell: false,
       stdio: "inherit",
-      env: childEnvironment(
-        files.systemPath,
-        capabilities.builtins,
-        capabilities.hostAdapters,
-        planningMode,
-      ),
+      env,
     });
     const exit = await waitForChild(child, request.signal);
     const state = readDiscussionThread(thread.sessionFile, openSession);

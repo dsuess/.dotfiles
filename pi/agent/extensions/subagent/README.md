@@ -31,9 +31,11 @@ Each invocation starts an ephemeral `pi --mode json --print --no-session` run. I
 - effective system instructions and planning restrictions;
 - working directory and current process sandbox/environment;
 - model and thinking level, unless explicitly overridden; and
-- active tool allowlist, in its existing order.
+- admitted active tools: the seven core tools and known host adapters, grouped by category.
 
-The inherited tools exclude `subagent` and parent-session workflow tools (`show_plan`, plan progress/completion tools, and stage completion). The caller cannot supply or broaden tools. Extension discovery remains enabled so inherited discoverable custom tools can load; unavailable dynamic or SDK-only tools fail rather than causing Pi to enable defaults.
+Children exclude `subagent`, parent-session workflow tools, unknown custom tools, and MCP server tools. The caller cannot broaden this selection. Extension discovery remains enabled for admitted host adapters.
+
+When SRT routing is active, children disable native built-ins and use private allowlists after the routing readiness handshake. This stays fail-closed even when the parent selects `/sandbox off`; children do not inherit off authority. Without active routing, children use an explicit `--tools` allowlist, or `--no-tools` when empty, and disable built-in MCP with `--no-mcp`. Unavailable tools do not cause Pi to enable defaults.
 
 The inherited system prompt is transferred through a mode-`0600` temporary file, and the delegated task is written only to child stdin. Parent session environment identifiers are removed. Prompt state is deleted after success, failure, or cancellation.
 

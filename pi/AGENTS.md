@@ -10,6 +10,7 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 
 ## SRT tool-routing invariants
 
+- Suppress native child tools only when SRT routing is active. Routed children must remain fail-closed, including when the parent selects `/sandbox off`.
 - Pi, provider authentication, extension UI, and known non-core adapters stay on the host. Normal launches start sandboxed. On normal launches, the seven core tools and user Bash use per-operation SRT unless the user explicitly selects conversation-local `/sandbox off`.
 - Normal startup fails closed. Missing SRT package, verified patch, controller, policy, sidecar inventory, or routing handshake must leave native core tools disabled and block model input.
 - `pi --yolo` is the explicit host-native bypass: it must skip SRT preflight and routing, retain Pi's native built-ins, and warn on stderr. The launcher starts every normal Pi process with native built-ins disabled and the routing extension activates required replacements only after core provenance and readiness checks. Admit known host adapters by name without manual package provenance checks. Missing host adapters must not block startup.

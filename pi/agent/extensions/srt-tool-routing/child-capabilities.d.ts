@@ -17,4 +17,7 @@ export function isInheritedPlanningMode(
   systemPrompt?: string,
 ): boolean;
 
-export function childToolCliArgs(capabilities: ChildCapabilities): string[];
+export function childToolCliArgs(
+  capabilities: ChildCapabilities,
+  env?: { PI_SRT_ROUTING?: string; PI_SRT_ROUTING_SANDBOX?: string },
+): string[];

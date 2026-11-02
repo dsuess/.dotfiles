@@ -45,10 +45,13 @@ export function isInheritedPlanningMode(guardActive = false, systemPrompt = "") 
   return guardActive === true && /\[PI PLANNING MODE ACTIVE\]/.test(systemPrompt);
 }
 
-export function childToolCliArgs(_capabilities) {
-  // Pi's --tools filter applies to extension replacements as well as native
-  // built-ins. A private post-handshake allowlist is therefore the only mode
-  // that is both capability-preserving and fail-closed when the extension is
-  // missing.
-  return ["--no-builtin-tools"];
+export function childToolCliArgs(capabilities, env = {}) {
+  if (env.PI_SRT_ROUTING === "1" || env.PI_SRT_ROUTING_SANDBOX === "1") {
+    // --tools also filters replacements; routing applies private allowlists
+    // after the readiness handshake, with native built-ins disabled throughout.
+    return ["--no-builtin-tools"];
+  }
+  const admitted = [...capabilities.builtins, ...capabilities.hostAdapters];
+  // MCP offerings can remain callable outside --tools, including resources.
+  return [...(admitted.length ? ["--tools", admitted.join(",")] : ["--no-tools"]), "--no-mcp"];
 }

@@ -353,7 +353,7 @@ export async function runSubagent(options, dependencies = {}) {
 			"--system-prompt", promptPath,
 		];
 		if (thinkingLevel) args.push("--thinking", thinkingLevel);
-		args.push(...childToolCliArgs(capabilities));
+		args.push(...childToolCliArgs(capabilities, baseEnv));
 
 		const activity = [];
 		let malformedLines = 0;

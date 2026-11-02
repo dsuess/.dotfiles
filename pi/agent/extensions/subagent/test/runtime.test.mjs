@@ -262,6 +262,7 @@ test("passes trusted host adapters only through the private post-handshake allow
 	const proc = new FakeProcess();
 	let spawnCall;
 	await runSubagent(baseOptions({ activeTools: ["read", "ketch_search", "mcp_list", "mcp__serena__execute", "unknown_tool"] }), {
+		baseEnv: { PI_SRT_ROUTING: "1" },
 		spawnImpl(_command, args, options) {
 			spawnCall = { args, options };
 			queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));
@@ -281,6 +282,7 @@ test("keeps native built-ins disabled when no child capability is inherited", as
 	const proc = new FakeProcess();
 	let args;
 	await runSubagent(baseOptions({ activeTools: ["subagent", "show_plan", "plan_progress"] }), {
+		baseEnv: { PI_SRT_ROUTING_SANDBOX: "1" },
 		spawnImpl(_command, childArgs) {
 			args = childArgs;
 			queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));
@@ -290,6 +292,37 @@ test("keeps native built-ins disabled when no child capability is inherited", as
 	assert.equal(args.includes("--no-tools"), false);
 	assert.ok(args.includes("--no-builtin-tools"));
 	assert.equal(args.includes("--tools"), false);
+});
+
+test("selects native or routed tools from the child base environment without mutating it", async () => {
+	const cases = [
+		[{ }, ["read", "grep", "find", "ls", "write", "subagent", "mcp__x__y"], ["--tools", "read,grep,find,ls,write", "--no-mcp"]],
+		[{ PI_SRT_ROUTING: "", PI_SRT_ROUTING_SANDBOX: "0" }, ["read", "grep", "find", "ls"], ["--tools", "read,grep,find,ls", "--no-mcp"]],
+		[{ PI_SRT_ROUTING: "true" }, ["ketch_search"], ["--tools", "ketch_search", "--no-mcp"]],
+		[{ PI_SRT_ROUTING_SANDBOX: "false" }, ["subagent", "show_plan", "mcp__x__y"], ["--no-tools", "--no-mcp"]],
+		[{ PI_SRT_ROUTING: "1" }, ["read", "ketch_search"], ["--no-builtin-tools"]],
+		[{ PI_SRT_ROUTING_SANDBOX: "1" }, ["read", "ketch_search"], ["--no-builtin-tools"]],
+	];
+	for (const [baseEnv, activeTools, expected] of cases) {
+		const snapshot = { ...baseEnv };
+		const proc = new FakeProcess();
+		let call;
+		await runSubagent(baseOptions({ activeTools }), {
+			baseEnv,
+			spawnImpl(_command, args, options) {
+				call = { args, options };
+				queueMicrotask(() => emitAndClose(proc, [assistant({ text: "ok" })]));
+				return proc;
+			},
+		});
+		assert.deepEqual(call.args.slice(-expected.length), expected);
+		assert.deepEqual(baseEnv, snapshot);
+		const routed = expected.includes("--no-builtin-tools");
+		assert.equal(call.args.includes("--no-builtin-tools"), routed);
+		assert.equal(call.args.includes("--no-mcp"), !routed);
+		assert.equal(call.options.env.PI_SRT_ROUTING_BUILTIN_TOOLS, filterChildTools(activeTools).filter((name) => !name.startsWith("ketch_")).join(","));
+		assert.equal(call.options.env.PI_SRT_ROUTING_HOST_TOOLS, activeTools.includes("ketch_search") ? "ketch_search" : "");
+	}
 });
 
 test("parses split events, aggregates complete nested usage, resolves the actual model, and extracts final text", async () => {
