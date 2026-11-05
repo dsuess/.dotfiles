@@ -17,6 +17,7 @@ export class RoutedMcpTransport {
     this.removeTerminal = null;
     this.queue = Promise.resolve();
     this.queuedBytes = 0;
+    this.readinessAbort = new AbortController();
   }
   get stderr() { return this.stderrBuffer.toString("utf8"); }
   subscribe(name, listener) { this.listeners[name].add(listener); return () => this.listeners[name].delete(listener); }
@@ -28,7 +29,12 @@ export class RoutedMcpTransport {
     if (this.started || this.closed) throw closedError();
     this.started = true;
     try {
-      const client = await this.connect(); // Includes restored client policy readiness.
+      const client = await new Promise((resolve, reject) => {
+        const stop = () => reject(closedError());
+        this.readinessAbort.signal.addEventListener("abort", stop, { once: true });
+        Promise.resolve(this.connect()).then(resolve, reject).finally(() => this.readinessAbort.signal.removeEventListener("abort", stop));
+        if (this.readinessAbort.signal.aborted) stop();
+      });
       if (this.closed) throw closedError();
       const launch = this.validate(); // Revalidate at every fresh connection.
       this.client = client;
@@ -91,6 +97,7 @@ export class RoutedMcpTransport {
   finish() {
     if (this.closed) return;
     this.closed = true;
+    this.readinessAbort.abort();
     this.buffer = Buffer.alloc(0);
     this.removeTerminal?.();
     this.removeTerminal = null;

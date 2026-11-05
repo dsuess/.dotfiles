@@ -1,4 +1,5 @@
 import { readReviewedSerena, validateReviewedEntry, SERENA_INSPECTION_TOOLS } from "./serena-profile.mjs";
+import { ApprovedHttpTransport } from "./http-transport.mjs";
 import { RoutedMcpTransport } from "./mcp-transport.mjs";
 import { createWorkspaceApproval, stable } from "./workspace-approval.mjs";
 
@@ -7,7 +8,7 @@ const prefix = (name) => `mcp__${name.replaceAll("-", "_")}__`;
 const inspectionNames = new Set(SERENA_INSPECTION_TOOLS.map((name) => `mcp__serena__${name}`));
 
 /** Only approved project entries reach the upstream manager's routed transport. */
-export function installReviewedMcp(pi, { factory, connect, prepareLoadout, canDeclare = () => true, onToolsChanged = () => {}, approval = createWorkspaceApproval() }) {
+export function installReviewedMcp(pi, { factory, connect, createHttpTransport, prepareLoadout, canDeclare = () => true, onToolsChanged = () => {}, approval = createWorkspaceApproval() }) {
   let context;
   let managerCommand;
   let startManager;
@@ -17,7 +18,7 @@ export function installReviewedMcp(pi, { factory, connect, prepareLoadout, canDe
   const records = new Map();
   const live = (record) => Boolean(record && record.desiredDirect && transports.get(record.server.entry.name) === record.transport && !record.transport.closed && record.transport.channel && record.transport.channel.policyGeneration === record.transport.client.policyGeneration);
   const isInspection = (record) => {
-    if (!live(record) || !inspectionNames.has(record.definition.name)) return false;
+    if (record?.server.launch.url || !live(record) || !inspectionNames.has(record.definition.name)) return false;
     try {
       approval.validate(record.server);
       const reviewed = readReviewedSerena({ cwd: record.cwd, projectTrusted: context?.isProjectTrusted?.() === true });
@@ -114,13 +115,14 @@ export function installReviewedMcp(pi, { factory, connect, prepareLoadout, canDe
       return { servers: loaded.servers.map((server) => server.entry), errors: loaded.errors ?? [], autoEnableCodemode: false };
     },
     createTransport: (entry, cwd, authProvider) => {
-      if (authProvider) throw new Error("Routed MCP does not admit authentication transports");
+      if (authProvider && !("url" in entry.config)) throw new Error("Routed MCP does not admit authentication transports");
       const server = approval.load().servers.find((candidate) => candidate.entry.name === entry.name);
       if (!server || !same(entry, server.entry) || cwd !== context.cwd) throw new Error("Routed MCP server configuration provenance does not match approval");
       approval.validate(server);
       const previous = transports.get(entry.name);
       if (previous && !previous.closed) throw new Error("Routed MCP previous process must retire before reconnect");
-      const next = new RoutedMcpTransport({ connect, validate: () => approval.validate(server), onRetire: () => retire(next) });
+      const Transport = server.launch.url ? ApprovedHttpTransport : RoutedMcpTransport;
+      const next = new Transport({ connect, createHttpTransport, timeoutMs: Math.max(1, Math.ceil(Math.min((entry.config.timeout ?? 60) * 1000, 60_000))), validate: () => approval.validate(server), onRetire: () => retire(next) });
       next.server = server;
       next.cwd = cwd;
       transports.set(entry.name, next);

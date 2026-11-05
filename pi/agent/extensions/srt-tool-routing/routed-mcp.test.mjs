@@ -6,7 +6,7 @@ import test from "node:test";
 import { installReviewedMcp } from "./routed-mcp.mjs";
 import { createWorkspaceApproval, WorkspaceApprovalStore, readWorkspaceServers } from "./workspace-approval.mjs";
 
-async function fixture(t, servers = { one: { command: "node" }, two: { command: "node", exposure: "deferred", toolExposure: { secret: "hidden" } } }) {
+async function fixture(t, servers = { one: { command: "node" }, two: { command: "node", exposure: "deferred", toolExposure: { secret: "hidden" } } }, { createHttpTransport } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-routed-mcp-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const cwd = path.join(root, "project"); fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
@@ -32,12 +32,12 @@ async function fixture(t, servers = { one: { command: "node" }, two: { command: 
   } };
   const integration = installReviewedMcp(pi, {
     factory: (given) => { options = given; return (givenPi) => { facade = givenPi; facade.registerCommand("mcp", { handler: async () => {} }); }; },
-    approval, connect: async () => client,
+    approval, createHttpTransport, connect: async () => client,
     canDeclare: (_name, reviewed) => !planning || reviewed,
     onToolsChanged: () => { changes++; },
   });
   const loaded = options.loadConfig(ctx);
-  const connect = async (name) => { const entry = loaded.servers.find((entry) => entry.name === name); const transport = options.createTransport(entry, ctx.cwd); await transport.start(); return transport; };
+  const connect = async (name) => { const entry = loaded.servers.find((entry) => entry.name === name); const transport = options.createTransport(entry, ctx.cwd, entry.config.url ? { token() { throw new Error("OAuth must not run"); } } : undefined); await transport.start(); return transport; };
   t.after(() => integration.close());
   return { pi, integration, definitions, launches, client, options, facade, planning: (value) => { planning = value; }, changes: () => changes, connect, loaded, ctx, store, write, commands };
 }
@@ -121,4 +121,30 @@ test("untrusted configuration opens no process and revocation command retires to
   assert.equal(f.definitions.get("mcp__one__edit").exposure, "hidden");
   const loaded = f.options.loadConfig({ ...f.ctx, isProjectTrusted: () => false });
   assert.deepEqual(loaded.servers, []); assert.equal(f.launches.length, 1);
+});
+
+
+test("HTTP uses approved endpoint, ignores upstream OAuth, and keeps mixed stdio slots independent", async (t) => {
+  const httpOptions = [];
+  const createHttpTransport = (options) => {
+    httpOptions.push(options);
+    let closed;
+    return { onMessage() {}, onError() {}, onClose(fn) { closed = fn; }, async start() {}, async send() {}, async close() { closed?.(); } };
+  };
+  const f = await fixture(t, { local: { url: "http://127.0.0.1:8788/mcp" }, second: { url: "http://[::1]:8788/mcp" }, process: { command: "node" } }, { createHttpTransport });
+  await f.connect("local"); await f.connect("second"); await f.connect("process");
+  assert.equal(httpOptions.length, 2); assert.equal(httpOptions[0].authProvider, undefined);
+  assert.equal(f.launches.length, 1);
+  const names = ["mcp__local__echo", "mcp__second__echo", "mcp__process__echo"];
+  for (const name of names) f.facade.registerTool(offering(name, async () => "fixture-result"));
+  assert.equal(await f.definitions.get(names[0]).execute(), "fixture-result");
+  f.planning(true); f.integration.syncDeclarations();
+  await assert.rejects(f.definitions.get(names[0]).execute(), /Planning/); assert.equal(f.definitions.get(names[0]).exposure, "hidden");
+  f.planning(false); f.integration.syncDeclarations();
+  f.facade.registerTool({ ...offering("mcp__local__hidden"), exposure: "hidden" }); assert.equal(f.definitions.has("mcp__local__hidden"), false);
+  f.write({ local: { url: "http://127.0.0.1:8789/mcp" }, second: { url: "http://[::1]:8788/mcp" }, process: { command: "node" } });
+  await assert.rejects(f.definitions.get(names[0]).execute(), /configuration changed/);
+  assert.equal(f.definitions.get(names[0]).exposure, "hidden");
+  assert.equal(await f.definitions.get(names[1]).execute(), "fixture-result"); assert.equal(await f.definitions.get(names[2]).execute(), "fixture-result");
+  await f.integration.close();
 });

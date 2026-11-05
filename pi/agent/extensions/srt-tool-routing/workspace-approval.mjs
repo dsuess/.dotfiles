@@ -34,6 +34,15 @@ function literal(value, label) {
   if (typeof value !== "string" || value.includes("\0") || value.startsWith("!") || value.startsWith("~") || /\$\{|\$\(/.test(value)) throw fail(`${label}: use literal values, not expansion or command substitution`);
   return value;
 }
+export function canonicalLocalUrl(value) {
+  const raw = literal(value, "url");
+  // Check the literal host before WHATWG URL normalizes alternative IPv4 spellings.
+  if (!/^http:\/\/(?:127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(raw) || /[?#\\\s]/.test(raw)) throw fail("HTTP requires a literal loopback URL without credentials, query, or fragment");
+  let url;
+  try { url = new URL(raw); } catch { throw fail("invalid HTTP URL"); }
+  if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password) throw fail("invalid loopback endpoint");
+  return url.href;
+}
 const exposures = new Set(["direct", "hidden", "codemode", "codemode-deferred", "deferred"]);
 
 /** Host-only reader: trust is checked before opening any project file. */
@@ -53,30 +62,40 @@ export function readWorkspaceServers(ctx) {
     names.add(normalized);
     if (!object(config) || (config.enabled !== undefined && typeof config.enabled !== "boolean")) throw fail(`${name}: invalid enabled state`);
     if (config.enabled === false) continue;
-    const allowed = new Set(["command", "args", "cwd", "env", "type", "enabled", "exposure", "toolExposure", "description", "timeout"]);
+    const http = Object.hasOwn(config, "url");
+    const allowed = new Set([...(http ? ["url"] : ["command", "args", "cwd", "env"]), "type", "enabled", "exposure", "toolExposure", "description", "timeout"]);
     const unsupported = Object.keys(config).filter((key) => !allowed.has(key));
-    if (unsupported.length || (config.type !== undefined && config.type !== "stdio")) throw fail(`${name}: only project stdio is supported; remove unsupported fields ${unsupported.join(", ")}`);
-    const command = literal(config.command, `${name}.command`);
-    if (!command) throw fail(`${name}: command is empty`);
-    if (config.args !== undefined && !Array.isArray(config.args)) throw fail(`${name}: args must be an array`);
-    const args = (config.args ?? []).map((value) => literal(value, `${name}.args`));
-    const cwd = fs.realpathSync(path.resolve(workspace, literal(config.cwd ?? workspace, `${name}.cwd`)));
-    if (!fs.statSync(cwd).isDirectory()) throw fail(`${name}: cwd is not a directory`);
-    if (config.env !== undefined && !object(config.env)) throw fail(`${name}: env must be an object`);
-    const env = Object.fromEntries(Object.entries(config.env ?? {}).map(([key, value]) => {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw fail(`${name}: invalid environment name`);
-      return [key, literal(value, `${name}.env`)];
-    }));
+    if (unsupported.length || (config.type !== undefined && !(http ? ["http", "streamable-http"] : ["stdio"]).includes(config.type))) throw fail(`${name}: invalid project transport; remove unsupported fields ${unsupported.join(", ")}`);
     if (config.exposure !== undefined && !exposures.has(config.exposure)) throw fail(`${name}: invalid exposure`);
     if (config.toolExposure !== undefined && (!object(config.toolExposure) || Object.values(config.toolExposure).some((value) => !exposures.has(value)))) throw fail(`${name}: invalid toolExposure`);
     if (config.description !== undefined && typeof config.description !== "string") throw fail(`${name}: invalid description`);
     if (config.timeout !== undefined && (!Number.isFinite(config.timeout) || config.timeout <= 0)) throw fail(`${name}: invalid timeout`);
-    const executable = command.includes("/") ? path.resolve(cwd, command) : command;
-    const launch = { argv: [executable, ...args], cwd, env };
-    const fingerprint = digest({ name, source, command: executable, args, cwd, env });
+    let launch, fingerprint, transportConfig;
+    if (http) {
+      const url = canonicalLocalUrl(config.url);
+      launch = { url };
+      fingerprint = digest({ name, source, transport: "http", url });
+      transportConfig = { ...config, type: "http", url };
+    } else {
+      const command = literal(config.command, `${name}.command`);
+      if (!command) throw fail(`${name}: command is empty`);
+      if (config.args !== undefined && !Array.isArray(config.args)) throw fail(`${name}: args must be an array`);
+      const args = (config.args ?? []).map((value) => literal(value, `${name}.args`));
+      const cwd = fs.realpathSync(path.resolve(workspace, literal(config.cwd ?? workspace, `${name}.cwd`)));
+      if (!fs.statSync(cwd).isDirectory()) throw fail(`${name}: cwd is not a directory`);
+      if (config.env !== undefined && !object(config.env)) throw fail(`${name}: env must be an object`);
+      const env = Object.fromEntries(Object.entries(config.env ?? {}).map(([key, value]) => {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw fail(`${name}: invalid environment name`);
+        return [key, literal(value, `${name}.env`)];
+      }));
+      const executable = command.includes("/") ? path.resolve(cwd, command) : command;
+      launch = { argv: [executable, ...args], cwd, env };
+      fingerprint = digest({ name, source, command: executable, args, cwd, env });
+      transportConfig = { ...config, command: executable, args, cwd, env };
+    }
     // Normalize non-hidden exposure without changing launch authority. No discovery.
     const direct = (value) => value === "hidden" ? "hidden" : "direct";
-    const entry = { name, scope: "project", source, config: { ...config, command: executable, args, cwd, env,
+    const entry = { name, scope: "project", source, config: { ...transportConfig,
       exposure: direct(config.exposure), toolExposure: Object.fromEntries(Object.entries(config.toolExposure ?? {}).map(([key, value]) => [key, direct(value)])) } };
     servers.push({ entry, launch, fingerprint, identity: digest(entry) });
   }
@@ -194,8 +213,8 @@ export function createWorkspaceApproval({ store = new WorkspaceApprovalStore(), 
         attempted = true;
         // Arguments and literal env can contain credentials. Only show executable,
         // argument count, working directory, and environment variable names.
-        const summary = current.servers.map(({ entry, launch }) => `${entry.name}: ${launch.argv[0]} (${launch.argv.length - 1} arguments)\ncwd: ${launch.cwd}\nenv names: ${Object.keys(launch.env).join(", ") || "none"}`).join("\n\n");
-        if (!await ctx.ui.confirm("Approve routed project MCP?", `${current.workspace}\n\n${summary}\n\nLaunchers can change without reapproval. Servers remain sandboxed. Non-hidden tools are exposed directly.`)) return;
+        const summary = current.servers.map(({ entry, launch }) => launch.url ? `${entry.name}: ${launch.url} (host HTTP proxy access; not SRT)` : `${entry.name}: ${launch.argv[0]} (${launch.argv.length - 1} arguments)\ncwd: ${launch.cwd}\nenv names: ${Object.keys(launch.env).join(", ") || "none"}`).join("\n\n");
+        if (!await ctx.ui.confirm("Approve routed project MCP?", `${current.workspace}\n\n${summary}\n\nStdio launchers can change without reapproval and remain sandboxed. HTTP authorizes host proxy access only; proxy operations are outside SRT. No OAuth or filesystem grants. Non-hidden tools are exposed directly.`)) return;
         const after = snapshot();
         if (snapshotDigest(current) !== snapshotDigest(after)) throw fail("configuration changed during confirmation; use /mcp approve to retry");
         await store.approve(after, snapshot);
@@ -212,7 +231,7 @@ export function createWorkspaceApproval({ store = new WorkspaceApprovalStore(), 
       try {
         const current = snapshot();
         const matching = store.matching(current);
-        return `${current.workspace}: ${matching.length}/${current.servers.length} project stdio servers approved. Non-hidden tools: direct exposure.\n${current.servers.map((server) => `${server.entry.name}: ${matching.some((approved) => approved.entry.name === server.entry.name) ? "approved" : "approval required"}`).join("\n")}\n${error ?? ""}`;
+        return `${current.workspace}: ${matching.length}/${current.servers.length} project servers approved (stdio / local HTTP). Non-hidden tools: direct exposure.\n${current.servers.map((server) => `${server.entry.name} (${server.launch.url ?? "sandboxed stdio"}): ${matching.some((approved) => approved.entry.name === server.entry.name) ? "approved" : "approval required"}`).join("\n")}\n${error ?? ""}`;
       } catch (cause) { return cause.message; }
     },
     async revoke() { await store.revoke(fs.realpathSync(context.cwd)); },

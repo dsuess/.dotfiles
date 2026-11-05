@@ -152,3 +152,49 @@ for (const config of [{ url: "https://example.com" }, { command: "node", oauth: 
     assert.throws(f.read, /Routed MCP approval denied/);
   });
 }
+
+test("local HTTP approval canonicalizes URLs, persists authority and displays host boundary", async (t) => {
+  const f = fixture(t);
+  f.write({ local: { url: "http://127.0.0.1:8788/a/../mcp", type: "streamable-http", exposure: "codemode" } });
+  let message;
+  f.ctx.ui.confirm = async (_title, text) => { message = text; return true; };
+  const approval = createWorkspaceApproval({ store: f.store }); await approval.initialize(f.ctx);
+  const admitted = approval.load().servers[0];
+  assert.equal(admitted.entry.config.url, "http://127.0.0.1:8788/mcp");
+  assert.equal(admitted.entry.config.type, "http");
+  assert.equal(admitted.entry.config.exposure, "direct");
+  assert.match(message, /host/i); assert.match(message, /8788\/mcp/);
+  assert.match(approval.status(), /HTTP/);
+  f.write({ local: { url: "http://127.0.0.1:8789/mcp" } });
+  assert.throws(() => approval.validate(admitted), /changed/);
+  f.write({ local: { command: "node" } }); assert.equal(f.store.matching(f.read()).length, 0);
+  f.write({ local: { url: "http://[::1]:8788/mcp" } }); assert.equal(f.read().servers.length, 1);
+});
+
+test("HTTP rejects remote, alias, alternate loopback spelling and unsupported authority", (t) => {
+  const f = fixture(t);
+  for (const url of ["https://127.0.0.1/mcp", "http://localhost/mcp", "http://127.1/mcp", "http://2130706433/mcp", "http://example.org/mcp", "http://user:pass@127.0.0.1/mcp", "http://127.0.0.1/mcp?q=1", "http://127.0.0.1/mcp#fragment", "http://127.0.0.1/${PATH}"]) {
+    f.write({ local: { url } }); assert.throws(f.read, /denied/);
+  }
+  for (const extra of [{ command: "node" }, { args: [] }, { cwd: f.cwd }, { env: {} }, { headers: {} }, { oauth: {} }, { auth: {} }, { type: "stdio" }, { type: "sse" }, { unknown: true }]) {
+    f.write({ local: { url: "http://127.0.0.1:8788/mcp", ...extra } }); assert.throws(f.read, /denied/);
+  }
+});
+
+test("HTTP inherits trust, cancellation, scope and confirmation/save rechecks", async (t) => {
+  const f = fixture(t); const local = { url: "http://127.0.0.1:8788/mcp" }; f.write({ local });
+  assert.equal(readWorkspaceServers({ ...f.ctx, isProjectTrusted: () => false }).servers.length, 0);
+  f.ctx.ui.confirm = async () => false;
+  const approval = createWorkspaceApproval({ store: f.store }); await approval.initialize(f.ctx); assert.equal(fs.existsSync(f.store.file), false);
+  f.ctx.ui.confirm = async () => { f.write({ local: { ...local, url: "http://127.0.0.1:8789/mcp" } }); return true; };
+  await approval.initialize(f.ctx, true); assert.equal(fs.existsSync(f.store.file), false);
+  f.write({ local }); await f.store.approve(f.read());
+  const alias = path.join(f.root, "http-alias"); fs.symlinkSync(f.cwd, alias);
+  assert.equal(f.store.matching(readWorkspaceServers({ ...f.ctx, cwd: alias })).length, 1);
+  f.write({ local, extra: { url: "http://[::1]:8788/mcp", enabled: false } }); assert.equal(f.store.matching(f.read()).length, 1);
+  f.write({ local, extra: { url: "http://[::1]:8788/mcp" } }); assert.equal(f.store.matching(f.read()).length, 1);
+  const snapshot = f.read(); f.store.checkDirectory(true); const lock = path.join(f.store.directory, "lock"); fs.mkdirSync(lock, { mode: 0o700 });
+  const saving = f.store.approve(snapshot, f.read);
+  await new Promise((resolve) => setTimeout(resolve, 30)); f.write({ local: { url: "http://127.0.0.1:8789/mcp" } }); fs.rmdirSync(lock);
+  await assert.rejects(saving, /changed/);
+});

@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "1.4.0",
+  "lastChangelogVersion": "1.5.0",
   "defaultProvider": "litellm",
-  "defaultModel": "gpt-6.1-sol",
+  "defaultModel": "gpt-6.1-terra",
   "defaultThinkingLevel": "medium",
   "defaultThinkingProvider": "litellm",
   "defaultThinkingModel": "gpt-6.1-sol",
@@ -30,5 +30,9 @@
     "packages/ask-user-question"
   ],
   "hideThinkingBlock": true,
-  "theme": "dark"
+  "theme": "dark",
+  "extensionChangelogVersions": {
+    "{\"source\":\"npm:pi-rtk-optimizer\",\"scope\":\"user\"}": "0.9.0",
+    "{\"source\":\"packages/ask-user-question\",\"scope\":\"user\"}": "2.4.0-local.0"
+  }
 }

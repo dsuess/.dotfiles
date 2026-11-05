@@ -12,6 +12,15 @@ const { runToolCall } = await import(path.join(piPackageRoot, "node_modules/@ear
 const jiti = await createPiJiti(import.meta.url);
 const extensionModule = await jiti.import(new URL("./index.ts", import.meta.url).pathname);
 
+test("HTTP transport resolves from the installed Pi launcher, not the extension location", async () => {
+  const transport = await extensionModule.createInstalledHttpTransport(
+    { url: "http://127.0.0.1:8788/mcp/Fibery" },
+    path.join(piPackageRoot, "dist/bundle/cli.js"),
+  );
+  assert.equal(typeof transport.start, "function");
+  await transport.close();
+});
+
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
@@ -182,6 +191,7 @@ function createHarness(t, options = {}) {
   extensionModule.createSrtToolRoutingSandboxExtension({
     env,
     mcpApproval: createWorkspaceApproval({ store: new WorkspaceApprovalStore(root) }),
+    createHttpTransport: (options) => extensionModule.createInstalledHttpTransport(options, path.join(piPackageRoot, "dist/bundle/cli.js")),
     onControl: (value) => { control = value; },
     statusIntervalMs: options.statusIntervalMs,
     auditOptions: { extensionPath: EXTENSION_PATH, agentDir: AGENT_DIR },
@@ -1213,5 +1223,49 @@ test("canonical MCP inventory remains admitted across sandbox mode transitions",
     const denied = await harness.emit("tool_call", { toolName: "mcp__serena__execute", input: {} });
     assert.equal(denied.block, true);
   }
+  await harness.emit("session_shutdown", { reason: "quit" });
+});
+
+for (const count of [1, 2]) test(`actual extension and upstream manager connect ${count} local HTTP fixture(s)`, async (t) => {
+  const { default: http } = await import("node:http");
+  const calls = [];
+  const server = http.createServer(async (req, res) => {
+    if (req.method === "GET") { res.writeHead(405); res.end(); return; }
+    if (req.method === "DELETE") { res.writeHead(204); res.end(); return; }
+    let bytes = ""; for await (const part of req) bytes += part;
+    const message = JSON.parse(bytes); calls.push(message.method);
+    if (!Object.hasOwn(message, "id")) { res.writeHead(202); res.end(); return; }
+    let result;
+    if (message.method === "initialize") result = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "local", version: "1" } };
+    if (message.method === "tools/list") result = { tools: [{ name: "echo", description: "fixture", inputSchema: { type: "object" } }, { name: "hidden", inputSchema: { type: "object" } }] };
+    if (message.method === "tools/call") result = { content: [{ type: "text", text: "http-fixture-ok" }] };
+    res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "local" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const projectMcp = Object.fromEntries(Array.from({ length: count }, (_, i) => [`local${i}`, { url: `http://127.0.0.1:${server.address().port}/mcp/${i}`, toolExposure: { hidden: "hidden" } }]));
+  const harness = createHarness(t, { projectMcp });
+  await harness.emit("session_start", { reason: "startup" }); await harness.emit("before_agent_start");
+  for (let i = 0; i < count; i++) {
+    const result = await harness.runTool(`mcp__local${i}__echo`);
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.match(JSON.stringify(result), /http-fixture-ok/);
+    assert.equal(harness.definitions.has(`mcp__local${i}__hidden`), false);
+  }
+  assert.equal(harness.channels.length, 0);
+  for (const reason of ["reload", "new", "resume", "fork"]) {
+    await harness.emit("session_shutdown", { reason });
+    const replacement = createHarness(t, { projectMcp });
+    await replacement.emit("session_start", { reason });
+    await replacement.emit("before_agent_start");
+    const result = await replacement.runTool("mcp__local0__echo");
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.match(JSON.stringify(result), /http-fixture-ok/);
+    await replacement.emit("session_shutdown", { reason: "quit" });
+  }
+  await harness.commands.get("mcp").handler("revoke", harness.ctx);
+  assert.equal((await harness.runTool("mcp__local0__echo")).isError, true);
+  assert.equal(calls.filter((method) => method === "tools/call").length, count + 4);
   await harness.emit("session_shutdown", { reason: "quit" });
 });

@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -106,6 +107,23 @@ interface ExtensionDependencies {
   statusIntervalMs?: number;
   onControl?: (control: RoutingControl) => void;
   mcpApproval?: any;
+  createHttpTransport?: (options: any) => Promise<any>;
+}
+
+export async function createInstalledHttpTransport(options: any, launcher = process.argv[1]) {
+  // Pi aliases its own imports for extensions, but native import.meta.resolve
+  // does not use those aliases. Resolve from the actual launched Pi package.
+  let directory = path.dirname(fs.realpathSync(launcher));
+  while (true) {
+    const manifest = path.join(directory, "package.json");
+    if (fs.existsSync(manifest) && JSON.parse(fs.readFileSync(manifest, "utf8")).name === "@earendil-works/pi-coding-agent") break;
+    const parent = path.dirname(directory);
+    if (parent === directory) throw new Error("Cannot locate the running Pi package for its MCP transport");
+    directory = parent;
+  }
+  const entry = path.join(directory, "node_modules/@earendil-works/pi-mcp/dist/index.js");
+  const { StreamableHttpTransport } = await import(pathToFileURL(entry).href);
+  return new StreamableHttpTransport(options);
 }
 
 function requiredHex(value: string | undefined, name: string): string {
@@ -546,6 +564,7 @@ export function createSrtToolRoutingSandboxExtension(dependencies: ExtensionDepe
 
     routedMcp = installReviewedMcp(pi, {
       factory: createMcpExtension,
+      createHttpTransport: dependencies.createHttpTransport ?? createInstalledHttpTransport,
       approval: dependencies.mcpApproval,
       prepareLoadout,
       canDeclare: (_name: string, reviewedInspection: boolean) => !planningGuardActive() || reviewedInspection,

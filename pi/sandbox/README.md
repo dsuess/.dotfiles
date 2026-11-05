@@ -50,17 +50,17 @@ Routed MCP approval is separate from this inventory, project trust, and filesyst
 
 ## Routed project MCP approval
 
-Normal sessions replace built-in MCP integration with the exported `createMcpExtension` and controller-owned stdio transports.
+Normal sessions replace built-in MCP integration with the exported `createMcpExtension` with controller-owned stdio transports and approval-aware local HTTP transports.
 The deployed `-builtin:mcp` exclusion leaves `/mcp` with one owner: the routing extension.
-No host transport is available through this replacement. Shell-level MCP commands retain upstream behavior.
+No host stdio fallback is available through this replacement. Local HTTP has separate host endpoint authority. Shell-level MCP commands retain upstream behavior.
 Session launches with `--yolo` explicitly select upstream MCP despite the global exclusion, unless the caller disables extensions.
 
 Current-session project trust permits the host to read the current folder's `.pi/mcp.json`.
-Routed approval separately authorizes its enabled stdio servers. User-global servers and extension registrations receive no routed authority.
+Routed approval separately authorizes its enabled stdio servers or local HTTP endpoints. User-global servers and extension registrations receive no routed authority.
 Approval does not add filesystem grants or change sandbox mode.
 
 At interactive startup, a built-in dialog offers approval for eligible servers without matching saved approval.
-The dialog shows the canonical folder, server names, executables, argument counts, working directories, and environment variable names.
+The dialog shows the canonical folder, server names, executables, argument counts, working directories, and environment variable names. For HTTP, it shows the endpoint and host authority boundary.
 It omits argument and environment values because these values can contain secrets.
 Rejection or cancellation saves nothing and starts no unapproved server. Matching approved servers can still connect.
 Empty or untrusted projects need no approval dialog. Each session offers the dialog once unless the user explicitly retries.
@@ -70,15 +70,16 @@ Approval state lives at `~/.pi/routed-mcp/approvals.json`, outside this reposito
 The store uses private directories, mode-0600 files, serialized atomic updates, and strict schema checks.
 Malformed state and unsafe symlink targets block MCP admission, not core tools.
 SRT denies reads and writes to the store, even from a broad workspace and server descendants.
-The store contains canonical folder paths, revision tokens, and launch fingerprints. It contains no credentials or full server configuration.
+The store contains canonical folder paths, revision tokens, and launch or endpoint fingerprints. It contains no credentials or full server configuration.
 
-Each fingerprint binds the server name, configuration source, executable, arguments, canonical working directory, and literal environment.
+A stdio fingerprint binds the server name, configuration source, executable, arguments, canonical working directory, and literal environment.
+An HTTP fingerprint binds the server name, configuration source, canonical endpoint, and HTTP transport.
 Formatting and object-key order do not change approval. Canonical folder aliases match, but child and sibling folders receive no inherited approval.
-New or newly enabled servers without matching approval require confirmation. Changed launch definitions require approval again.
+New or newly enabled servers without matching approval require confirmation. Changed launch definitions or HTTP endpoints require approval again.
 Ordinary source edits do not require approval again. Approved launchers and dependencies can change without another dialog, but still run inside SRT.
 The host reads the configuration again after the dialog and before it saves approval.
 
-Only project stdio is supported. HTTP, OAuth, command substitution, environment expansion, and unsupported fields fail closed with diagnostics.
+Project stdio and literal loopback HTTP are supported. Remote HTTP, OAuth, command substitution, environment expansion, and unsupported fields fail closed.
 The configuration reader accepts `command`, `args`, `cwd`, literal `env`, `type: "stdio"`, `enabled`, `exposure`, `toolExposure`, `description`, and `timeout`.
 It reads at most 64 KiB and rejects symlinked configuration files or parents.
 Disabled servers do not connect. Non-hidden tools use direct exposure, including configured codemode and deferred tools.
@@ -89,8 +90,8 @@ Hidden tools stay hidden. This initial integration adds no codemode, discovery, 
 | `/mcp` | Show approval information and the upstream connection manager. |
 | `/mcp approval` or `/mcp status` | Show the canonical folder and each server's approval status. |
 | `/mcp approve` | Retry the interactive approval dialog and refresh routed connections. |
-| `/mcp revoke` | Remove this folder's saved approval and retire its current routed processes. |
-| `/mcp reconnect <server>` | Reconnect through SRT only if the current launch definition still has approval. |
+| `/mcp revoke` | Remove this folder's saved approval and retire its current routed transports. |
+| `/mcp reconnect <server>` | Reconnect only if the current stdio launch or HTTP endpoint still has approval. |
 
 Approval and revocation commands require an interactive terminal session.
 The manager's configuration controls are read-only here. After external configuration edits, use `/mcp approve` or `/reload`.
@@ -103,7 +104,7 @@ The controller allows two live stdio processes total. Capacity errors never sele
 Other limits include 64 KiB channel chunks, 1 MiB input/output buffers, 1 MiB MCP messages, and 64 KiB retained stderr.
 Startup and cleanup have deadlines. Idle servers do not occupy core operation slots.
 
-Routed servers use generated HOME and cache paths with the existing filesystem policy.
+Routed stdio servers use generated HOME and cache paths with the existing filesystem policy.
 Their npm-backed subprocesses use generated `cache/npm`, not host `~/.npm`.
 Core Bash retains its existing npm-cache behavior. Server descendants inherit SRT restrictions. IP egress remains unrestricted.
 
@@ -146,6 +147,56 @@ Planning exit can restore approved tools that arrived late, but never retired, w
 The acceptance script uses bounded normal Pi launches with prompts that begin `test serena`. It checks real symbol results and independent fixture bytes. It removes only its own fixtures and compares Visonic status and tracked diffs after cleanup. The native adversarial MCP test separately checks OS-level read/write denial for the server and its subprocesses.
 
 A zero Pi exit status does not prove tool success. Inspect tool events and result content. Serena can report error text with `isError: false`. The acceptance script requires real symbols rather than a success flag alone. Failed language-server startup can leave partial generated resources. Host installation changes, permission changes, and broader grants are not valid workarounds.
+
+## Approved local HTTP MCP
+
+Routed HTTP uses Pi's streamable HTTP transport in the host extension. It does not launch a bridge or disable SRT.
+Approval authorizes one endpoint, not filesystem access or process launches. Proxy-side Fibery and Slack operations run outside SRT.
+Stdio servers and core tools retain their existing SRT boundary. HTTP consumes no stdio process slot.
+
+In the consuming folder, add this configuration to `.pi/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "Fibery": { "url": "http://127.0.0.1:8788/mcp/Fibery" },
+    "Slack": { "url": "http://127.0.0.1:8788/mcp/Slack" }
+  }
+}
+```
+
+Then approve the endpoints with `/mcp approve` in an interactive trusted session. Use `/mcp status` to inspect approval.
+These definitions belong only in that folder, not the global configuration or this dotfiles workspace.
+
+Only literal `http://127.0.0.1` and `http://[::1]` URLs are supported. A port and path are optional.
+DNS aliases, remote hosts, HTTPS, URL credentials, query strings, and fragments are rejected.
+`type` can be omitted, `http`, or `streamable-http`. Shared exposure, description, enabled, and timeout fields remain supported.
+Stdio fields, headers, authentication, OAuth, expansions, and unsupported fields are rejected.
+Pi's automatically supplied OAuth provider is discarded. The transport never refreshes credentials or follows redirects.
+
+HTTP requires a ready controller and the current client policy, even after `/sandbox off`.
+Approval changes, revocation, policy retirement, controller loss, reload, replacement, and shutdown retire HTTP authority.
+The transport checks authority before dispatch and message receipt. A 50 ms check also retires idle streams.
+Requests and streams have a finite deadline: the smaller of the configured timeout and 60 seconds.
+JSON bodies and SSE events have a 1 MiB limit. Cleanup has a 1.1-second bound and reaches only the original approved endpoint.
+Tool POSTs are never replayed. General HTTP tools remain blocked during planning, including servers named Serena.
+
+Local fixture tests do not call production Fibery or Slack. Endpoint reachability alone does not prove MCP initialization or tool execution.
+The historical hang remains unresolved; stalled requests and unresolved readiness have separate reproducible regression tests.
+
+### Real-launcher fixture acceptance
+
+From an ordinary host terminal, run `node pi/sandbox/verify-local-http.mjs`.
+The script creates one test endpoint before two. It uses the real `bin/pi` launcher and the deployed routing extension.
+Grant project trust and approve only the displayed test endpoints. Follow the interactive instructions for reload, replacement, revocation, and stalled-request cleanup.
+The print runs check actual MCP result bytes, a core read, and a child Bash result. They do not prove native denial alone.
+Run `npm --prefix pi/sandbox run test:native` to check the native SRT boundary.
+The script requires an interactive terminal, provider credentials for print runs, and controller access. It never adds global definitions.
+
+Implementation-session checks: the actual extension and upstream manager pass local one-then-two fixture tests, including replacement and revocation.
+The real launcher stops before startup with `EPERM` on controller runtime-directory `chmod` under the inherited OS sandbox.
+The sandbox suite also stops on missing local Pi dependencies, denied native sockets, and unavailable Docker Sandbox checks.
+The full gate stops at the RTK test's missing local Pi dependency before native checks. These are not successful native acceptance runs.
 
 ## MCP CLI commands
 
@@ -292,7 +343,7 @@ CAUTION: Re-enabling sandboxing affects future operations only. It cannot undo h
 
 ## Operations and troubleshooting
 
-The detached routing controller owns the workspace socket, base policy, client snapshots, leases, Docker broker, and lazy sidecar. Each routed core file, shell, or Docker request starts its own short-lived SRT operation. Each approved MCP server uses a separate persistent SRT stdio process for the session.
+The detached routing controller owns the workspace socket, base policy, client snapshots, leases, Docker broker, and lazy sidecar. Each routed core file, shell, or Docker request starts its own short-lived SRT operation. Each approved stdio MCP server uses a separate persistent SRT process. Local HTTP uses no server process.
 
 A root Pi runtime refreshes its opaque controller lease while it runs. After a long host pause, such as machine sleep or synchronous plan review, its next routed request transparently proves the original private startup capability to the same controller, reactivates the same lease token, and retries that rejected request once. This does not restart the controller, recreate the policy, or replace the sidecar. Inherited child runtimes have only the opaque lease and cannot renew it. If the root cannot prove that original authority, routing fails closed: Pi disables routed tools and shuts down rather than falling back to host tools.
 
