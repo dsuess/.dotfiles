@@ -1,10 +1,10 @@
 {
   "lastChangelogVersion": "1.5.0",
   "defaultProvider": "litellm",
-  "defaultModel": "gpt-6.1-terra",
+  "defaultModel": "gpt-6.1-sol",
   "defaultThinkingLevel": "medium",
-  "defaultThinkingProvider": "litellm",
-  "defaultThinkingModel": "gpt-6.1-sol",
+  "defaultThinkingProvider": "openai-codex",
+  "defaultThinkingModel": "gpt-5.6-sol",
   "enabledModels": [
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-6.1-sol",
