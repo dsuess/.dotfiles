@@ -33,8 +33,9 @@ Permission for Pi to read project configuration and load project resources in th
 _Avoid_: MCP approval, filesystem grant
 
 **Routed MCP approval**:
-Saved authority for project-local stdio launch definitions in one canonical workspace.
-It binds launch fingerprints, not source contents, and adds no filesystem access.
+Saved authority for project-local stdio launch definitions or literal loopback HTTP endpoints in one canonical workspace.
+It binds launch or endpoint fingerprints, not source contents, and adds no filesystem access.
+HTTP authorizes host proxy access; proxy operations run outside SRT.
 _Avoid_: Project trust, folder grant
 
 **Planning mutation guard**:
@@ -60,7 +61,8 @@ _Avoid_: Private sidecar
 - **Sandbox on** selects **Private Docker**. **Sandbox off** selects **Host Docker**.
 - **Project trust** permits the project MCP configuration read but does not supply **Routed MCP approval**.
 - **Routed MCP approval** adds no **Saved grant** or **Effective grant** and does not change **Sandbox on** or **Sandbox off**.
-- Routed MCP processes retain sandbox authority even during **Sandbox off**. The **Planning mutation guard** remains independent.
+- Routed MCP stdio processes retain sandbox authority even during **Sandbox off**. Approved HTTP retains host endpoint authority, bound to the current client policy.
+- The **Planning mutation guard** blocks general MCP tools for both transports. HTTP cannot receive the reviewed Serena inspection exception.
 
 ## Example dialogue
 
