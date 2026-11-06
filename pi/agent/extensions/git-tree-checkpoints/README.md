@@ -94,3 +94,19 @@ git for-each-ref --format='delete %(refname)' refs/pi/checkpoints/ | git update-
 ```
 
 The extension never prunes refs automatically. Pi exposes no reliable session-deletion lifecycle event, so automatic pruning could discard recovery data for a session that still exists.
+
+## Capture performance
+
+Capture still finishes before prompt persistence and model execution. It does not run in the background.
+File selection shares one enumeration and validates complete UTF-8 content with at most eight concurrent readers.
+The worktree capture reuses the filtered alternate index. Text-only captures also reuse the real index tree.
+No classification cache uses timestamps. Each capture detects content replacement, binary transitions, modes, and attribute changes.
+
+A disposable seven-file fixture used 19 Git operations before optimization and 16 afterward.
+Isolated repeated capture decreased from 272ms to 226ms in this environment.
+A mixed fixture with 128 additional files decreased from 300ms to 233ms.
+These measurements describe local capture, not provider response time or total interactive latency.
+Git process startup and object writes remain material costs. Large workspaces still require complete disk reads.
+
+`npm --prefix pi run check:ui` runs fixed fixtures with operation-count assertions and elapsed-time limits.
+The installed-runtime smoke fixture reports local preparation separately from a delayed fake provider.

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check:ui": "node ui-performance/run.mjs",
     "check:deterministic": "node test-gate.mjs deterministic",
     "check": "node test-gate.mjs all"
   }

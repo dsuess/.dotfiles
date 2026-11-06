@@ -42,6 +42,7 @@ const deterministic = [
 async function main() {
   const mode = process.argv[2] ?? "all";
   if (mode !== "deterministic" && mode !== "all") throw new Error(`Unknown test-gate mode: ${mode}`);
+  await run("UI performance", "npm", ["run", "check:ui"]);
   for (const [label, command, args, cwd] of deterministic) await run(label, command, args, cwd);
   if (mode === "all") {
     await run("session archive native isolation", "node", ["--test", "agent/extensions/session-archive/native.test.mjs"]);

@@ -49,3 +49,11 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 
 - Run the narrowest relevant package checks during development.
 - Before completing Pi changes, run `npm --prefix pi run check` from an ordinary host terminal. The full gate includes deterministic routing tests and native SRT/Docker checks.
+
+## UI performance checks
+
+- Keep prompt hooks bounded. Preserve safety ordering instead of moving required checks after model execution.
+- Keep history scans, context projection, filesystem reads, and subprocesses out of render callbacks.
+- Run `npm --prefix pi run check:ui` after changes to prompt hooks or footer rendering.
+- Do not increase performance budgets to hide a regression. Use operation counts and isolated local transport fixtures.
+- Run UI performance checks only through explicit test commands. Never add session watchers, persistent widgets, or automatic Git hooks.

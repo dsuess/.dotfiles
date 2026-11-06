@@ -152,7 +152,7 @@ export function createGitTreeCheckpointsExtension(overrides: Partial<Dependencie
 					sessionId: activeSessionId,
 					reason,
 					representedLeafId,
-				}, { runner });
+				}, { runner, signal: ctx.signal });
 				if (generation !== sessionGeneration || repository !== activeRepository) {
 					throw new Error("checkpoint session changed during operation");
 				}

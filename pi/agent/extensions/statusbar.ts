@@ -11,7 +11,7 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { selectContextDisplay } from "./statusbar-context.ts";
 import {
@@ -144,6 +144,18 @@ const I = {
 
 export default function (pi: ExtensionAPI) {
 	let currentModelId: string | undefined;
+	let contextDisplay = selectContextDisplay(undefined);
+	let totalCost = 0;
+	const refresh = (ctx: ExtensionContext) => {
+		contextDisplay = selectContextDisplay(ctx.getContextUsage());
+		totalCost = 0;
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				totalCost += (entry.message as AssistantMessage).usage.cost.total;
+			}
+		}
+		requestFooterRender?.();
+	};
 	let workflowMode: PlanModeWorkflowStateEvent["mode"] = "normal";
 	let sandboxLifecycle: SandboxLifecycleEvent | undefined;
 	let requestFooterRender: (() => void) | undefined;
@@ -164,11 +176,20 @@ export default function (pi: ExtensionAPI) {
 		requestFooterRender?.();
 	});
 
-	pi.on("model_select", (event) => {
+	pi.on("model_select", (event, ctx) => {
 		currentModelId = event.model.id;
+		refresh(ctx);
 	});
 
+	// message_end precedes persistence. Read finalized state at subsequent boundaries,
+	// never from streaming updates or render(). Rebuild cost to avoid branch drift.
+	for (const event of ["turn_start", "turn_end", "agent_end", "agent_settled", "session_compact", "session_tree"] as const) {
+		pi.on(event, (_event, ctx) => refresh(ctx));
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
+		currentModelId = ctx.model?.id;
+		refresh(ctx);
 		ctx.ui.setFooter((tui, _theme, footerData) => {
 			const renderFooter = () => tui.requestRender();
 			requestFooterRender = renderFooter;
@@ -211,7 +232,6 @@ export default function (pi: ExtensionAPI) {
 					line += sandboxSegment;
 
 					// Segment 3: Current context usage — blue accent
-					const contextDisplay = selectContextDisplay(ctx.getContextUsage());
 					const gaugePercent = contextDisplay.gaugePercent;
 
 					const gaugeBar = gaugePercent === undefined ? " ".repeat(9) : dottedBar(gaugePercent, 9);
@@ -220,13 +240,6 @@ export default function (pi: ExtensionAPI) {
 						cf(P.blue, ` ${contextDisplay.count} `);
 
 					// Segment 4: Cumulative session cost
-					let totalCost = 0;
-					for (const e of ctx.sessionManager.getBranch()) {
-						if (e.type === "message" && e.message.role === "assistant") {
-							const m = e.message as AssistantMessage;
-							totalCost += m.usage.cost.total;
-						}
-					}
 					line += cf(P.overlay0, I.clock) + "  " +
 						cf(P.overlay1, `(${fmtCost(totalCost)}) `) +
 						R;

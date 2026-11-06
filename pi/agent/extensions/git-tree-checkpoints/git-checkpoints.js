@@ -213,7 +213,8 @@ async function gitPaths(repository, args, runner, signal) {
 	return nulPaths((await runGit(repository.root, args, { runner, signal })).stdout);
 }
 
-async function isTextPath(root, relativePath) {
+async function isTextPath(root, relativePath, signal) {
+	signal?.throwIfAborted();
 	let handle;
 	try {
 		const stat = await lstat(path.join(root, relativePath));
@@ -224,6 +225,7 @@ async function isTextPath(root, relativePath) {
 		const buffer = Buffer.allocUnsafe(64 * 1024);
 		let position = 0;
 		while (true) {
+			signal?.throwIfAborted();
 			const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
 			if (bytesRead === 0) break;
 			const chunk = buffer.subarray(0, bytesRead);
@@ -234,8 +236,9 @@ async function isTextPath(root, relativePath) {
 		decoder.decode();
 		return true;
 	} catch (error) {
-		if (error?.code === "ENOENT") return false;
-		throw error;
+		if (signal?.aborted) throw error;
+		// Classification is conservative: unreadable or invalid content is not text.
+		return false;
 	} finally {
 		await handle?.close();
 	}
@@ -290,14 +293,23 @@ async function checkpointTextPaths(repository, runner, signal) {
 	const trackedPaths = new Set(tracked);
 	const candidates = [...new Set([...tracked, ...untracked])];
 	const attributes = await textAttributes(repository, candidates, runner, signal);
-	const textPaths = [];
-	for (const filePath of candidates) {
-		const attribute = attributes.get(filePath);
-		if (attribute === "unset") continue;
-		if (attribute === "set" || await isTextPath(repository.root, filePath)) textPaths.push(filePath);
-	}
+	// Bound simultaneous file descriptors and retain candidate order. No identity cache:
+	// every capture validates all bytes, including replacements and attribute changes.
+	const selected = new Array(candidates.length);
+	let next = 0;
+	await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, async () => {
+		while (next < candidates.length) {
+			signal?.throwIfAborted();
+			const index = next++;
+			const filePath = candidates[index];
+			const attribute = attributes.get(filePath);
+			selected[index] = attribute !== "unset" && (attribute === "set" || await isTextPath(repository.root, filePath, signal));
+		}
+	}));
+	const textPaths = candidates.filter((_filePath, index) => selected[index]);
 	return {
 		textPaths,
+		tracked,
 		trackedTextPaths: textPaths.filter((filePath) => trackedPaths.has(filePath)),
 	};
 }
@@ -338,8 +350,7 @@ export async function captureCheckpoint(repository, options, dependencies = {}) 
 	const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
 	const tempBase = dependencies.tempDir ?? os.tmpdir();
 	const tempIndex = path.join(tempBase, `pi-git-checkpoint-index-${randomUUID()}`);
-	const tempWorktreeIndex = path.join(tempBase, `pi-git-checkpoint-worktree-index-${randomUUID()}`);
-	const temporaryIndexes = [tempIndex, tempWorktreeIndex];
+	const temporaryIndexes = [tempIndex];
 
 	try {
 		await rejectUnsupportedIndex(repository, runner, signal);
@@ -352,15 +363,14 @@ export async function captureCheckpoint(repository, options, dependencies = {}) 
 
 		const alternateIndexEnv = { GIT_INDEX_FILE: tempIndex };
 		await runGit(repository.root, ["read-tree", realIndexTree], { runner, signal, env: alternateIndexEnv });
-		const excludedTrackedPaths = (await gitPaths(repository, ["ls-files", "-z", "--cached"], runner, signal))
-			.filter((filePath) => !selection.trackedTextPaths.includes(filePath));
+		const trackedTextPaths = new Set(selection.trackedTextPaths);
+		const excludedTrackedPaths = selection.tracked.filter((filePath) => !trackedTextPaths.has(filePath));
 		await removeIndexPaths(repository, excludedTrackedPaths, runner, signal, alternateIndexEnv);
-		const indexTree = (await runGit(repository.root, ["write-tree"], {
+		const indexTree = excludedTrackedPaths.length === 0 ? realIndexTree : (await runGit(repository.root, ["write-tree"], {
 			runner, signal, env: alternateIndexEnv,
 		})).stdout.trim();
 
-		const alternateWorktreeIndexEnv = { GIT_INDEX_FILE: tempWorktreeIndex };
-		await runGit(repository.root, ["read-tree", indexTree], { runner, signal, env: alternateWorktreeIndexEnv });
+		const alternateWorktreeIndexEnv = alternateIndexEnv;
 		await addWorktreePaths(repository, selection.textPaths, runner, signal, alternateWorktreeIndexEnv);
 		const worktreeTree = (await runGit(repository.root, ["write-tree"], {
 			runner, signal, env: alternateWorktreeIndexEnv,
