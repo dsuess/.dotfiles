@@ -22,6 +22,7 @@ function run(label, command, args, cwd = root) {
 }
 
 const deterministic = [
+  ["Herdr Shift+Enter", "node", ["--test", "agent/extensions/herdr-shift-enter/input.test.mjs"]],
   ["session archives", "node", ["--test", "agent/extensions/session-archive/archive.test.mjs", "agent/extensions/session-archive/adversarial.test.mjs", "agent/extensions/session-archive/compact.test.mjs", "agent/extensions/session-archive/runtime.test.mjs"]],
   ["MCP configuration inventory", "node", ["--test", "agent/extensions/mcp-inventory/inventory.test.mjs"]],
   ["plan-mode", "npm", ["--prefix", "agent/extensions/plan-mode", "run", "check"]],

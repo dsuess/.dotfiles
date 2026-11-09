@@ -30,6 +30,10 @@ Always commit a plan document in the same commit as the changes that implement i
 
 ## Installation
 
+Never run `./install.sh` inside a sandboxed harness session. Run installation and deployment only from an ordinary host terminal. The installer changes home-directory files and requires the real host environment.
+
+For terminal-key fixes, inspect multiplexer decoding and re-encoding, confirm extension loading, and verify the physical-key path. Parser tests alone do not prove end-to-end behavior.
+
 ```bash
 # Install all software + stow all configs
 ./install.sh
