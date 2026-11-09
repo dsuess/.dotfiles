@@ -1,0 +1,1306 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""Review a checked, one-commit-per-PR Graphite stack through one tuicr session."""
+
+import argparse
+import fcntl
+import hashlib
+import os
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from contextlib import closing
+import json
+import re
+import shutil
+import shlex
+import sqlite3
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit
+
+
+class ReviewError(Exception):
+    pass
+
+
+class ApiError(ReviewError):
+    def __init__(self, message, rejected=False):
+        super().__init__(message)
+        self.rejected = rejected
+
+
+def progress(message):
+    print(f'graphite-review: {message}', file=sys.stderr, flush=True)
+
+
+def run(args, cwd=None):
+    # Stream user-facing operations; keep machine-readable query results private.
+    stream = ((args[0] == 'git' and args[1] in {'fetch', 'worktree', 'checkout', 'branch'}) or
+              (args[0] == 'gt' and args[1] != '--version'))
+    if stream:
+        progress(f'Running {shlex.join(map(str, args))}' + (f' (in {cwd})' if cwd else ''))
+        result = subprocess.run(args, cwd=cwd, text=True)
+        if result.returncode:
+            raise ReviewError(f'{shlex.join(map(str, args))}: exited with code {result.returncode}')
+        return ''
+    if args[:2] == ['gh', 'api']:
+        progress(f'Fetching GitHub {args[4]}')
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    if result.returncode:
+        raise ReviewError(f"{' '.join(map(str, args))}: {result.stderr.strip() or result.stdout.strip()}")
+    if result.stderr:
+        print(result.stderr, end='', file=sys.stderr, flush=True)
+    return result.stdout.strip()
+
+
+def read_json(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise ReviewError(f"Cannot read {path}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class Target:
+    owner: str
+    repo: str
+    number: int
+
+
+def parse_url(value):
+    try:
+        url = urlsplit(value)
+        match = re.fullmatch(r"/github/pr/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9_.-]+)/([1-9][0-9]*)(?:/[A-Za-z0-9_.-]+)?/?", url.path)
+        if (url.scheme != "https" or url.netloc != "app.graphite.com" or
+                not match or match[2] in {".", ".."}):
+            raise ValueError("unexpected URL")
+        return Target(match[1], match[2], int(match[3]))
+    except ValueError as exc:
+        raise ReviewError("Expected https://app.graphite.com/github/pr/OWNER/REPO/NUMBER") from exc
+
+
+@dataclass(frozen=True)
+class Repository:
+    context: Path
+    common: Path
+    bare: bool
+
+
+def probe_repository(path):
+    try:
+        common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], path)
+        bare = run(["git", "rev-parse", "--is-bare-repository"], path) == "true"
+        context = path if bare else Path(run(["git", "rev-parse", "--show-toplevel"], path))
+        return Repository(context.resolve(), Path(common).resolve(), bare)
+    except ReviewError:
+        return None
+
+
+def discover_repository(start):
+    start = Path(start).resolve()
+    if not start.is_dir():
+        raise ReviewError(f"Not a directory: {start}")
+    for parent in (start, *start.parents):
+        repo = probe_repository(parent)
+        if repo and (repo.bare or repo.context == parent):
+            return repo
+        # Bare-container layouts such as project/.bare and project/project.git.
+        candidates = [parent / ".bare", parent / ".git", *sorted(parent.glob("*.git"))]
+        found = {}
+        for candidate in candidates:
+            if candidate.is_dir():
+                repo = probe_repository(candidate)
+                if repo and repo.bare:
+                    found[repo.common] = repo
+        if len(found) > 1:
+            raise ReviewError(f"Ambiguous bare repositories beneath {parent}; run inside the intended repository")
+        if found:
+            return next(iter(found.values()))
+    raise ReviewError("No Git repository found in this directory or its parents")
+
+
+def remote_coordinate(value):
+    scp = re.fullmatch(r"(?:[^/@:]+@)?github\.com:([^/]+)/([^/]+?)(?:\.git)?", value)
+    if scp:
+        return (scp[1].lower(), scp[2].lower())
+    try:
+        url = urlsplit(value)
+        if url.scheme not in {"https", "ssh"} or url.hostname != "github.com" or url.query or url.fragment:
+            return None
+        match = re.fullmatch(r"/([^/]+)/([^/]+?)(?:\.git)?/?", url.path)
+        return (match[1].lower(), match[2].lower()) if match else None
+    except ValueError:
+        return None
+
+
+def select_remote(repo, target):
+    wanted = (target.owner.lower(), target.repo.lower())
+    matches = []
+    for name in run(["git", "remote"], repo.context).splitlines():
+        configured = subprocess.run(["git", "config", "--get-all", f"remote.{name}.url"], cwd=repo.context, capture_output=True, text=True)
+        if configured.returncode == 1:
+            continue  # A global fetch refspec alone does not define a remote.
+        if configured.returncode:
+            raise ReviewError(configured.stderr.strip())
+        urls = run(["git", "remote", "get-url", "--all", name], repo.context).splitlines()
+        if urls and all(remote_coordinate(url) == wanted for url in urls):
+            matches.append(name)
+    if len(matches) != 1:
+        raise ReviewError(f"Expected one fetch remote for {target.owner}/{target.repo}; found {matches}. Configure an unambiguous GitHub remote.")
+    return matches[0]
+
+
+def check_dependencies():
+    if sys.version_info < (3, 11):
+        raise ReviewError("Python 3.11 or newer is required; put a supported python3 on PATH")
+    for command in ("git", "gh", "gt", "tuicr"):
+        if not shutil.which(command):
+            raise ReviewError(f"Missing dependency: {command}")
+    for args, expected in ((["tuicr", "--version"], "tuicr 0.28.0"), (["gt", "--version"], "1.8.6")):
+        actual = run(args)
+        if actual != expected:
+            raise ReviewError(f"Unsupported {args[0]} version {actual!r}; checked version is {expected}")
+    run(["gh", "auth", "status", "--hostname", "github.com"])
+
+
+@dataclass(frozen=True)
+class Metadata:
+    trunk: str
+    parents: dict
+    prs: dict
+
+
+def read_graphite(common):
+    """Read only the checked gt 1.8.6 SQLite/JSON format; never infer membership."""
+    common = Path(common)
+    config = read_json(common / ".graphite_repo_config")
+    pr_info = read_json(common / ".graphite_pr_info")
+    if not isinstance(config, dict) or not isinstance(config.get("trunk"), str) or not config["trunk"]:
+        raise ReviewError("Unsupported Graphite config: missing trunk; run gt init")
+    if not isinstance(pr_info, dict) or not isinstance(pr_info.get("prInfos"), list):
+        raise ReviewError("Unsupported Graphite PR metadata: missing prInfos; refresh with gt get")
+    database = common / ".graphite_metadata.db"
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(branch_metadata)")}
+            expected = {"branch_name", "parent_branch_name", "parent_branch_revision", "last_submitted_version", "state", "children", "branch_revision", "validation_result", "parent_head_revision"}
+            if columns != expected:
+                raise ReviewError("Unsupported Graphite branch_metadata schema; expected gt 1.8.6")
+            rows = connection.execute("SELECT branch_name, parent_branch_name, children FROM branch_metadata").fetchall()
+    except sqlite3.Error as exc:
+        raise ReviewError(f"Cannot read Graphite metadata read-only: {exc}; refresh with gt get") from exc
+    parents = {}
+    children_by_branch = {}
+    for branch, parent, children in rows:
+        if not isinstance(branch, str) or not branch or branch in parents or (parent is not None and (not isinstance(parent, str) or not parent)):
+            raise ReviewError("Invalid Graphite branch mapping")
+        try:
+            children = [] if children is None else json.loads(children)
+        except (ValueError, TypeError) as exc:
+            raise ReviewError("Corrupt Graphite children metadata") from exc
+        if not isinstance(children, list) or not all(isinstance(child, str) and child for child in children) or len(set(children)) != len(children):
+            raise ReviewError("Invalid Graphite children metadata")
+        parents[branch] = parent
+        children_by_branch[branch] = children
+    for branch in parents:
+        seen = set()
+        cursor = branch
+        while cursor in parents:
+            if cursor in seen:
+                raise ReviewError("Cycle in Graphite branch ancestry")
+            seen.add(cursor)
+            cursor = parents[cursor]
+        if cursor not in {None, config["trunk"]}:
+            raise ReviewError(f"Missing Graphite parent metadata: {cursor}")
+        for child in children_by_branch[branch]:
+            if child not in parents or parents[child] != branch:
+                raise ReviewError("Inconsistent Graphite child/parent relationship")
+    prs = {}
+    numbers = set()
+    for entry in pr_info["prInfos"]:
+        if (not isinstance(entry, dict) or type(entry.get("prNumber")) is not int or entry["prNumber"] <= 0 or
+                not all(isinstance(entry.get(key), str) and entry[key] for key in ("headRefName", "baseRefName", "title")) or
+                entry.get("state") not in {"OPEN", "MERGED", "CLOSED"} or type(entry.get("isDraft")) is not bool):
+            raise ReviewError("Unsupported Graphite PR entry; refresh with gt get")
+        branch = entry["headRefName"]
+        if branch in prs or entry["prNumber"] in numbers:
+            raise ReviewError("Duplicate Graphite PR mapping")
+        prs[branch] = entry
+        numbers.add(entry["prNumber"])
+    return Metadata(config["trunk"], parents, prs)
+
+
+def validate_session(session, checkout, head, commits):
+    """Check identity and required 0.28.0 fields without discarding unknown data."""
+    required = {"id", "version", "repo_path", "base_commit", "diff_source", "commit_range", "pr_session_key", "created_at", "updated_at", "review_comments", "files", "session_notes"}
+    if not isinstance(session, dict) or not required <= session.keys() or session["version"] != "1.3":
+        raise ReviewError("Unsupported tuicr session schema; expected tuicr 0.28.0 / session 1.3")
+    if (session["diff_source"] != "commit_range" or session["pr_session_key"] is not None or
+            not isinstance(session["repo_path"], str) or Path(session["repo_path"]).resolve() != Path(checkout).resolve() or
+            session["base_commit"] != head or session["commit_range"] != commits):
+        raise ReviewError("tuicr session identity does not match the script-owned checkout and snapshot")
+    if not isinstance(session["files"], dict) or not isinstance(session["review_comments"], list):
+        raise ReviewError("Invalid tuicr comment storage")
+    comments = list(session["review_comments"])
+    for path, file in session["files"].items():
+        fields = {"path", "reviewed", "status", "file_comments", "line_comments", "reviewed_hunks", "content_hash"}
+        if (not isinstance(file, dict) or not fields <= file.keys() or file["path"] != path or
+                not isinstance(file["file_comments"], list) or not isinstance(file["line_comments"], dict)):
+            raise ReviewError("Unsupported tuicr file review")
+        comments.extend(file["file_comments"])
+        for line, entries in file["line_comments"].items():
+            if not re.fullmatch(r"[1-9][0-9]*", line) or not isinstance(entries, list):
+                raise ReviewError("Invalid tuicr line comments")
+            comments.extend(entries)
+    ids = set()
+    fields = {"id", "content", "comment_type", "created_at", "line_context", "side", "line_range", "author", "lifecycle_state", "remote_review_id", "remote_comment_id", "commit_id"}
+    for comment in comments:
+        if (not isinstance(comment, dict) or not fields <= comment.keys() or
+                not all(isinstance(comment[key], str) for key in ("id", "content", "comment_type", "created_at", "author")) or
+                comment["id"] in ids or not comment["id"] or
+                comment["lifecycle_state"] not in {"local_draft", "pushed_draft", "submitted"} or
+                comment["side"] not in {None, "old", "new"} or
+                (comment["commit_id"] is not None and comment["commit_id"] not in commits)):
+            raise ReviewError("Unsupported tuicr comment or commit attribution")
+        for key in ('remote_review_id', 'remote_comment_id'):
+            if comment[key] is not None and not isinstance(comment[key], str):
+                raise ReviewError('Invalid tuicr remote identity')
+        context = comment['line_context']
+        if context is not None and (not isinstance(context, dict) or
+                not {'new_line', 'old_line', 'content'} <= context.keys() or
+                not isinstance(context['content'], str) or
+                any(context[key] is not None and (type(context[key]) is not int or context[key] < 1)
+                    for key in ('new_line', 'old_line'))):
+            raise ReviewError('Invalid tuicr line context')
+        line_range = comment['line_range']
+        if line_range is not None and (not isinstance(line_range, dict) or
+                not {'start', 'end'} <= line_range.keys() or
+                type(line_range['start']) is not int or type(line_range['end']) is not int or
+                not 1 <= line_range['start'] <= line_range['end']):
+            raise ReviewError('Invalid tuicr line range')
+        ids.add(comment["id"])
+    return session
+
+
+def resolve_session(checkout, head, commits):
+    summaries = json.loads(run(["tuicr", "review", "list", "--repo", str(checkout)]))
+    if not isinstance(summaries, list):
+        raise ReviewError("Unsupported tuicr session listing")
+    matches = []
+    for entry in summaries:
+        if not isinstance(entry, dict) or not {"path", "kind", "slug", "active"} <= entry.keys():
+            raise ReviewError("Unsupported tuicr session listing entry")
+        if entry["kind"] != "local":
+            continue
+        session = read_json(entry["path"])
+        if (isinstance(session, dict) and isinstance(session.get("repo_path"), str) and Path(session["repo_path"]).resolve() == Path(checkout).resolve() and
+                session.get("base_commit") == head and session.get("commit_range") == commits):
+            if entry["active"]:
+                raise ReviewError("tuicr session is active; exit tuicr before importing feedback")
+            matches.append((Path(entry["path"]), validate_session(session, checkout, head, commits)))
+    if len(matches) != 1:
+        raise ReviewError(f"Expected exactly one saved range session; found {len(matches)}")
+    return matches[0]
+
+
+
+# Runtime state belongs to the Git common directory, never the checkout.
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@contextmanager
+def process_lock(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a+') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ReviewError(f'Another review process owns {path}') from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def api(endpoint, payload=None, paginate=False):
+    args = ['gh', 'api', '--hostname', 'github.com', endpoint]
+    if paginate:
+        args += ['--paginate', '--slurp']
+    if payload is None:
+        return json.loads(run(args))
+    progress(f'Posting GitHub {endpoint}')
+    result = subprocess.run(args + ['--method', 'POST', '--input', '-'],
+                            input=json.dumps(payload), capture_output=True, text=True)
+    if result.returncode:
+        message = result.stderr.strip() or 'GitHub request failed without a response'
+        status = re.search(r'\(HTTP (\d{3})\)', message)
+        # An explicit client rejection proves no review was created. Timeouts,
+        # server failures, and missing/invalid responses remain uncertain.
+        rejected = bool(status and 400 <= int(status[1]) < 500 and int(status[1]) != 408)
+        raise ApiError(message, rejected=rejected)
+    return json.loads(result.stdout)
+
+
+def repository_endpoint(target):
+    return f'repos/{target.owner}/{target.repo}'
+
+
+def pr_details(target, number):
+    detail = api(f'{repository_endpoint(target)}/pulls/{number}')
+    required = {'number', 'state', 'head', 'base', 'commits', 'title', 'user'}
+    if (not isinstance(detail, dict) or not required <= detail.keys() or detail['number'] != number or
+            type(detail['commits']) is not int):
+        raise ReviewError(f'Unsupported GitHub PR snapshot for #{number}')
+    for key in ('head', 'base'):
+        ref = detail[key]
+        if not isinstance(ref, dict) or not {'sha', 'ref', 'repo'} <= ref.keys() or not re.fullmatch(r'[0-9a-f]{40}', ref['sha']):
+            raise ReviewError(f'Invalid GitHub {key} for #{number}')
+        if not ref['repo'] or ref['repo'].get('full_name', '').lower() != f'{target.owner}/{target.repo}'.lower():
+            raise ReviewError(f'Fork PR #{number} is not supported by this Graphite adapter')
+    return detail
+
+
+def choose(prompt, choices):
+    print(prompt)
+    for index, (label, _) in enumerate(choices, 1):
+        print(f'  {index}. {label}')
+    while True:
+        try:
+            answer = input('Choose a number: ').strip()
+        except EOFError as exc:
+            raise ReviewError('Input ended; review cancelled without submission') from exc
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1][1]
+        print('Enter one of the listed numbers.')
+
+
+def stack_members(metadata, linked_number):
+    linked = [b for b, p in metadata.prs.items() if p['prNumber'] == linked_number]
+    if len(linked) != 1 or linked[0] not in metadata.parents:
+        raise ReviewError(f'PR #{linked_number} is absent from refreshed Graphite branch metadata')
+    linked = linked[0]
+    if metadata.prs[linked]['state'] != 'OPEN':
+        raise ReviewError(f'PR #{linked_number} is not open')
+    ancestors = []
+    cursor = linked
+    while cursor != metadata.trunk:
+        if cursor not in metadata.prs:
+            raise ReviewError(f'Missing Graphite PR mapping for {cursor}')
+        pr = metadata.prs[cursor]
+        if pr['state'] != 'OPEN':
+            if pr['state'] != 'MERGED':
+                raise ReviewError(f'Closed, unmerged ancestor {cursor} is unsupported')
+            break
+        ancestors.append(cursor)
+        cursor = metadata.parents.get(cursor)
+        if cursor is None:
+            raise ReviewError('Open stack has no Graphite trunk ancestry')
+    ancestors.reverse()
+    children = {}
+    for branch, parent in metadata.parents.items():
+        children.setdefault(parent, []).append(branch)
+    paths = []
+    def descend(branch, path):
+        next_branches = []
+        for child in sorted(children.get(branch, [])):
+            if child not in metadata.prs:
+                raise ReviewError(f'Missing Graphite PR mapping for descendant {child}')
+            if metadata.prs[child]['state'] == 'OPEN':
+                next_branches.append(child)
+        if not next_branches:
+            paths.append(path)
+        for child in next_branches:
+            descend(child, path + [child])
+    # Include forks off ancestors, not just descendants of the linked PR.
+    descend(ancestors[0], [ancestors[0]])
+    paths = [path for path in paths if linked in path]
+    if not paths:
+        raise ReviewError('No open linear Graphite path includes the linked PR')
+    if len(paths) > 1:
+        selected = choose('Graphite stack forks. Choose the tip to review:',
+                          [(f"#{metadata.prs[path[-1]]['prNumber']} {path[-1]}", path) for path in paths] + [('Cancel', None)])
+        if selected is None:
+            raise ReviewError('Review cancelled')
+    else:
+        selected = paths[0]
+    return [metadata.prs[branch] for branch in selected]
+
+
+def clean_checkout(checkout, common):
+    repo = probe_repository(Path(checkout))
+    if not repo or repo.common != Path(common).resolve() or repo.context != Path(checkout).resolve() or repo.bare:
+        raise ReviewError(f'Unowned or mismatched review worktree: {checkout}')
+    if run(['git', 'status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching'], checkout):
+        raise ReviewError(f'Review worktree has edits, untracked, or ignored files: {checkout}. Preserve or remove them before retrying.')
+
+
+def open_workspace(repo, target):
+    state_root = repo.common / 'graphite-review'
+    state_root.mkdir(parents=True, exist_ok=True)
+    coordinate = f'{target.owner}/{target.repo}'.lower()
+    index_path = state_root / 'aliases.json'
+    index = read_json(index_path) if index_path.exists() else {'version': 1, 'aliases': {}}
+    if not isinstance(index, dict) or index.get('version') != 1 or not isinstance(index.get('aliases'), dict):
+        raise ReviewError(f'Unsupported review alias index: {index_path}')
+    key = f'{coordinate}#{target.number}'
+    review_id = index['aliases'].get(key)
+    if review_id is None:
+        review_id = uuid.uuid4().hex
+    if not isinstance(review_id, str) or not re.fullmatch('[0-9a-f]{32}', review_id):
+        raise ReviewError('Invalid review workspace identity')
+    directory = state_root / review_id
+    state_path = directory / 'state.json'
+    if state_path.exists():
+        state = read_json(state_path)
+        if (state.get('version') != 1 or state.get('repository') != coordinate or state.get('id') != review_id or
+                state.get('common') != str(repo.common)):
+            raise ReviewError('Review state ownership does not match this repository')
+        checkout = Path(state['checkout'])
+        clean_checkout(checkout, repo.common)
+    else:
+        # Stable common-directory-derived location even when invoked in a linked worktree.
+        anchor = repo.common.parent if repo.common.name == '.git' else repo.common
+        checkout = anchor.parent / f'{anchor.name}.graphite-review-{review_id[:12]}'
+        if checkout.exists() or checkout.is_symlink():
+            raise ReviewError(f'Refusing an unowned directory: {checkout}')
+        directory.mkdir(parents=True, exist_ok=True)
+        state = {'version': 1, 'repository': coordinate, 'id': review_id, 'common': str(repo.common),
+                 'checkout': str(checkout), 'snapshot': None, 'session': None, 'assignments': {},
+                 'imports': {}, 'receipts': [], 'attempts': {}}
+        # Ownership is recorded before creation so failures retain a recovery record.
+        atomic_json(state_path, state)
+        run(['git', 'worktree', 'add', '--detach', str(checkout), 'HEAD'], repo.context)
+    index['aliases'][key] = review_id
+    atomic_json(index_path, index)
+    print(f'Review workspace: {checkout}')
+    return directory, state
+
+
+def stack_refs(metadata, linked_number):
+    """Branches gt get may move for this PR: its ancestors and descendants."""
+    linked = [b for b, p in metadata.prs.items() if p['prNumber'] == linked_number]
+    if len(linked) != 1:
+        return set()
+    branches = {linked[0]}
+    cursor = metadata.parents.get(linked[0])
+    while cursor is not None and cursor != metadata.trunk:
+        branches.add(cursor)
+        cursor = metadata.parents.get(cursor)
+    frontier = [linked[0]]
+    while frontier:
+        parent = frontier.pop()
+        for child, child_parent in metadata.parents.items():
+            if child_parent == parent and child not in branches:
+                branches.add(child)
+                frontier.append(child)
+    return branches
+
+
+def graphite_refresh(repo, checkout, remote, target):
+    context = checkout if repo.bare else repo.context
+    config_path = repo.common / '.graphite_repo_config'
+    fresh = not config_path.exists()
+    if fresh:
+        default = api(repository_endpoint(target)).get('default_branch')
+        if not isinstance(default, str) or not default:
+            raise ReviewError('GitHub did not report the default trunk branch')
+        run(['git', 'check-ref-format', '--branch', default], context)
+        run(['git', 'fetch', '--no-tags', remote, f'refs/heads/{default}:refs/remotes/{remote}/{default}'], context)
+        local = subprocess.run(['git', 'show-ref', '--verify', '--quiet', f'refs/heads/{default}'], cwd=context)
+        if local.returncode:
+            run(['git', 'branch', default, f'refs/remotes/{remote}/{default}'], context)
+        run(['gt', 'init', '--trunk', default, '--no-interactive'], context)
+        if remote != 'origin':
+            run(['gt', 'repo', 'remote', '--set', remote, '--no-interactive'], context)
+    config = read_json(config_path)
+    configured_remote = config.get('remote', 'origin')
+    if configured_remote != remote:
+        raise ReviewError(f'Graphite remote {configured_remote!r} differs from {remote!r}; use gt repo remote --set {remote}')
+    # Preflight only branches gt get may move for this PR: its head, trunk, and stack. gt get must never discard divergence.
+    scope = {config['trunk'], pr_details(target, target.number)['head']['ref']}
+    if not fresh:
+        scope |= stack_refs(read_graphite(repo.common), target.number)
+    progress(f'Checking remote ancestry for: {", ".join(sorted(scope))}')
+    heads = run(['git', 'ls-remote', '--heads', remote], context)
+    for line in heads.splitlines():
+        sha, ref = line.split('\t')
+        if ref.removeprefix('refs/heads/') not in scope:
+            continue
+        local = subprocess.run(['git', 'rev-parse', '--verify', ref], cwd=context, capture_output=True, text=True)
+        if local.returncode or local.stdout.strip() == sha:
+            continue
+        run(['git', 'fetch', '--no-tags', remote, ref], context)
+        ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', local.stdout.strip(), sha], cwd=context)
+        if ancestor.returncode:
+            raise ReviewError(f'Local divergence on {ref}; reconcile it before gt get. No forced refresh is allowed.')
+    # Explicit false disables a configured delete-all. Noninteractive avoids cleanup prompts.
+    run(['gt', 'get', str(target.number), '--remote-upstack', '--no-restack', '--no-checkout',
+         '--no-delete-all', '--no-interactive'], context)
+    return read_graphite(repo.common)
+
+
+def checked_snapshot(repo, remote, target, metadata, members, review_id):
+    prs = []
+    previous = None
+    for member in members:
+        number = member['prNumber']
+        progress(f'Checking snapshot for PR #{number}: {member["headRefName"]}')
+        detail = pr_details(target, number)
+        branch = member['headRefName']
+        if (detail['state'] != 'open' or detail['head']['ref'] != branch or
+                detail['base']['ref'] != member['baseRefName'] or metadata.parents[branch] != member['baseRefName']):
+            raise ReviewError(f'GitHub/Graphite branch or state mismatch for #{number}; refresh metadata')
+        if detail['commits'] != 1:
+            raise ReviewError(f'PR #{number} contains {detail["commits"]} commits; exactly one is required')
+        sha = detail['head']['sha']
+        ref = f'refs/graphite-review/{review_id}/{number}/{sha}'
+        run(['git', 'fetch', '--no-tags', remote, f'refs/pull/{number}/head:{ref}'], repo.context)
+        if run(['git', 'rev-parse', ref], repo.context) != sha:
+            raise ReviewError(f'PR #{number} changed during fetch; rerun to refresh')
+        parents = run(['git', 'rev-list', '--parents', '-n', '1', sha], repo.context).split()[1:]
+        if len(parents) != 1:
+            raise ReviewError(f'PR #{number} is a merge or root commit; unsupported')
+        parent = parents[0]
+        if previous is not None and parent != previous:
+            raise ReviewError(f'PR #{number} does not directly follow the preceding stack commit')
+        base_sha = detail['base']['sha']
+        run(['git', 'fetch', '--no-tags', remote, f'refs/heads/{detail["base"]["ref"]}'], repo.context)
+        if run(['git', 'merge-base', base_sha, sha], repo.context) != parent:
+            raise ReviewError(f'PR #{number} is not a one-commit diff against its current base')
+        local = subprocess.run(['git', 'rev-parse', '--verify', f'refs/heads/{branch}'], cwd=repo.context, capture_output=True, text=True)
+        if local.returncode == 0 and local.stdout.strip() != sha:
+            # Other worktrees may hold an unrefreshed ancestor, but never local divergence.
+            result = subprocess.run(['git', 'merge-base', '--is-ancestor', local.stdout.strip(), sha], cwd=repo.context)
+            if result.returncode:
+                raise ReviewError(f'Local branch {branch} diverges from PR #{number}; no forced checkout')
+        prs.append({'number': number, 'branch': branch, 'base_branch': detail['base']['ref'],
+                    'base_sha': base_sha, 'sha': sha, 'parent': parent, 'title': detail['title'],
+                    'author': detail['user']['login']})
+        previous = sha
+    return {'base': prs[0]['parent'], 'tip': prs[-1]['sha'], 'prs': prs,
+            'commits': [pr['sha'] for pr in prs]}
+
+
+def snapshot_identity(snapshot):
+    if snapshot is None:
+        return None
+    return [(pr['number'], pr['sha']) for pr in snapshot['prs']]
+
+
+def prepare_snapshot(repo, directory, state, snapshot, target):
+    checkout = Path(state['checkout'])
+    clean_checkout(checkout, repo.common)
+    if snapshot_identity(state['snapshot']) != snapshot_identity(snapshot):
+        if state['snapshot'] is not None:
+            if any(attempt['status'] == 'uncertain' for attempt in state['attempts'].values()):
+                raise ReviewError('Uncertain submissions must be reconciled before replacing the snapshot')
+            archive = directory / 'archives' / f'{time.time_ns()}'
+            archive.mkdir(parents=True)
+            atomic_json(archive / 'state.json', state)
+            if state['session']:
+                source = Path(state['session'])
+                if not source.exists():
+                    raise ReviewError('Old draft session is missing; cannot archive safely')
+                shutil.copy2(source, archive / 'session.json')
+        state.update(snapshot=snapshot, session=None, assignments={}, imports={}, attempts={})
+        atomic_json(directory / 'state.json', state)
+    run(['git', 'checkout', '--detach', snapshot['tip']], checkout)
+    state['snapshot'] = snapshot
+    atomic_json(directory / 'state.json', state)
+    index_path = directory.parent / 'aliases.json'
+    index = read_json(index_path)
+    for pr in snapshot['prs']:
+        key = f'{state["repository"]}#{pr["number"]}'
+        owner = index['aliases'].get(key)
+        if owner and owner != state['id']:
+            raise ReviewError(f'PR #{pr["number"]} already belongs to another review workspace')
+        index['aliases'][key] = state['id']
+    atomic_json(index_path, index)
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def all_comments(session):
+    for comment in session['review_comments']:
+        yield None, None, comment
+    for path, file in session['files'].items():
+        for comment in file['file_comments']:
+            yield path, None, comment
+        for line, comments in file['line_comments'].items():
+            for comment in comments:
+                yield path, int(line), comment
+
+
+def bootstrap_session(checkout, snapshot):
+    """Let the installed tuicr create its own identity and manifest in a PTY."""
+    import pty
+    import select
+    import struct
+    import termios
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 120, 0, 0))
+    process = subprocess.Popen(['tuicr', '--no-update-check', '-r', f'{snapshot["base"]}..{snapshot["tip"]}'],
+                               cwd=checkout, stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+                               env=dict(os.environ, TERM=os.environ.get('TERM', 'xterm-256color')))
+    os.close(slave)
+    output = bytearray()
+    def drain(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and process.poll() is None:
+            if select.select([master], [], [], .1)[0]:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:
+                    break
+                output.extend(data)
+                if b'\x1b[6n' in data:
+                    os.write(master, b'\x1b[1;1R')
+                if b'\x1b[c' in data:
+                    os.write(master, b'\x1b[?1;2c')
+    try:
+        drain(2)
+        os.write(master, b'r:w\r')
+        drain(1)
+        os.write(master, b':q!\r')
+        drain(2)
+        if process.poll() is None:
+            raise ReviewError('tuicr session bootstrap did not exit; no session import performed')
+        if process.returncode:
+            raise ReviewError(f'tuicr bootstrap failed ({process.returncode}); no session import performed')
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+        os.close(master)
+    path, session = resolve_session(checkout, snapshot['tip'], snapshot['commits'])
+    # A temporary mark prevents empty-session pruning. A revisited old SHA can
+    # resolve an archived session: never revive unpublished feedback on a new snapshot.
+    session['review_comments'] = []
+    session['session_notes'] = None
+    for file in session['files'].values():
+        file['reviewed'] = False
+        file['reviewed_hunks'] = []
+        file['file_comments'] = []
+        file['line_comments'] = {}
+    return path, session
+
+
+@contextmanager
+def session_write_lock(path):
+    # Use tuicr's own create-exclusive storage lock to close the active-check race.
+    reviews = Path(path).parent.parent
+    if reviews.name != 'reviews' or Path(path).parent.name != 'sessions':
+        raise ReviewError('Unsupported tuicr storage layout; expected reviews/sessions')
+    lock = reviews / '.tuicr.lock'
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise ReviewError(f'tuicr storage is busy: {lock}; close other sessions and retry') from exc
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(f'{os.getpid()} {now()}\n')
+        active_path = reviews / 'active_sessions.json'
+        if active_path.exists():
+            active = read_json(active_path)
+            if not isinstance(active, dict) or not isinstance(active.get('sessions'), list):
+                raise ReviewError('Unsupported tuicr active-session registry')
+            for entry in active['sessions']:
+                if Path(entry['path']).resolve() == Path(path).resolve():
+                    try:
+                        os.kill(entry['pid'], 0)
+                    except ProcessLookupError:
+                        continue
+                    raise ReviewError('tuicr session is active; exit it before editing saved feedback')
+        yield
+    finally:
+        lock.unlink()
+
+
+def save_session(path, session, directory, state):
+    snapshot = state['snapshot']
+    validate_session(session, state['checkout'], snapshot['tip'], snapshot['commits'])
+    with session_write_lock(path):
+        current = read_json(path)
+        validate_session(current, state['checkout'], snapshot['tip'], snapshot['commits'])
+        if current['id'] != session['id']:
+            raise ReviewError('tuicr session identity changed; refusing rewrite')
+        backup = directory / 'session-backups' / f'{time.time_ns()}.json'
+        atomic_json(backup, current)
+        session['updated_at'] = now()
+        atomic_json(path, session)
+
+
+def diff_locations(checkout, pr):
+    """Use Git's parsed name/status data, then map exact hunk side coordinates."""
+    result = subprocess.run(['git', 'diff', '--name-status', '-z', '--find-renames', pr['parent'], pr['sha']],
+                            cwd=checkout, capture_output=True)
+    if result.returncode:
+        raise ReviewError('Cannot read checked commit diff')
+    fields = result.stdout.decode('utf-8', errors='strict').split('\0')
+    files = {}
+    index = 0
+    while index < len(fields) - 1:
+        status = fields[index];index += 1
+        old = fields[index];index += 1
+        new = old
+        if status.startswith(('R', 'C')):
+            new = fields[index];index += 1
+        display = old if status == 'D' else new
+        patch = run(['git', 'diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--no-color',
+                     '--unified=3', pr['parent'], pr['sha'], '--', old, new], checkout)
+        sides = {'old': {}, 'new': {}}
+        hunk_ids = {'old': {}, 'new': {}}
+        hunk = -1
+        old_line = new_line = 0
+        active = False
+        for text in patch.splitlines():
+            header = re.match(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', text)
+            if header:
+                old_line, new_line = map(int, header.groups());hunk += 1;active = True
+                continue
+            if not active or not text:
+                continue
+            prefix = text[0]
+            if prefix in {' ', '-'}:
+                sides['old'][old_line] = text[1:];hunk_ids['old'][old_line] = hunk;old_line += 1
+            if prefix in {' ', '+'}:
+                sides['new'][new_line] = text[1:];hunk_ids['new'][new_line] = hunk;new_line += 1
+        item = {'path': display, 'old_path': old, 'new_path': new, 'sides': sides, 'hunks': hunk_ids,
+                'status': status}
+        files[old] = item
+        files[new] = item
+    return files
+
+
+def inline_location(files, path, line, side, line_range=None):
+    file = files.get(path)
+    if not file or side not in {'old', 'new'}:
+        return None
+    if line is None:
+        side = 'new'
+        line = min(file['sides'][side], default=None)
+    if line is None or line not in file['sides'][side]:
+        return None
+    payload = {'path': file['path'], 'line': line, 'side': 'LEFT' if side == 'old' else 'RIGHT'}
+    if line_range:
+        start, end = line_range['start'], line_range['end']
+        if (not all(n in file['sides'][side] for n in range(start, end + 1)) or
+                file['hunks'][side].get(start) != file['hunks'][side].get(end)):
+            return None
+        payload['line'] = end
+        if start != end:
+            payload.update(start_line=start, start_side=payload['side'])
+    return payload
+
+
+def remote_context(target, number):
+    reviews = api(f'{repository_endpoint(target)}/pulls/{number}/reviews?per_page=100', paginate=True)
+    if not isinstance(reviews, list) or not all(isinstance(page, list) for page in reviews):
+        raise ReviewError('Unsupported GitHub paginated reviews')
+    result = []
+    for page in reviews:
+        for review in page:
+            if review.get('body') and review.get('state') != 'PENDING':
+                result.append({'id': f'review:{review["id"]}', 'review_id': str(review['id']),
+                               'author': review['user']['login'], 'body': review['body'], 'url': review['html_url'],
+                               'resolved': False, 'outdated': False, 'path': None, 'line': None, 'side': None})
+    cursor = None
+    query = '''query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
+      repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){
+        pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line startLine diffSide startDiffSide
+        comments(first:100){pageInfo{hasNextPage endCursor} nodes{id databaseId body url author{login} pullRequestReview{id databaseId}}}
+      }}}}}'''
+    while True:
+        variables = {'owner': target.owner, 'repo': target.repo, 'number': number, 'cursor': cursor}
+        data = api('graphql', {'query': query, 'variables': variables})
+        if data.get('errors'):
+            raise ReviewError(f'GitHub thread query failed: {data["errors"]}')
+        threads = data['data']['repository']['pullRequest']['reviewThreads']
+        for thread in threads['nodes']:
+            comments = thread['comments']
+            nodes = list(comments['nodes'])
+            while comments['pageInfo']['hasNextPage']:
+                next_cursor = comments['pageInfo']['endCursor']
+                more = api('graphql', {'query': '''query($id:ID!,$cursor:String!){node(id:$id){... on PullRequestReviewThread{
+                    comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id databaseId body url author{login} pullRequestReview{id databaseId}}}
+                }}}''', 'variables': {'id': thread['id'], 'cursor': next_cursor}})
+                if more.get('errors'):
+                    raise ReviewError(f'GitHub thread pagination failed: {more["errors"]}')
+                comments = more['data']['node']['comments'];nodes.extend(comments['nodes'])
+            for comment in nodes:
+                result.append({'id': f'comment:{comment["id"]}', 'comment_id': str(comment['databaseId']),
+                               'review_id': str(comment['pullRequestReview']['databaseId']) if comment['pullRequestReview'] else None,
+                               'thread_id': thread['id'], 'author': (comment.get('author') or {}).get('login', '[deleted]'),
+                               'body': comment['body'], 'url': comment['url'], 'resolved': thread['isResolved'],
+                               'outdated': thread['isOutdated'], 'path': thread['path'], 'line': thread['line'],
+                               'start_line': thread['startLine'], 'side': thread['diffSide'], 'start_side': thread['startDiffSide']})
+        if not threads['pageInfo']['hasNextPage']:
+            break
+        next_cursor = threads['pageInfo']['endCursor']
+        if not next_cursor or next_cursor == cursor:
+            raise ReviewError('GitHub thread pagination did not advance')
+        cursor = next_cursor
+    return result
+
+
+def file_review(path, status='modified'):
+    return {'path': path, 'reviewed': False, 'status': status, 'file_comments': [], 'line_comments': {},
+            'reviewed_hunks': [], 'content_hash': None}
+
+
+def import_context(session, snapshot, contexts, checkout, state):
+    imported_ids = set(state['imports'])
+    session['review_comments'] = [c for c in session['review_comments'] if c['id'] not in imported_ids and not c['id'].startswith('import-')]
+    for file in session['files'].values():
+        file['file_comments'] = [c for c in file['file_comments'] if c['id'] not in imported_ids and not c['id'].startswith('import-')]
+        for line in file['line_comments']:
+            file['line_comments'][line] = [c for c in file['line_comments'][line] if c['id'] not in imported_ids and not c['id'].startswith('import-')]
+    identities = {}
+    for pr in snapshot['prs']:
+        files = diff_locations(checkout, pr)
+        for remote in contexts[pr['number']]:
+            identity = 'import-' + hashlib.sha256(f'{state["repository"]}#{pr["number"]}:{remote["id"]}'.encode()).hexdigest()
+            if identity in identities:
+                raise ReviewError('Duplicate GitHub remote identity')
+            statuses = []
+            if remote['resolved']:statuses.append('resolved')
+            if remote['outdated']:statuses.append('outdated')
+            side = 'old' if remote['side'] == 'LEFT' else 'new'
+            line_range = None
+            if remote.get('start_line'):
+                line_range = {'start': remote['start_line'], 'end': remote['line']}
+            location = None
+            if (not statuses and remote['path'] and remote['line'] and
+                    (not remote.get('start_side') or remote['start_side'] == remote['side'])):
+                location = inline_location(files, remote['path'], remote['line'], side, line_range)
+            if remote['path'] and not location and not statuses:statuses.append('unplaceable')
+            label = ', '.join(statuses) or 'published'
+            content = f'[GitHub context #{pr["number"]}: {label}, @{remote["author"]}]\n{remote["url"]}\n\n{remote["body"]}'
+            comment = {'id': identity, 'content': content, 'comment_type': 'none', 'created_at': now(),
+                       'line_context': None, 'side': side if location else None, 'line_range': line_range if location else None,
+                       'author': remote['author'], 'lifecycle_state': 'submitted', 'remote_review_id': remote.get('review_id'),
+                       'remote_comment_id': remote.get('comment_id'), 'commit_id': pr['sha']}
+            if location:
+                path = location['path']
+                file = session['files'].setdefault(path, file_review(path))
+                file['line_comments'].setdefault(str(location['line']), []).append(comment)
+            else:
+                session['review_comments'].append(comment)
+            identities[identity] = dict(remote, pr=pr['number'])
+    state['imports'] = identities
+    return session
+
+
+def prepare_session(directory, state, target):
+    snapshot = state['snapshot']
+    if state['session']:
+        path, session = resolve_session(state['checkout'], snapshot['tip'], snapshot['commits'])
+        if path.resolve() != Path(state['session']).resolve():
+            raise ReviewError('Saved session path does not match review ownership')
+    else:
+        # First import occurs before the human review. The bootstrap saves an empty range.
+        path, session = bootstrap_session(state['checkout'], snapshot)
+        state['session'] = str(path)
+        state['session_id'] = session['id']
+        atomic_json(directory / 'state.json', state)
+    if session['id'] != state['session_id']:
+        raise ReviewError('Session identity changed; refusing to import')
+    contexts = {pr['number']: remote_context(target, pr['number']) for pr in snapshot['prs']}
+    import_context(session, snapshot, contexts, state['checkout'], state)
+    submitted = {identity: receipt['review_id'] for receipt in state['receipts'] for identity in receipt['source_ids']}
+    for _, _, comment in all_comments(session):
+        if comment['id'] in submitted:
+            comment['lifecycle_state'] = 'submitted'
+            comment['remote_review_id'] = submitted[comment['id']]
+    save_session(path, session, directory, state)
+    atomic_json(directory / 'state.json', state)
+    return path
+
+
+def type_configuration():
+    import tomllib
+    path = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'tuicr/config.toml'
+    if not path.exists():
+        return True, {}
+    try:
+        with path.open('rb') as stream:
+            config = tomllib.load(stream)
+    except (OSError, ValueError) as exc:
+        raise ReviewError(f'Cannot read tuicr configuration: {exc}') from exc
+    prefix = config.get('forge', {}).get('comment_type_prefix', True)
+    if type(prefix) is not bool:
+        raise ReviewError('Invalid forge.comment_type_prefix configuration')
+    labels = {}
+    for entry in config.get('comment_types', []):
+        if not isinstance(entry, dict) or not isinstance(entry.get('id'), str):
+            raise ReviewError('Invalid tuicr comment_types configuration')
+        identity = entry['id'].strip()
+        if not identity:
+            raise ReviewError('Empty tuicr comment type identity')
+        label = entry.get('label') or identity
+        if not isinstance(label, str):
+            raise ReviewError('Invalid tuicr comment type label')
+        labels[identity] = label.strip().upper()
+    return prefix, labels
+
+
+def formatted_comment(comment, prefix, labels, file_level=False):
+    if not prefix:
+        return comment['content']
+    identity = comment['comment_type']
+    tag = '' if not identity or identity.lower() == 'none' else f'[{labels.get(identity, identity.upper())}] '
+    if file_level:
+        tag += 'File-level: '
+    return tag + comment['content']
+
+
+def synthetic_commit(path, comment, snapshot, checkout):
+    if path is None:
+        return None
+    match = re.fullmatch(r'Commit Message \(([0-9a-f]{7,40})\)', path)
+    if not match:
+        return None
+    # tuicr uses this exact synthetic key; a real filename must never acquire its semantics.
+    for pr in snapshot['prs']:
+        for revision in (pr['parent'], pr['sha']):
+            found = subprocess.run(['git', 'cat-file', '-e', f'{revision}:{path}'], cwd=checkout,
+                                   capture_output=True)
+            if found.returncode == 0:
+                return None
+    candidates = [pr for pr in snapshot['prs'] if pr['sha'].startswith(match[1])]
+    if len(candidates) != 1:
+        raise ReviewError(f'Ambiguous synthetic commit-message entry: {path}')
+    pr = candidates[0]
+    if comment['commit_id'] not in {None, pr['sha']}:
+        raise ReviewError('Commit-message path conflicts with comment attribution')
+    return pr
+
+
+class Cancelled(ReviewError):
+    pass
+
+
+def ownership(comment, state, scoped_pr=None):
+    assignment = state['assignments'].get(comment['id'])
+    if assignment == 'skip':
+        return None
+    prs = state['snapshot']['prs']
+    if scoped_pr:
+        if assignment is not None and assignment.get('pr') != scoped_pr['number']:
+            raise ReviewError('Saved assignment conflicts with commit attribution')
+        return scoped_pr
+    if assignment:
+        matches = [pr for pr in prs if pr['number'] == assignment.get('pr')]
+        if len(matches) != 1:
+            raise ReviewError('Saved comment assignment does not belong to this snapshot')
+        return matches[0]
+    print(f'\nUnscoped comment [{comment["id"]}]:\n{comment["content"]}')
+    selected = choose('Which PR owns this comment?',
+                      [(f'#{pr["number"]} {pr["title"]}', pr) for pr in prs] + [('Skip this comment', 'skip'), ('Cancel review', 'cancel')])
+    if selected == 'cancel':
+        raise Cancelled('Review cancelled; drafts preserved')
+    if selected == 'skip':
+        state['assignments'][comment['id']] = 'skip'
+        return None
+    state['assignments'][comment['id']] = {'pr': selected['number']}
+    return selected
+
+
+def comment_placement(path, line, comment, pr, files, state, unscoped):
+    assignment = state['assignments'].get(comment['id'], {})
+    saved = assignment.get('placement') if isinstance(assignment, dict) else None
+    if saved in {'summary', 'skip'}:
+        return saved
+    side = comment['side'] or 'new'
+    location = inline_location(files, path, line, side, comment['line_range'])
+    if unscoped and location:
+        file = files[path]
+        start = location.get('start_line', location['line'])
+        print(f'\nProposed location #{pr["number"]}: {location["path"]} {location["side"]} {start}-{location["line"]}')
+        for number in range(start, location['line'] + 1):
+            print(f'  {number}: {file["sides"]["old" if location["side"] == "LEFT" else "new"][number]}')
+        print(f'Feedback: {comment["content"]}')
+        selected = choose('Check the target content before placement:', [('Use this inline location', 'inline'),
+                          ('Place in review body', 'summary'), ('Omit this comment', 'skip'), ('Cancel review', 'cancel')])
+    elif location:
+        return location
+    else:
+        print(f'\nCannot place {path}:{line} in #{pr["number"]}:\n{comment["content"]}')
+        selected = choose('Choose placement:', [('Place in review body', 'summary'), ('Omit this comment', 'skip'), ('Cancel review', 'cancel')])
+    if selected == 'cancel':
+        raise Cancelled('Review cancelled; drafts preserved')
+    state['assignments'].setdefault(comment['id'], {'pr': pr['number']})['placement'] = selected
+    return location if selected == 'inline' else selected
+
+
+def build_actions(session, state):
+    snapshot = state['snapshot']
+    prefix, labels = type_configuration()
+    by_sha = {pr['sha']: pr for pr in snapshot['prs']}
+    diffs = {pr['number']: diff_locations(state['checkout'], pr) for pr in snapshot['prs']}
+    actions = {pr['number']: {'pr': pr, 'body_parts': [], 'comments': [], 'source_ids': [], 'approve': False}
+               for pr in snapshot['prs']}
+    already_sent = {identity for receipt in state['receipts'] for identity in receipt['source_ids']}
+    for path, line, comment in all_comments(session):
+        if (comment['lifecycle_state'] != 'local_draft' or comment['id'] in state['imports'] or
+                comment['id'].startswith('import-') or comment['id'] in already_sent):
+            continue
+        synthetic = synthetic_commit(path, comment, snapshot, state['checkout'])
+        scoped = synthetic or by_sha.get(comment['commit_id'])
+        pr = ownership(comment, state, scoped)
+        if pr is None:
+            continue
+        action = actions[pr['number']]
+        body = formatted_comment(comment, prefix, labels)
+        if synthetic or path is None:
+            action['body_parts'].append(body)
+            if synthetic and comment['content'].strip().lower() == 'lgtm':
+                action['approve'] = True
+        else:
+            placement = comment_placement(path, line, comment, pr, diffs[pr['number']], state,
+                                          unscoped=comment['commit_id'] is None)
+            if placement == 'skip':
+                continue
+            if placement == 'summary':
+                action['body_parts'].append(f'### {path}' + (f':{line}' if line else '') + '\n\n' + body)
+            else:
+                placement['body'] = formatted_comment(comment, prefix, labels, file_level=line is None)
+                action['comments'].append(placement)
+        action['source_ids'].append(comment['id'])
+    result = []
+    for pr in snapshot['prs']:
+        action = actions[pr['number']]
+        if not action['source_ids']:
+            continue
+        event = 'APPROVE' if action['approve'] else 'REQUEST_CHANGES'
+        body = '\n\n'.join(action['body_parts'])
+        payload = {'commit_id': pr['sha'], 'event': event, 'body': body, 'comments': action['comments']}
+        # Derive an attempt token from immutable source feedback, not run time.
+        token = hashlib.sha256(json.dumps({'snapshot': snapshot_identity(snapshot), 'ids': action['source_ids'],
+                                          'payload': payload, 'workspace': state['id']}, sort_keys=True).encode()).hexdigest()[:32]
+        marker = f'<!-- graphite-review:{token} -->'
+        payload['body'] = (body + '\n\n' if body else '') + marker
+        result.append({'number': pr['number'], 'pr': pr, 'payload': payload, 'source_ids': action['source_ids'],
+                       'token': token, 'marker': marker})
+    return result
+
+
+def preview(actions, snapshot, state):
+    print(f'\nStack preview (bottom to top). {len(state["imports"])} locked GitHub context entries are NOT outgoing.')
+    by_number = {action['number']: action for action in actions}
+    for pr in snapshot['prs']:
+        action = by_number.get(pr['number'])
+        print(f'\n#{pr["number"]} {pr["title"]}\n  Reviewed SHA: {pr["sha"]}')
+        if not action:
+            print('  SKIP: no new outgoing feedback')
+            continue
+        payload = action['payload']
+        print(f'  {payload["event"]}\n  Review body:\n{payload["body"]}')
+        for comment in payload['comments']:
+            print(f'  Inline {comment["path"]} {comment["side"]} {comment.get("start_line",comment["line"])}-{comment["line"]}:\n{comment["body"]}')
+    if not actions:
+        print('\nNo new feedback to submit.')
+        return 'cancel'
+    return choose('\nConfirm the whole stack:', [('Submit all', 'submit'), ('Return to tuicr', 'return'), ('Cancel', 'cancel')])
+
+
+def run_tui(checkout, snapshot):
+    print('In tuicr, ( and ) select individual commits and expose their Commit Message entries.\n'
+          'Use a commit-message comment containing only LGTM to approve. Save before exit (:w, then :q!).\n'
+          'Native :submit does not publish this range. The stack preview follows your exit.')
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ReviewError('Interactive terminal required; run graphite-review directly in your terminal')
+    result = subprocess.run(['tuicr', '--no-update-check', '-r', f'{snapshot["base"]}..{snapshot["tip"]}'], cwd=checkout)
+    if result.returncode:
+        raise ReviewError(f'tuicr exited with {result.returncode}; no reviews submitted. Saved drafts remain in {checkout}')
+
+
+def review_loop(directory, state, target):
+    snapshot = state['snapshot']
+    while True:
+        run_tui(state['checkout'], snapshot)
+        path, session = resolve_session(state['checkout'], snapshot['tip'], snapshot['commits'])
+        if str(path) != state['session'] or session['id'] != state['session_id']:
+            raise ReviewError('Review session identity changed; no reviews submitted')
+        actions = build_actions(session, state)
+        atomic_json(directory / 'state.json', state)
+        decision = preview(actions, snapshot, state)
+        if decision == 'return':
+            continue
+        if decision == 'cancel':
+            print('Cancelled. Workspace and saved drafts retained.')
+            return
+        submit_actions(actions, directory, state, target, path, session)
+        return
+
+
+def published_reviews(target, number):
+    pages = api(f'{repository_endpoint(target)}/pulls/{number}/reviews?per_page=100', paginate=True)
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise ReviewError('Unsupported review reconciliation response')
+    return [review for page in pages for review in page]
+
+
+def record_success(attempt, remote, directory, state, path, session):
+    if (not isinstance(remote, dict) or type(remote.get('id')) is not int or
+            remote.get('commit_id') != attempt['payload']['commit_id'] or
+            remote.get('state') != {'APPROVE': 'APPROVED', 'REQUEST_CHANGES': 'CHANGES_REQUESTED'}[attempt['payload']['event']]):
+        raise ReviewError('Cannot prove the submitted review identity; attempt remains uncertain')
+    receipt = {'token': attempt['token'], 'number': attempt['number'], 'review_id': str(remote['id']),
+               'commit_id': remote['commit_id'], 'source_ids': attempt['source_ids'], 'url': remote.get('html_url')}
+    if not any(existing['token'] == receipt['token'] for existing in state['receipts']):
+        state['receipts'].append(receipt)
+    attempt['status'] = 'completed'
+    attempt['review_id'] = str(remote['id'])
+    # Persist the receipt before rewriting comments: a crash never resends these IDs.
+    atomic_json(directory / 'state.json', state)
+    ids = set(attempt['source_ids'])
+    for _, _, comment in all_comments(session):
+        if comment['id'] in ids:
+            comment['lifecycle_state'] = 'submitted'
+            comment['remote_review_id'] = str(remote['id'])
+    save_session(path, session, directory, state)
+    print(f'Submitted #{attempt["number"]}: review {remote["id"]}')
+
+
+def reconcile_attempts(directory, state, target, path, session):
+    for attempt in state['attempts'].values():
+        if attempt['status'] != 'uncertain':
+            continue
+        remote = published_reviews(target, attempt['number'])
+        matches = [review for review in remote if attempt['marker'] in (review.get('body') or '') and
+                   (review.get('user') or {}).get('login', '').lower() == attempt['reviewer'].lower()]
+        if len(matches) == 1:
+            record_success(attempt, matches[0], directory, state, path, session)
+        else:
+            raise ReviewError(f'Submission outcome for #{attempt["number"]} cannot be proved ({len(matches)} matching receipts). '
+                              f'Inspect https://github.com/{target.owner}/{target.repo}/pull/{attempt["number"]}. '
+                              f'Attempt {attempt["token"]} remains uncertain; no automatic repeat POST is allowed.')
+
+
+def submission_preflight(actions, state, target):
+    viewer = api('user')['login']
+    permissions = api(repository_endpoint(target)).get('permissions')
+    if not isinstance(permissions, dict) or not permissions.get('pull'):
+        raise ReviewError('GitHub did not confirm repository read permission; cannot review')
+    # Check the entire range, including skipped PRs, before any write in the batch.
+    for pr in state['snapshot']['prs']:
+        current = pr_details(target, pr['number'])
+        if (current['state'] != 'open' or current['head']['sha'] != pr['sha'] or
+                current['head']['ref'] != pr['branch'] or current['base']['ref'] != pr['base_branch'] or
+                current['base']['sha'] != pr['base_sha'] or current['commits'] != 1):
+            raise ReviewError(f'PR #{pr["number"]} changed or closed. Rerun graphite-review to refresh and review; no batch submission started.')
+    for action in actions:
+        if action['pr']['author'].lower() == viewer.lower():
+            raise ReviewError(f'Cannot approve or request changes on your own PR #{action["number"]}; no batch submission started')
+    return viewer
+
+
+def submit_actions(actions, directory, state, target, path, session):
+    reconcile_attempts(directory, state, target, path, session)
+    viewer = submission_preflight(actions, state, target)
+    for action in actions:
+        sent = {identity for receipt in state['receipts'] for identity in receipt['source_ids']}
+        if set(action['source_ids']) <= sent:
+            continue
+        if sent.intersection(action['source_ids']):
+            raise ReviewError('Partly submitted action requires a new preview; return to the review command')
+        attempt = dict(action, status='uncertain', reviewer=viewer, started_at=now())
+        state['attempts'][action['token']] = attempt
+        atomic_json(directory / 'state.json', state)
+        endpoint = f'{repository_endpoint(target)}/pulls/{action["number"]}/reviews'
+        try:
+            remote = api(endpoint, action['payload'])
+            record_success(attempt, remote, directory, state, path, session)
+        except (ReviewError, OSError, ValueError) as failure:
+            if isinstance(failure, ApiError) and failure.rejected:
+                attempt['status'] = 'rejected'
+                attempt['error'] = str(failure)
+                atomic_json(directory / 'state.json', state)
+                raise ReviewError(f'GitHub rejected PR #{action["number"]}: {failure}. '
+                                  'Completed receipts and remaining drafts are preserved; correct the rejection and rerun.') from failure
+            if attempt['status'] == 'completed':
+                raise ReviewError(f'Review #{action["number"]} succeeded, but its local lifecycle update failed: {failure}. '
+                                  'The saved receipt prevents resend; rerun to recover.') from failure
+            try:
+                reconcile_attempts(directory, state, target, path, session)
+            except (ReviewError, OSError, ValueError) as error:
+                raise ReviewError(f'Batch stopped at #{action["number"]}: {error}\n'
+                                  f'Workspace: {state["checkout"]}\n'
+                                  f'Recovery: graphite-review https://app.graphite.com/github/pr/{target.owner}/{target.repo}/{target.number}') from error
+            # A proven success after response loss is safe; later PRs can continue.
+    print('All actionable reviews submitted. Workspace retained.')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Review a linear Graphite stack in one tuicr range session.')
+    parser.add_argument('url', help='https://app.graphite.com/github/pr/OWNER/REPO/NUMBER')
+    args = parser.parse_args(argv)
+    workspace = None
+    try:
+        target = parse_url(args.url)
+        check_dependencies()
+        repo = discover_repository(Path.cwd())
+        remote = select_remote(repo, target)
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ReviewError('Interactive terminal required; run this command directly in your terminal')
+        # Serialize aliases and shared-branch refresh as well as the per-review process.
+        with process_lock(repo.common / 'graphite-review/lock'):
+            directory, state = open_workspace(repo, target)
+            workspace = state['checkout']
+            with process_lock(directory / 'lock'):
+                if state['session']:
+                    old = state['snapshot']
+                    path, session = resolve_session(workspace, old['tip'], old['commits'])
+                    if path.resolve() != Path(state['session']).resolve() or session['id'] != state['session_id']:
+                        raise ReviewError('Review session ownership mismatch')
+                    reconcile_attempts(directory, state, target, path, session)
+                metadata = graphite_refresh(repo, workspace, remote, target)
+                members = stack_members(metadata, target.number)
+                progress('Review stack: ' + ' -> '.join(f'#{member["prNumber"]} {member["headRefName"]}' for member in members))
+                snapshot = checked_snapshot(repo, remote, target, metadata, members, state['id'])
+                prepare_snapshot(repo, directory, state, snapshot, target)
+                progress('Preparing tuicr session and importing GitHub review context')
+                prepare_session(directory, state, target)
+                progress('Opening tuicr')
+                review_loop(directory, state, target)
+        return 0
+    except KeyboardInterrupt:
+        print('graphite-review: Interrupted; no automatic submission or retry.', file=sys.stderr)
+        return 130
+    except (ReviewError, OSError, ValueError, KeyError, TypeError) as exc:
+        print(f'graphite-review: {exc}', file=sys.stderr)
+        return 1
+    finally:
+        if workspace:
+            print(f'Review workspace retained: {workspace}')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

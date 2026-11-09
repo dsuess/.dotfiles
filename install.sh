@@ -197,7 +197,7 @@ cmd_software() {
         brew install git zsh neovim uv fzf thefuck just htop gnupg direnv openssl fd stow ripgrep npm bat findutils imagemagick 1broseidon/tap/ketch tuicr herdr switchaudio-osx
 
         echo "🖥️  Installing GUI apps..."
-        for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify docker monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
+        for TGT in karabiner-elements bettertouchtool 1password 1password-cli ghostty alfred google-chrome zotero spotify monitorcontrol chatgpt obsidian slack arc zed fluidvoice; do
             # Repair stale cask receipts when an app was removed outside Homebrew.
             brew install --cask --force "$TGT"
         done
@@ -286,7 +286,7 @@ cmd_config() {
     [[ -L ~/.claude/skills ]] && rm -f ~/.claude/skills
     rm -rf ~/.oh-my-zsh ~/.config/nvim ~/.tmux
 
-    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.pi/agent
+    mkdir -p ~/bin ~/pi ~/.config ~/.claude ~/.agents ~/.config/opencode ~/.config/ghostty ~/.config/nvim ~/.config/zed ~/.codex ~/.config/uv ~/.config/herdr ~/.config/ketch ~/.config/tuicr ~/.pi/agent
 
     echo "🔗 Stowing configs..."
     stow_or_warn zsh -t ~
@@ -304,6 +304,7 @@ cmd_config() {
     stow_or_warn codex -t ~/.codex/
     stow_or_warn pi -t ~/.pi/
     stow_or_warn uv -t ~/.config/uv
+    stow_or_warn tuicr -t ~/.config/tuicr
     stow_or_warn herdr -t ~/.config/herdr
     register_herdr_worktree_label_plugin
     deploy_ketch_config
