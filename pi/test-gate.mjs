@@ -33,7 +33,7 @@ const deterministic = [
   ["statusbar context", "node", ["--import", jitiRegister, "--test", "agent/extensions/statusbar-context.test.ts"]],
   ["usage", "node", ["--import", jitiRegister, "--test", "agent/extensions/usage/test/usage.test.ts"]],
   ["Herdr feedback composition", "node", [jitiCli, "agent/extensions/herdr-feedback-state/test.mjs"]],
-  ["command palette", "node", ["--test", "agent/extensions/command-palette-models.test.mjs"]],
+  ["command palette", "node", ["--test", "agent/extensions/command-palette-models.test.mjs", "agent/extensions/command-palette/gesture.test.mjs", "agent/extensions/command-palette/input.test.mjs", "agent/extensions/command-palette/order.test.mjs", "agent/extensions/command-palette/runtime.test.mjs"]],
   ["ask-user-question dependencies", "npm", ["ci", "--ignore-scripts"], path.join(root, "agent/packages/ask-user-question")],
   ["ask-user-question", "npm", ["--prefix", "agent/packages/ask-user-question", "test"]],
   ["ask-user-question typecheck", "npm", ["--prefix", "agent/packages/ask-user-question", "run", "typecheck"]],

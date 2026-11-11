@@ -23,6 +23,7 @@
     "extensions/statusbar.ts",
     "git:github.com/peloyeje/pi-vim@83921804e626945ba027ff373c975644dfc92083",
     "extensions/fzf-file-picker",
+    "extensions/command-palette.ts",
     "npm:pi-ketch@0.1.6",
     "npm:pi-context-usage",
     "npm:pi-rtk-optimizer",

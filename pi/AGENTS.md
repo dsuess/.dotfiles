@@ -40,6 +40,8 @@ Repository-wide rules are in `../AGENTS.md`. `agent/AGENTS.md` is Pi's runtime s
 
 ## Correction lessons
 
+- When a terminal-input listener tracks a custom editor's focus, load it after all editor-replacing extensions. Verify the installed package resolver's actual order and exercise the composed editor; a standalone TUI test cannot establish extension load order.
+
 - Do not make optional host extensions startup prerequisites or maintain manual package provenance manifests for them. Keep core SRT ownership and routed MCP approval checks separate.
 
 - Preserve required shared grants when correcting workspace startup failures. Deduplicate identical authority during policy composition, not by deleting saved configuration.

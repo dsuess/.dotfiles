@@ -21,13 +21,14 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
 import {
 	type Api,
 	type Model,
 	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { PLAN_MODE_DIRECT_TOGGLE_EVENT } from "./plan-mode/events.ts";
+import { createModelGesture } from "./command-palette/gesture.ts";
 import {
 	getCycledModel,
 	getSessionModels,
@@ -39,6 +40,8 @@ import {
 	SelectList,
 	Text,
 	type SelectItem,
+	type TUI,
+	type EditorComponent,
 	fuzzyFilter,
 	matchesKey,
 } from "@earendil-works/pi-tui";
@@ -301,7 +304,7 @@ async function showSearchableOverlay(
 
 // ── Model selector ─────────────────────────────────────────────────
 
-async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext, isCurrent: () => boolean = () => true): Promise<void> {
 	const current = ctx.model;
 	const models = orderModelsForSelector(getSessionModels(ctx), current);
 
@@ -328,7 +331,7 @@ async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promi
 	});
 
 	const selected = await showSearchableOverlay(ctx, () => items, " Select Model ❯ ");
-	if (selected === null) return;
+	if (selected === null || !isCurrent()) return;
 
 	const model = modelMap.get(selected);
 	if (!model) return;
@@ -900,6 +903,46 @@ function buildCommands(pi: ExtensionAPI): CommandEntry[] {
 // ── Main extension ─────────────────────────────────────────────────
 
 export default function commandPaletteExtension(pi: ExtensionAPI) {
+	let generation = 0;
+	let unsubscribe: (() => void) | undefined;
+	let gesture: ReturnType<typeof createModelGesture> | undefined;
+
+	function cleanup(): void {
+		generation++;
+		gesture?.reset();
+		gesture = undefined;
+		unsubscribe?.();
+		unsubscribe = undefined;
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		cleanup();
+		if (ctx.mode !== "tui" || !ctx.ui.getEditorComponent || !ctx.ui.setEditorComponent || !ctx.ui.onTerminalInput) return;
+		const currentGeneration = generation;
+		let editor: EditorComponent | undefined;
+		let tui: TUI | undefined;
+		const previous = ctx.ui.getEditorComponent();
+		ctx.ui.setEditorComponent((ui, theme, keybindings) => {
+			tui = ui;
+			editor = previous ? previous(ui, theme, keybindings) : new CustomEditor(ui, theme, keybindings, { embedWorkingStatus: true });
+			return editor;
+		});
+		const focused = () => !!editor && "focused" in editor && editor.focused === true && !tui?.hasOverlay() &&
+			(!("isShowingAutocomplete" in editor) || typeof editor.isShowingAutocomplete !== "function" || !editor.isShowingAutocomplete());
+		gesture = createModelGesture({
+			// Releases must also be observed before a gesture starts; see gesture.ts.
+			canStart: () => !!tui?.terminal.kittyProtocolActive && focused(),
+			stillFocused: focused,
+			open: () => {
+				void showModelSelector(pi, ctx, () => generation === currentGeneration).catch((error) => {
+					if (generation === currentGeneration) ctx.ui.notify(`Model selector: ${String(error)}`, "error");
+				});
+			},
+		});
+		unsubscribe = ctx.ui.onTerminalInput((data) => gesture?.input(data));
+	});
+	pi.on("session_shutdown", cleanup);
+
 	pi.registerShortcut("ctrl+p", {
 		description: "Open command palette",
 		handler: async (ctx) => {
