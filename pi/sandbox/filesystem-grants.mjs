@@ -88,6 +88,23 @@ export function resolveFilesystemGrant(value, access, options = {}) {
   return Object.freeze({ path: lexicalPath, canonicalPath, access });
 }
 
+export function resolveGitSshIdentity(config, options = {}) {
+  if (!Object.hasOwn(config, "git")) return null;
+  exactKeys(config.git, ["sshIdentityFile"], "sandbox Git configuration");
+  const home = directory(path.resolve(options.home ?? os.homedir()), "home");
+  const lexicalPath = path.resolve(expandHome(config.git.sshIdentityFile, home));
+  const agent = path.join(home, ".ssh", "agent");
+  if (path.dirname(lexicalPath) !== agent || path.basename(lexicalPath).startsWith("s.")) throw new Error("Git SSH identity must be directly inside ~/.ssh/agent and not use an s. prefix");
+  let canonicalPath, canonicalAgent, stat;
+  try {
+    canonicalAgent = fs.realpathSync(agent);
+    canonicalPath = fs.realpathSync(lexicalPath);
+    stat = fs.statSync(canonicalPath);
+  } catch { throw new Error("Git SSH identity must be an existing regular file"); }
+  if (canonicalAgent !== agent || path.dirname(canonicalPath) !== agent || path.basename(canonicalPath).startsWith("s.") || !stat.isFile() || (stat.mode & 0o077)) throw new Error("Git SSH identity must be a private regular file directly inside ~/.ssh/agent");
+  return canonicalPath;
+}
+
 /** Shared saved-config and effective-policy validation. No filesystem mutation. */
 export function validateFilesystemGrants(entries, options = {}) {
   if (!Array.isArray(entries) || entries.length > MAX_GRANTS) throw new Error("sandbox filesystem grants must be bounded arrays (maximum 32 grants)");
@@ -108,7 +125,8 @@ export function validateFilesystemGrants(entries, options = {}) {
   return Object.freeze(grants);
 }
 export function validateFilesystemConfiguration(config, options = {}) {
-  exactKeys(config, ["version", "filesystem"], "sandbox filesystem configuration");
+  exactKeys(config, Object.hasOwn(config ?? {}, "git") ? ["version", "filesystem", "git"] : ["version", "filesystem"], "sandbox filesystem configuration");
+  resolveGitSshIdentity(config, options);
   if (config.version !== 1) throw new Error("sandbox filesystem configuration version is unsupported");
   exactKeys(config.filesystem, ["readOnly", "readWrite"], "sandbox filesystem configuration filesystem");
   const entries = [];

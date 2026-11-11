@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, validateFilesystemConfiguration, validateFilesystemGrants } from "./filesystem-grants.mjs";
+import { CONFIG_PATH, resolveGitSshIdentity, validateFilesystemConfiguration, validateFilesystemGrants } from "./filesystem-grants.mjs";
 
 function immutable(value) {
   if (value && typeof value === "object") {
@@ -39,13 +39,15 @@ export class ClientPolicies {
       validateFilesystemGrants(saved.grants, this.validation);
       if (JSON.stringify(grants) !== JSON.stringify(saved.grants)) throw error("stale_grants", "Grant targets changed; reload saved grants");
     }
+    const gitSshIdentity = resolveGitSshIdentity(saved.config, this.validation);
     return snapshot({ configuration: { config: saved.config, grants, revision: saved.revision,
-      configPath: saved.configPath, targetPath: saved.targetPath }, policy: this.buildPolicy(grants) });
+      configPath: saved.configPath, targetPath: saved.targetPath, gitSshIdentity }, policy: this.buildPolicy(grants, gitSshIdentity) });
   }
   capture(connection, generation) {
     const effective = this.context(connection).effective;
     if (generation !== undefined && generation !== effective.policy.generation) throw error("stale_generation", "stale client policy generation");
     validateFilesystemGrants(effective.configuration.grants, this.validation);
+    if (resolveGitSshIdentity(effective.configuration.config, this.validation) !== effective.configuration.gitSshIdentity) throw error("stale_identity", "Git SSH identity target changed; reload saved configuration");
     return effective;
   }
   prepare(connection, value) {
@@ -65,6 +67,7 @@ export class ClientPolicies {
     // Revalidate aliases at activation; a post-save failure must be reported by
     // the trusted action service rather than pretending revocation succeeded.
     validateFilesystemGrants(candidate.configuration.grants, this.validation);
+    if (resolveGitSshIdentity(candidate.configuration.config, this.validation) !== candidate.configuration.gitSshIdentity) throw error("stale_identity", "Git SSH identity target changed; reload saved configuration");
     context.effective = snapshot({ ...candidate, configuration: { ...candidate.configuration, revision } });
     context.prepared = null;
     return { policyGeneration: context.effective.policy.generation, effectiveRevision: revision };

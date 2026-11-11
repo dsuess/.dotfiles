@@ -20,7 +20,7 @@ function fixture(t) {
   fs.writeFileSync(dockerSocket, "socket fixture");
   const validation = { configPath, home, workspaceRoot, controllerRoot };
   const configuration = createFilesystemConfigurationService(validation);
-  const buildPolicy = (grants) => buildSrtPolicy({ ...validation, dockerSocket, grants, generatedRoots: [path.join(root, "generated")] });
+  const buildPolicy = (grants, gitSshIdentity) => buildSrtPolicy({ ...validation, dockerSocket, grants, gitSshIdentity, generatedRoots: [path.join(root, "generated")] });
   const policies = new ClientPolicies({ configuration, validation, buildPolicy });
   return { root, home, configPath, workspaceRoot, controllerRoot, configuration, policies, buildPolicy };
 }
@@ -158,6 +158,11 @@ test("policy RPCs are bounded complete snapshots and operation env cannot select
   const auth = "a".repeat(64), revision = "b".repeat(64);
   const prepare = { config: { version: 1, filesystem: { readOnly: [], readWrite: [] } }, grants: [], revision };
   assert.equal(validateRequest(makeRequest(1, "policy.prepare", auth, prepare)).params, prepare);
+  const withGit = { ...prepare, config: { ...prepare.config, git: { sshIdentityFile: "~/.ssh/agent/id_ed25519" } } };
+  assert.equal(validateRequest(makeRequest(1, "policy.prepare", auth, withGit)).params, withGit);
+  for (const git of [{}, { sshIdentityFile: "key", extra: true }, null]) {
+    assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, config: { ...prepare.config, git } })));
+  }
   assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, config: { ...prepare.config, network: {} } })), /unknown key/);
   assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, grants: Array(33).fill({}) })), /bounded/);
   assert.throws(() => validateRequest(makeRequest(1, "policy.activate", auth, { preparation: auth, revision, context: auth })), /unknown key/);
@@ -179,4 +184,29 @@ test("client validates preparation before commit and atomically updates its effe
   await client.activatePolicy(prepared, saved);
   assert.equal(client.policyGeneration, prepared.policyGeneration);
   assert.equal(client.effectiveSnapshot, saved);
+});
+
+test("Git identity is snapshot-bound, changes the generation, and detects retargeting", (t) => {
+  const f = fixture(t), agent = path.join(f.home, ".ssh/agent"); fs.mkdirSync(agent, { recursive: true });
+  for (const name of ["key one", "key two"]) fs.writeFileSync(path.join(agent, name), "key", { mode: 0o600 });
+  const config = JSON.parse(fs.readFileSync(f.configPath)), old = {}, current = {};
+  const baseline = f.policies.capture(old);
+  config.git = { sshIdentityFile: "~/.ssh/agent/key one" }; fs.writeFileSync(f.configPath, JSON.stringify(config));
+  const first = f.policies.capture(current);
+  assert.notEqual(first.policy.generation, baseline.policy.generation);
+  assert.equal(baseline.policy.gitSshCommand, null);
+  assert(first.policy.filesystem.allowRead.includes(fs.realpathSync(path.join(agent, "key one"))));
+  assert(!first.policy.filesystem.allowRead.includes(path.join(f.home, ".ssh/id_ed25519")));
+  assert(first.policy.filesystem.denyRead.includes(fs.realpathSync(f.home)));
+  assert.match(first.policy.gitSshCommand, /StrictHostKeyChecking=yes/);
+  assert(Object.isFrozen(first.policy));
+  config.git.sshIdentityFile = "~/.ssh/agent/key two"; fs.writeFileSync(f.configPath, JSON.stringify(config));
+  assert.equal(f.policies.capture(current), first);
+  const prepared = f.policies.prepare(current, f.configuration.read());
+  f.policies.activate(current, prepared.preparation, f.configuration.read().revision);
+  assert.notEqual(f.policies.capture(current).policy.generation, first.policy.generation);
+  fs.unlinkSync(path.join(agent, "key one")); fs.symlinkSync(path.join(agent, "key two"), path.join(agent, "key one"));
+  const pending = f.policies.prepare(old, { ...f.configuration.read(), config: { ...config, git: { sshIdentityFile: "~/.ssh/agent/key one" } } });
+  fs.unlinkSync(path.join(agent, "key one")); fs.writeFileSync(path.join(agent, "key one"), "key", { mode: 0o600 });
+  assert.throws(() => f.policies.activate(old, pending.preparation, f.configuration.read().revision), /identity target changed/i);
 });

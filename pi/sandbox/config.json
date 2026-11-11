@@ -3,5 +3,8 @@
   "filesystem": {
     "readOnly": ["~/.agents"],
     "readWrite": []
+  },
+  "git": {
+    "sshIdentityFile": "~/.ssh/agent/id_ed25519"
   }
 }

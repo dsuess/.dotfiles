@@ -115,3 +115,22 @@ test("policy refuses a stale validated grant after a symlink moves", (t) => {
   fs.unlinkSync(alias); fs.symlinkSync(replacement, alias);
   assert.throws(() => buildSrtPolicy({ ...item.options, grants }), /symlink target changed/);
 });
+
+test("configured Git identity requires a private regular file directly in the agent directory", (t) => {
+  const item = fixture(t), agent = path.join(item.home, ".ssh/agent");
+  fs.mkdirSync(agent, { recursive: true });
+  const key = path.join(agent, "id_ed25519"); fs.writeFileSync(key, "key", { mode: 0o600 });
+  const config = (value) => ({ version: 1, filesystem: { readOnly: [], readWrite: [] }, git: value });
+  assert.deepEqual(validateFilesystemConfiguration(config({ sshIdentityFile: "~/.ssh/agent/id_ed25519" }), item.options), []);
+  const outside = path.join(item.home, ".ssh/id_ed25519"); fs.writeFileSync(outside, "key", { mode: 0o600 });
+  fs.symlinkSync(outside, path.join(agent, "escape"));
+  fs.writeFileSync(path.join(agent, "s.socket"), "key", { mode: 0o600 });
+  fs.writeFileSync(path.join(agent, "permissive"), "key", { mode: 0o644 });
+  fs.mkdirSync(path.join(agent, "nested")); fs.writeFileSync(path.join(agent, "nested/key"), "key", { mode: 0o600 });
+  for (const value of [outside, "~/.ssh/agent/escape", "~/.ssh/agent/s.socket", "~/.ssh/agent/permissive", "~/.ssh/agent/nested", "~/.ssh/agent/nested/key", "relative", "~/.ssh/agent/missing"]) {
+    assert.throws(() => validateFilesystemConfiguration(config({ sshIdentityFile: value }), item.options), undefined, value);
+  }
+  assert.throws(() => validateFilesystemConfiguration(config({ sshIdentityFile: key, extra: true }), item.options));
+  assert.throws(() => validateFilesystemConfiguration(config({}), item.options));
+  assert.throws(() => validateFilesystemConfiguration({ ...config({ sshIdentityFile: key }), extra: true }, item.options));
+});

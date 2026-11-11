@@ -207,7 +207,12 @@ function validateMethod(method, params) {
       exactKeys(params, new Set(["config", "grants", "revision"]), "params");
       generation(params.revision, "params.revision");
       const config = plainObject(params.config, "params.config");
-      exactKeys(config, new Set(["version", "filesystem"]), "params.config");
+      exactKeys(config, new Set(["version", "filesystem", "git"]), "params.config");
+      if (Object.hasOwn(config, "git")) {
+        const git = plainObject(config.git, "params.config.git");
+        exactKeys(git, new Set(["sshIdentityFile"]), "params.config.git");
+        string(git.sshIdentityFile, "params.config.git.sshIdentityFile", MAX_PATH_BYTES);
+      }
       if (config.version !== 1) throw protocolError("invalid_request", "unsupported filesystem configuration");
       const filesystem = plainObject(config.filesystem, "params.config.filesystem");
       exactKeys(filesystem, new Set(["readOnly", "readWrite"]), "params.config.filesystem");

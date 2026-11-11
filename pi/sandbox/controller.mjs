@@ -70,7 +70,7 @@ const configuration = createFilesystemConfigurationService(validation);
 configuration.read(); // Reject invalid saved defaults before publishing readiness.
 const policyOptions = { home: hostHome, workspaceRoot: descriptor.workspaceRoot, bareCommonDirectory: descriptor.bareCommonDirectory, controllerRoot: descriptor.runtimeRoot, dockerSocket: descriptor.dockerSocket, stagedHelper: helper, generatedRoots: [toolHomeRoot, generatedHome, path.join(toolHomeRoot, "tmp"), path.join(toolHomeRoot, "cache"), buildxConfig, dockerClient.path, dockerClient.config, dockerClient.pluginDirectory], toolFiles: [...dockerClient.files, tempCommand.directory, tempCommand.executable], hostReadManifest };
 const policy = buildSrtPolicy({ ...policyOptions, grants: [] });
-const clientPolicies = new ClientPolicies({ configuration, validation, buildPolicy: (grants) => buildSrtPolicy({ ...policyOptions, grants }) });
+const clientPolicies = new ClientPolicies({ configuration, validation, buildPolicy: (grants, gitSshIdentity) => buildSrtPolicy({ ...policyOptions, grants, gitSshIdentity }) });
 await SandboxManager.initialize(policy, async () => true);
 atomicJson(descriptor.manifestPath, manifestFor(descriptor));
 atomicJson(descriptor.capabilityPath, descriptor);
@@ -78,12 +78,12 @@ atomicJson(descriptor.capabilityPath, descriptor);
 const active = new Map();
 const leases = new Map();
 let operationCount = 0;
-function boundedEnvironment(overrides = {}) {
+function boundedEnvironment(overrides = {}, gitSshCommand = null) {
   const blocked = /^(PI_SRT_.*|SSH_AUTH_SOCK|GPG_AGENT_INFO|DOCKER_.*|SBX_.*|DYLD_.*|LD_PRELOAD|HOME|TMPDIR|XDG_CACHE_HOME|UV_CACHE_DIR|PI_LAUNCHER_CHAIN)$/;
   const env = {};
   for (const [name, value] of Object.entries(process.env)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
   for (const [name, value] of Object.entries(overrides)) if (typeof value === "string" && !blocked.test(name)) env[name] = value;
-  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: generatedHome, TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), UV_CACHE_DIR: uvCache, PATH: `${dockerClient.path}:${tempCommand.directory}:${process.env.PATH ?? ""}`, ...(userToolRuntime.bin ? { UV_TOOL_BIN_DIR: userToolRuntime.bin } : {}), ...(userToolRuntime.toolDir ? { UV_TOOL_DIR: userToolRuntime.toolDir } : {}), ...(userToolRuntime.pythonInstallDir ? { UV_PYTHON_INSTALL_DIR: userToolRuntime.pythonInstallDir } : {}), DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "" };
+  return { ...env, PI_SRT_ROUTING: "", PI_SRT_ROUTING_TOKEN: "", PI_SRT_ROUTING_STARTUP_DESCRIPTOR: "", PI_SRT_ROUTING_SOCKET: "", PI_SRT_ROUTING_LEASE: "", PI_SRT_ROUTING_ROOT_OWNER_PID: "", HOME: generatedHome, TMPDIR: path.join(toolHomeRoot, "tmp"), XDG_CACHE_HOME: path.join(toolHomeRoot, "cache"), UV_CACHE_DIR: uvCache, PATH: `${dockerClient.path}:${tempCommand.directory}:${process.env.PATH ?? ""}`, ...(userToolRuntime.bin ? { UV_TOOL_BIN_DIR: userToolRuntime.bin } : {}), ...(userToolRuntime.toolDir ? { UV_TOOL_DIR: userToolRuntime.toolDir } : {}), ...(userToolRuntime.pythonInstallDir ? { UV_PYTHON_INSTALL_DIR: userToolRuntime.pythonInstallDir } : {}), DOCKER_CONFIG: dockerClient.config, BUILDX_CONFIG: buildxConfig, DOCKER_HOST: `unix://${descriptor.dockerSocket}`, DOCKER_CONTEXT: "default", SSH_AUTH_SOCK: "", ...(gitSshCommand ? { GIT_SSH_COMMAND: gitSshCommand } : {}) };
 }
 function removeOperation(id, child) { if (active.get(id)?.child === child) { active.delete(id); operationCount -= 1; } }
 async function terminate(operation) {
@@ -101,7 +101,7 @@ async function spawnSandbox({ argv, cwd, env, requestId, socket, timeoutMs, maxO
   const wrapped = await SandboxManager.wrapWithSandboxArgv(command, "/bin/bash", { filesystem: effectivePolicy.filesystem });
   const operationKey = Symbol();
   return new Promise((resolve, reject) => {
-    const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd, env: boundedEnvironment({ ...wrapped.env, ...env }), shell: false, detached: true, stdio: [helperRequest ? "pipe" : "ignore", "pipe", "pipe"] });
+    const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd, env: boundedEnvironment({ ...wrapped.env, ...env }, effectivePolicy.gitSshCommand), shell: false, detached: true, stdio: [helperRequest ? "pipe" : "ignore", "pipe", "pipe"] });
     const operation = { child, socket, requestId, finished: false, cancelled: false }; active.set(operationKey, operation); operationCount += 1;
     let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), stdoutBytes = 0, stderrBytes = 0;
     const stream = (name, chunk) => {
@@ -123,7 +123,7 @@ const stdioSessions = new StdioSessions({
   spawn: async (params, effectivePolicy) => {
     const wrapped = await SandboxManager.wrapWithSandboxArgv(quoteBash(params.argv), "/bin/bash", { filesystem: effectivePolicy.filesystem });
     return await new Promise((resolve, reject) => {
-      const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd: params.cwd, env: boundedEnvironment({ ...wrapped.env, ...params.env, NPM_CONFIG_CACHE: path.join(toolHomeRoot, "cache", "npm") }), shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { cwd: params.cwd, env: boundedEnvironment({ ...wrapped.env, ...params.env, NPM_CONFIG_CACHE: path.join(toolHomeRoot, "cache", "npm") }, effectivePolicy.gitSshCommand), shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"] });
       child.once("spawn", () => resolve(child));
       child.once("error", reject);
     });

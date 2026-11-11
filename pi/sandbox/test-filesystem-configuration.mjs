@@ -210,3 +210,16 @@ test("independent processes with one expected revision cannot both commit", asyn
   assert.equal(outputs.filter((output) => output.includes("CONFIG_CONFLICT")).length, 1);
   assert.equal(item.service.read().grants.length, 2);
 });
+
+test("grant edits preserve the optional Git identity through saved bytes", async (t) => {
+  const item = fixture(t), agent = path.join(item.home, ".ssh/agent"); fs.mkdirSync(agent, { recursive: true });
+  fs.writeFileSync(path.join(agent, "id_ed25519"), "key", { mode: 0o600 });
+  const config = JSON.parse(fs.readFileSync(item.target)); config.git = { sshIdentityFile: "~/.ssh/agent/id_ed25519" };
+  fs.writeFileSync(item.target, JSON.stringify(config));
+  for (const change of [{ type: "add", access: "ro", path: item.shared }, { type: "remove", path: item.shared }]) {
+    const saved = await item.service.commit(item.service.prepare(change));
+    assert.deepEqual(saved.config.git, config.git);
+    assert.deepEqual(JSON.parse(fs.readFileSync(item.target)).git, config.git);
+    assert(Object.isFrozen(saved.config.git));
+  }
+});

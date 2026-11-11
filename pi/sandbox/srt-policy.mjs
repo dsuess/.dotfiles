@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { validateFilesystemGrants } from "./filesystem-grants.mjs";
+import { resolveGitSshIdentity, validateFilesystemGrants } from "./filesystem-grants.mjs";
 
 const TOOL_ROOTS = ["/opt/homebrew", "/usr/local", "/usr/bin", "/bin"];
 
@@ -56,6 +56,15 @@ export function buildSrtPolicy(options) {
   const reads = new Set([...workspaceAliases, ...commonAliases, ...TOOL_ROOTS, ...generatedRoots, ...toolFiles]);
   const writes = new Set([...workspaceAliases, ...commonAliases, ...generatedRoots]);
   if (stagedHelper) reads.add(stagedHelper);
+  let gitSshCommand = null;
+  if (options.gitSshIdentity) {
+    const key = resolveGitSshIdentity({ git: { sshIdentityFile: options.gitSshIdentity } }, { home });
+    if (key !== options.gitSshIdentity) throw new Error("Git SSH identity target changed");
+    reads.add(key);
+    const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+    const knownHosts = path.join(home, ".ssh", "known_hosts").replace(/([\\"])/g, "\\$1");
+    gitSshCommand = `ssh -F /dev/null -i ${quote(key)} -o IdentitiesOnly=yes -o IdentityAgent=none -o ${quote(`UserKnownHostsFile="${knownHosts}"`)} -o StrictHostKeyChecking=yes`;
+  }
   for (const file of options.hostReadManifest?.files ?? []) reads.add(existing(file, "host read file"));
   for (const root of options.hostReadManifest?.roots ?? []) {
     const resolved = directory(root, "host read root");
@@ -100,6 +109,7 @@ export function buildSrtPolicy(options) {
       allowLocalBinding: true, allowUnixSockets: [...new Set(socketPaths.flatMap(aliases))],
     },
   };
-  return Object.freeze({ ...policy, workspaceRoot, bareCommonDirectory: common, controllerRoot, dockerSocket, generation: createHash("sha256").update(JSON.stringify(policy)).digest("hex") });
+  const generationInput = gitSshCommand ? { ...policy, gitSshCommand } : policy;
+  return Object.freeze({ ...policy, gitSshCommand, workspaceRoot, bareCommonDirectory: common, controllerRoot, dockerSocket, generation: createHash("sha256").update(JSON.stringify(generationInput)).digest("hex") });
 }
 export const srtPolicyInternals = Object.freeze({ within, assertHostReadRoot, aliases });

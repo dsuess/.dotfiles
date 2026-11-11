@@ -17,7 +17,7 @@ function identity(stat) { return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.ui
 function immutableConfig(config) {
   return Object.freeze({ version: 1, filesystem: Object.freeze({
     readOnly: Object.freeze([...config.filesystem.readOnly]), readWrite: Object.freeze([...config.filesystem.readWrite]),
-  }) });
+  }), ...(config.git ? { git: Object.freeze({ ...config.git }) } : {}) });
 }
 function snapshot(configPath, targetPath, bytes, stat, config, grants) {
   return Object.freeze({ configPath, targetPath, revision: revision(targetPath, bytes), fileIdentity: identity(stat), config: immutableConfig(config), grants });
@@ -42,7 +42,7 @@ export function prepareFilesystemGrantChange(saved, change, options = {}) {
   const spellings = [...saved.config.filesystem.readOnly, ...saved.config.filesystem.readWrite];
   const index = existing.findIndex((grant) => grant.canonicalPath === requested.canonicalPath);
   if (change.type === "remove" && index === -1) throw new Error("No saved grant matches this directory; derived workspace access cannot be removed here");
-  const config = { version: 1, filesystem: { readOnly: [], readWrite: [] } };
+  const config = { version: 1, filesystem: { readOnly: [], readWrite: [] }, ...(saved.config.git ? { git: { ...saved.config.git } } : {}) };
   existing.forEach((grant, entryIndex) => {
     if (grant.canonicalPath !== requested.canonicalPath) config.filesystem[grant.access === "ro" ? "readOnly" : "readWrite"].push(spellings[entryIndex]);
   });

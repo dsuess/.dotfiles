@@ -125,6 +125,10 @@ test("controller inherits its startup PATH, keeps Docker first, and confines use
   for (const grant of [...saved.filesystem.readOnly, ...saved.filesystem.readWrite]) {
     if (grant.startsWith("~/")) fs.mkdirSync(path.join(home, grant.slice(2)), { recursive: true });
   }
+  if (saved.git?.sshIdentityFile?.startsWith("~/")) {
+    const key = path.join(home, saved.git.sshIdentityFile.slice(2));
+    fs.mkdirSync(path.dirname(key), { recursive: true }); fs.writeFileSync(key, "test identity", { mode: 0o600 });
+  }
   for (const directory of [workspaceBin, userToolBin, path.join(home, ".agents"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials"), path.join(home, ".serena")]) fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(workspaceBin, "workspace-tool"), "#!/bin/sh\nprintf workspace-tool\n"); fs.chmodSync(path.join(workspaceBin, "workspace-tool"), 0o755);
   fs.writeFileSync(path.join(userToolBin, "user-tool"), "#!/bin/sh\nprintf user-tool\n"); fs.chmodSync(path.join(userToolBin, "user-tool"), 0o755);
@@ -261,4 +265,36 @@ test("only a root can renew an expired lease without replacing the controller or
   );
   await root.client.status();
   await root.client.release();
+});
+
+test("controller injects its Git SSH identity for exec and stdio, without changing unconfigured clients", async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-git-identity-"));
+  const startup = beginControllerStartup({ launchDirectory: workspace });
+  t.after(() => { stopStartedController(startup); fs.rmSync(workspace, { recursive: true, force: true }); });
+  const { client } = await acquire(startup, "git-identity");
+  t.after(() => client.release().catch(() => {}));
+  const saved = (await client.status()).effectiveConfiguration;
+  assert(saved.config.git);
+  async function exec(env) {
+    const chunks = [];
+    const result = await client.exec(["/bin/bash", "-c", "printf '%s|%s' \"${GIT_SSH_COMMAND-unset}\" \"$SSH_AUTH_SOCK\""], { cwd: workspace, env, onEvent: (stream, data) => { if (stream === "stdout") chunks.push(data); } });
+    assert.equal(result.exitCode, 0);
+    return Buffer.concat(chunks).toString();
+  }
+  const configured = await exec({ GIT_SSH_COMMAND: "caller", SSH_AUTH_SOCK: "caller" });
+  assert.match(configured, /^ssh -F \/dev\/null .*IdentityAgent=none .*StrictHostKeyChecking=yes\|$/);
+  const boundary = [];
+  const check = await client.exec(["/bin/bash", "-c", "if [ -r \"$KEY\" ]; then printf key-readable; else printf key-denied; fi; if [ -r \"$PRIMARY\" ]; then printf primary-readable; else printf primary-denied; fi"], {
+    cwd: workspace, env: { KEY: path.join(os.homedir(), ".ssh/agent/id_ed25519"), PRIMARY: path.join(os.homedir(), ".ssh/id_ed25519") },
+    onEvent: (stream, data) => { if (stream === "stdout") boundary.push(data); },
+  });
+  assert.equal(check.exitCode, 0); assert.equal(Buffer.concat(boundary).toString(), "key-readableprimary-denied");
+  let output = "";
+  const channel = await client.openProcess(["/bin/bash", "-c", "printf '%s' \"$GIT_SSH_COMMAND\"; sleep 1"], { cwd: workspace, env: { GIT_SSH_COMMAND: "caller" }, onEvent: (stream, data) => { if (stream === "stdout") output += data; } });
+  for (let i = 0; i < 100 && !output; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(output, configured.slice(0, -1));
+  await channel.close();
+  const without = { ...saved, config: { version: saved.config.version, filesystem: saved.config.filesystem } };
+  const prepared = await client.preparePolicy(without); await client.activatePolicy(prepared, without);
+  assert.equal(await exec({ GIT_SSH_COMMAND: "caller" }), "caller|");
 });
