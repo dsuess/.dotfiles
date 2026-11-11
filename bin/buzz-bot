@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stow installs this launcher in the host's ~/bin, even when HOME is generated.
+host_home=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 1
+export BUZZ_BOT_KEY_DIR="$host_home/.config/buzz-bot/keys"
+exec /opt/homebrew/bin/python3.14 "$host_home/src/slack-bridge/buzz/skills/buzz-bot/scripts/buzz-bot" "$@"

@@ -28,3 +28,28 @@ test("uses one fixed host gh call and never applies token masking", async () => 
   assert.deepEqual(seen.args, ["auth", "token", "--hostname", "github.com"]); assert.equal(seen.options.env.GH_TOKEN, undefined); assert.equal(seen.options.env.SSH_AUTH_SOCK, undefined); assert.deepEqual(sanitizedFixedEnvironment({ PATH: "/x", HOME: "/h", DOCKER_HOST: "x" }), { PATH: "/x", HOME: "/h" });
 });
 test("discovers canonical Git includes", async (t) => { const item = fixture(t), included = path.join(item.home, "included"); fs.writeFileSync(included, "[user]\n"); assert.deepEqual(await discoverGitConfigOrigins({ gitPath: "/git", execFile: async () => ({ stdout: `file:${included}\0x\t1\0` }) }), [included]); });
+
+test("Buzz runtime grants only fixed, safe existing paths", (t) => {
+  const { home, tools } = fixture(t);
+  const skill = path.join(home, "src/slack-bridge/buzz/skills/buzz-bot");
+  const keys = path.join(home, ".config/buzz-bot/keys"), key = path.join(keys, "daniel-suess-local.hex");
+  const cli = path.join(tools, "buzz");
+  let manifest = resolveHostReadManifest({ home, buzzCliPath: cli });
+  assert.equal(manifest.buzzBotKey, null); assert(!manifest.roots.includes(skill)); assert(!manifest.files.includes(cli));
+  fs.mkdirSync(skill, { recursive: true }); fs.mkdirSync(keys, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(key, "fixture", { mode: 0o600 }); fs.writeFileSync(path.join(keys, "other.hex"), "fixture", { mode: 0o600 });
+  fs.writeFileSync(cli, "fixture", { mode: 0o755 });
+  manifest = resolveHostReadManifest({ home, buzzCliPath: cli });
+  assert.equal(manifest.buzzBotKey, key); assert(manifest.roots.includes(skill)); assert(manifest.files.includes(cli));
+  assert(!manifest.roots.includes(keys)); assert(!manifest.files.includes(path.join(keys, "other.hex")));
+  fs.chmodSync(key, 0o644); assert.equal(resolveHostReadManifest({ home }).buzzBotKey, null);
+  fs.chmodSync(key, 0o600); fs.chmodSync(keys, 0o755); assert.equal(resolveHostReadManifest({ home }).buzzBotKey, null);
+  fs.chmodSync(keys, 0o700); fs.unlinkSync(key); fs.symlinkSync(path.join(keys, "other.hex"), key);
+  assert.equal(resolveHostReadManifest({ home }).buzzBotKey, null);
+  fs.unlinkSync(key); fs.renameSync(keys, `${keys}-target`); fs.symlinkSync(`${keys}-target`, keys);
+  assert.equal(resolveHostReadManifest({ home }).buzzBotKey, null);
+  fs.unlinkSync(cli); fs.symlinkSync(path.join(tools, "gh"), cli);
+  assert(!resolveHostReadManifest({ home, buzzCliPath: cli }).files.includes(cli));
+  fs.rmSync(skill, { recursive: true }); fs.symlinkSync(tools, skill);
+  assert(!resolveHostReadManifest({ home }).roots.includes(tools));
+});

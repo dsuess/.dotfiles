@@ -36,6 +36,19 @@ function addFile(target, candidate, home) {
   if (resolved && !isForbidden(resolved, home)) target.add(resolved);
 }
 
+/** Optional credential exception: never follow a key or directory symlink. */
+export function resolveBuzzBotKey(home) {
+  const keyDir = path.join(home, ".config/buzz-bot/keys");
+  const key = path.join(keyDir, "daniel-suess-local.hex");
+  try {
+    const dirStat = fs.lstatSync(keyDir), stat = fs.lstatSync(key);
+    if (fs.realpathSync(keyDir) !== keyDir || fs.realpathSync(key) !== key ||
+        !dirStat.isDirectory() || !stat.isFile() || (dirStat.mode & 0o077) || (stat.mode & 0o077) ||
+        dirStat.uid !== process.getuid() || stat.uid !== process.getuid()) return null;
+    return key;
+  } catch { return null; }
+}
+
 /** Strip ambient authority before every controller-owned fixed spawn. */
 export function sanitizedFixedEnvironment(environment = process.env) {
   const safe = {};
@@ -74,6 +87,12 @@ export function resolveHostReadManifest(options = {}) {
     const resolved = realDirectory(candidate);
     if (resolved && !isForbidden(resolved, home)) roots.add(resolved);
   }
+  // These are fixed installation locations, not arbitrary symlink discovery.
+  const buzzSkill = path.join(home, "src/slack-bridge/buzz/skills/buzz-bot");
+  if (realDirectory(buzzSkill) === buzzSkill) roots.add(buzzSkill);
+  const buzzCli = options.buzzCliPath ?? "/Applications/Buzz.app/Contents/MacOS/buzz";
+  if (realFile(buzzCli) === buzzCli && (fs.statSync(buzzCli).mode & 0o111)) files.add(buzzCli);
+  const buzzBotKey = resolveBuzzBotKey(home);
   for (const candidate of options.additionalReadOnly ?? []) {
     const resolved = realFile(candidate);
     if (!resolved || isForbidden(resolved, home) || resolved.startsWith(`${path.join(home, ".ssh")}${path.sep}`)) {
@@ -81,7 +100,7 @@ export function resolveHostReadManifest(options = {}) {
     }
     files.add(resolved);
   }
-  return { files: [...files].sort(), roots: [...roots].sort() };
+  return { files: [...files].sort(), roots: [...roots].sort(), buzzBotKey };
 }
 
 export function validateAdditionalHostPath(candidate, access, options = {}) {

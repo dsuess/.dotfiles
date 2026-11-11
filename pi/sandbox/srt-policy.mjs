@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveGitSshIdentity, validateFilesystemGrants } from "./filesystem-grants.mjs";
+import { resolveBuzzBotKey } from "./host-configuration.mjs";
 
 const TOOL_ROOTS = ["/opt/homebrew", "/usr/local", "/usr/bin", "/bin"];
 
@@ -64,6 +65,11 @@ export function buildSrtPolicy(options) {
     const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
     const knownHosts = path.join(home, ".ssh", "known_hosts").replace(/([\\"])/g, "\\$1");
     gitSshCommand = `ssh -F /dev/null -i ${quote(key)} -o IdentitiesOnly=yes -o IdentityAgent=none -o ${quote(`UserKnownHostsFile="${knownHosts}"`)} -o StrictHostKeyChecking=yes`;
+  }
+  if (options.hostReadManifest?.buzzBotKey) {
+    const key = resolveBuzzBotKey(home);
+    if (key !== options.hostReadManifest.buzzBotKey) throw new Error("Buzz bot key is unsafe or its target changed");
+    reads.add(key);
   }
   for (const file of options.hostReadManifest?.files ?? []) reads.add(existing(file, "host read file"));
   for (const root of options.hostReadManifest?.roots ?? []) {

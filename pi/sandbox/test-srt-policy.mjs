@@ -6,7 +6,7 @@ import test from "node:test";
 import { buildSrtPolicy } from "./srt-policy.mjs";
 
 async function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-policy-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-policy-")));
   const home = path.join(root, "home"), workspace = path.join(home, "workspace"), controller = path.join(root, "controller"), broker = path.join(root, "broker"), tools = path.join(root, "tools");
   for (const item of [workspace, controller, broker, tools, path.join(home, ".local/bin"), path.join(home, ".local/share/uv/tools"), path.join(home, ".local/share/uv/python"), path.join(home, ".local/share/uv/credentials")]) fs.mkdirSync(item, { recursive: true });
   fs.writeFileSync(path.join(home, ".zshrc"), "safe\n");
@@ -59,4 +59,18 @@ test("private session archives stay denied through folded Stow aliases and broad
     assert.ok(!policy.filesystem.allowRead.includes(root));
     assert.ok(!policy.filesystem.allowWrite.includes(root));
   }
+});
+
+test("Buzz credential is revalidated and read-only without granting adjacent keys", async (t) => {
+  const item = await fixture(t), keys = path.join(item.home, ".config/buzz-bot/keys");
+  fs.mkdirSync(keys, { recursive: true, mode: 0o700 });
+  const key = path.join(keys, "daniel-suess-local.hex"), other = path.join(keys, "other.hex");
+  fs.writeFileSync(key, "fixture", { mode: 0o600 }); fs.writeFileSync(other, "fixture", { mode: 0o600 });
+  const options = { home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, hostReadManifest: { buzzBotKey: key } };
+  const policy = buildSrtPolicy(options);
+  assert(policy.filesystem.denyRead.includes(fs.realpathSync(item.home)));
+  assert(policy.filesystem.allowRead.includes(key)); assert(!policy.filesystem.allowRead.includes(keys)); assert(!policy.filesystem.allowRead.includes(other));
+  assert(!policy.filesystem.allowWrite.includes(key)); assert(!policy.filesystem.allowWrite.includes(keys));
+  fs.chmodSync(key, 0o644); assert.throws(() => buildSrtPolicy(options), /Buzz bot key is unsafe/);
+  fs.unlinkSync(key); fs.symlinkSync(other, key); assert.throws(() => buildSrtPolicy(options), /Buzz bot key is unsafe/);
 });
