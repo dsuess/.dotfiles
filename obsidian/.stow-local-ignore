@@ -1,0 +1,4 @@
+# Only selected plugin settings are managed; Obsidian installs plugin code.
+^/plugins/(?!ink(?:/|$)|open-in-terminal(?:/|$)|slash-commander(?:/|$))[^/]+
+^/plugins/(?:ink|open-in-terminal|slash-commander)/(?!data\.json$)[^/]+
+\.gitignore

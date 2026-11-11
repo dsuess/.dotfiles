@@ -10,15 +10,13 @@ Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/). E
 
 **Never manually create symlinks or copy files into target directories.** All symlinks must be created through stow, invoked via `./install.sh config`. To deploy a new file: add it to the appropriate package directory, then run `./install.sh config`.
 
-**Exception — `obsidian/`:** this one package is deployed by *copying* real files (not stow symlinks), because its iCloud vaults sync to iOS/iPadOS, which cannot follow symlinks. See the Obsidian section below.
-
 ## Plan Documents
 
 Always commit a plan document in the same commit as the changes that implement it.
 
 ## Correction lessons
 
-- Let Obsidian install and update plugin binaries. Track only selected plugin `data.json` settings; never copy or replace entire vault plugin directories.
+- Deploy Obsidian settings with Stow without Git cleanliness or drift gates. Let Obsidian manage plugin code; track and deploy only selected plugin `data.json` settings.
 
 - Strip `PI_LAUNCHER_CHAIN` from routed guest environments and controller operation environments, including caller overrides. It belongs to one launcher exec chain, not independent descendant commands; keep launcher recursion checks intact.
 
@@ -138,16 +136,13 @@ To add a new language: create `lua/lang/<name>.lua` and add it to the `lang_modu
 
 ## Obsidian Config (`obsidian/`)
 
-Target: each vault's `.obsidian/` directory (e.g. `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/notes/.obsidian`). Unlike every other package, obsidian is **copied as real files**, not stowed as symlinks — iCloud Drive does not sync symlinks to iOS/iPadOS, so symlinked config never reaches the iPad. The copy logic lives in `sync_obsidian()` in `install.sh`.
+On macOS, `./install.sh config` uses Stow to link configuration files into each existing `.obsidian/` directory under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/`. It does not check Git cleanliness or import settings from a vault. Editing a linked setting changes the repository file and affects every vault linked to it.
 
-`./install.sh config` performs a safe round-trip for obsidian:
+Stow uses file-level links and leaves plugin and snippet directories as real directories. Only the selected plugin `data.json` files are managed; Obsidian installs and updates plugin code. The package-local `.stow-local-ignore` excludes other plugin files, including locally installed binaries.
 
-1. Requires managed Obsidian settings to have no uncommitted git changes (clean baseline). Plugin-code removals and updates do not block deployment.
-2. Pulls the canonical vault's tracked config back into the repo (`OBSIDIAN_VAULT`, default `notes`).
-3. If that pull changed anything, it **errors** — the device changed config that isn't committed. Run `git diff obsidian/`, then commit (or `git checkout obsidian/` to discard) and re-run.
-4. Otherwise it copies the repo config as real files into every vault's `.obsidian/`.
+**iCloud limitation:** iCloud Drive does not sync these symlinks to iOS/iPadOS, so this deployment does not provide those devices with the linked settings.
 
-So config edited in Obsidian on any device (iCloud brings it down to the Mac's `notes` vault) is captured back into the repo for review/commit before it deploys — never silently overwritten.
+**One-time migration:** Existing regular files that conflict with managed files block Stow for that vault. In an ordinary host terminal, first back up the vault's `.obsidian/` directory to a location outside `.obsidian/`. Review the Stow conflict diagnostics and the backup, then remove only the conflicting managed files from the vault. Preserve plugin directories, plugin binaries, and unselected files. Run `./install.sh config` again and check that the managed files are links and Obsidian can read them without plugin damage. Repeat for each conflicting vault. The installer does not remove conflicts or migrate their contents.
 
 Key files:
 
@@ -159,7 +154,7 @@ Key files:
 
 1. Create `obsidian/snippets/<name>.css`
 2. Add `"<name>"` to the `enabledCssSnippets` array in `obsidian/appearance.json`
-3. Run `./install.sh config` (deploys the new file into all vaults as real files)
+3. Run `./install.sh config` (links the new file into existing vault configurations)
 4. Reload Obsidian (command palette → "Reload app without saving") to pick up changes
 
 ## AGENTS.md Scope

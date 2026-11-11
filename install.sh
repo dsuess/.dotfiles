@@ -4,8 +4,7 @@ set -e
 PLATFORM="$(uname -s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-OBSIDIAN_VAULT="notes"   # canonical vault for the drift check; match the real folder name
-OBSIDIAN_DOCS="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
+OBSIDIAN_DOCS="~/Documents/neara"
 
 LOCAL_BIN="$HOME/.local/bin"   # where the Linux bootstrap drops vendored/downloaded tools
 
@@ -357,7 +356,7 @@ cmd_config() {
         stow_or_warn zed -t ~/.config/zed
         stow_or_warn "Alfred Workflows" -t ~/.config/Alfred.alfredpreferences/workflows/
 
-        [[ -d "$OBSIDIAN_DOCS" ]] && sync_obsidian "$OBSIDIAN_DOCS"
+        [[ -d "$OBSIDIAN_DOCS" ]] && deploy_obsidian "$OBSIDIAN_DOCS"
     fi
 }
 
@@ -368,62 +367,14 @@ configure_macos_keyboard() {
     defaults write -g KeyRepeat -int 2
 }
 
-# Deploy obsidian config as real files (iCloud can't sync symlinks to iPadOS),
-# with a safe round-trip: pull the canonical vault's config back into the repo
-# first and refuse to deploy if it drifted from the committed state.
-sync_obsidian() {
-    local docs="$1"
-    local canonical="$docs/$OBSIDIAN_VAULT/.obsidian"
-
-    # Manage individual config files, never Obsidian-installed plugin code.
-    # Keep only the plugin settings already selected for tracking.
-    local files=() f relative vault obsidian_dir stage
-    while IFS= read -r f; do
-        case "$f" in
-            obsidian/plugins/*/data.json) files+=("$f") ;;
-            obsidian/plugins/*) ;;
-            obsidian/*) files+=("$f") ;;
-        esac
-    done < <(git ls-files --cached --others --exclude-standard obsidian)
-    ((${#files[@]})) || return 0
-
-    # 1. Clean baseline for managed settings only. Plugin updates are irrelevant.
-    if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
-        echo "❌ Managed Obsidian settings have uncommitted changes — commit or stash first." >&2
-        return 1
-    fi
-
-    # 2. Pull only managed files. Dereference legacy links before replacing them.
-    if [[ -d "$canonical" ]]; then
-        stage="$(mktemp -d)"
-        for f in "${files[@]}"; do
-            relative="${f#obsidian/}"
-            [[ -e "$canonical/$relative" ]] || continue
-            mkdir -p "$stage/$(dirname "$relative")"
-            cp -L "$canonical/$relative" "$stage/$relative"
-            cp "$stage/$relative" "$f"
-        done
-        rm -rf "$stage"
-        if [[ -n "$(git status --porcelain -- "${files[@]}")" ]]; then
-            echo "❌ The '$OBSIDIAN_VAULT' vault has managed settings changes not in the repo." >&2
-            echo "   Review: git diff obsidian/ — commit or discard those settings, then re-run." >&2
-            return 1
-        fi
-    else
-        echo "⚠️  Vault '$OBSIDIAN_VAULT' config not found; skipping drift check." >&2
-    fi
-
-    # 3. Copy managed settings without removing plugin directories or binaries.
+# Stow individual configuration files without managing installed plugin code.
+deploy_obsidian() {
+    local docs="$1" vault obsidian_dir
     for vault in "$docs"/*/; do
         obsidian_dir="${vault}.obsidian"
         [[ -d "$obsidian_dir" ]] || continue
-        echo "📋 Copying Obsidian settings into $obsidian_dir"
-        for f in "${files[@]}"; do
-            relative="${f#obsidian/}"
-            mkdir -p "$obsidian_dir/$(dirname "$relative")"
-            rm -f "$obsidian_dir/$relative"
-            cp "$f" "$obsidian_dir/$relative"
-        done
+        echo "🔗 Stowing Obsidian settings into $obsidian_dir"
+        stow_or_warn --no-folding -d "$SCRIPT_DIR" -t "$obsidian_dir" obsidian
     done
 }
 
