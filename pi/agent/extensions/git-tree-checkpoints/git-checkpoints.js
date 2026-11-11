@@ -252,7 +252,9 @@ function batches(items, size = 256) {
 
 async function removeIndexPaths(repository, paths, runner, signal, env) {
 	for (const batch of batches(paths)) {
-		if (batch.length) await runGit(repository.root, ["rm", "--cached", "--ignore-unmatch", "--", ...batch], { runner, signal, env });
+		// This index is disposable: remove literal entries without refreshing the
+		// excluded worktree paths or running their clean filters (notably Git LFS).
+		if (batch.length) await runGit(repository.root, ["update-index", "--force-remove", "--", ...batch], { runner, signal, env });
 	}
 }
 

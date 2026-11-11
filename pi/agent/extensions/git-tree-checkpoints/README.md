@@ -50,6 +50,20 @@ Version 2 restore validates repository identity, metadata version, object types,
 
 > Checkpointed non-ignored text files enter Git objects. Ignore secret text paths that must not be checkpointed.
 
+## Submission latency
+
+Capture finishes before the model request starts. It remains synchronous with prompt preparation to prevent races with model edits.
+
+Excluded paths are removed from the temporary index with `git update-index --force-remove`. This command does not refresh their worktree content or run their clean filters. The real index and excluded files remain unchanged.
+
+The previous `git rm --cached` command refreshed excluded paths and invoked Git LFS filters. An isolated reproduction in `pc-ml/master` spent 9.0–9.5 seconds in this phase. Index-only removal reduced this phase to 8–11 milliseconds. Full capture fell from 10.1–10.6 seconds to 0.9–1.1 seconds. The remaining time includes text selection and worktree capture.
+
+The diagnostic used Pi 1.3.0, the configured extensions, disposable Git storage, and a deterministic local response. Fresh sessions, representative history, and submissions after 31 seconds idle reproduced the delay. A minimal loadout started its request in 5–6 milliseconds. Direct PTY submissions outside Git did not reproduce a multi-second delay.
+
+The managed `/install/` ignore rule separately excludes generated Pi dependencies in dotfiles. Full capture there fell from approximately 18 seconds to 0.26–0.31 seconds. The installation and historical checkpoint refs remain intact.
+
+These measurements exclude actual provider latency. Real terminal confirmation in the affected workspace remains a separate smoke check.
+
 ## Limits and unsupported states
 
 - **Outside a Git worktree:** the enhancement disables itself for that session; normal `/tree` navigation remains available.

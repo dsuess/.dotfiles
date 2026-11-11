@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readlink, rename, rm, unlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rename, rm, unlink, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -133,6 +133,60 @@ test("captures only text paths and leaves binary tracked and untracked paths unt
 	assert.deepEqual(await readFile(path.join(root, "tracked.bin")), Buffer.from([0, 7, 8]));
 	assert.deepEqual(await readFile(path.join(root, "untracked.bin")), Buffer.from([0, 9, 10]));
 	assert.deepEqual(await readFile(path.join(root, "later.bin")), Buffer.from([0, 11, 12]));
+});
+
+test("excludes filtered binary paths without refreshing them or invoking clean filters", async (t) => {
+	const root = await createRepository(t);
+	await write(root, ".gitattributes", "excluded*.bin -text filter=checkpoint-probe\n");
+	await write(root, "excluded.bin", "staged excluded content\n");
+	await write(root, "excluded[1].bin", "literal metacharacter path\n");
+	// Avoid Git's separate racy-index write-tree check on freshly created files.
+	for (const file of ["excluded.bin", "excluded[1].bin"]) {
+		await utimes(path.join(root, file), new Date(0), new Date(0));
+	}
+	await git(root, ["add", ".gitattributes", "excluded.bin", "excluded[1].bin"]);
+	await git(root, ["commit", "-m", "excluded fixtures"]);
+	const filterLog = path.join(root, "filter-invocations.ignored");
+	await write(root, "probe.ignored", '#!/bin/sh\nprintf "called\\n" >> "$1"\ncat\n', { mode: 0o755 });
+	await git(root, ["config", "filter.checkpoint-probe.clean", `./probe.ignored '${filterLog}'`]);
+	await git(root, ["config", "filter.checkpoint-probe.required", "true"]);
+	await write(root, "excluded.bin", "changed excluded worktree content\n");
+	const indexPath = (await git(root, ["rev-parse", "--git-path", "index"])).stdout.trim();
+	const beforeIndex = await readFile(path.resolve(root, indexPath));
+	const repository = await findGitRepository(root);
+	const checkpoint = await capture(repository);
+
+	assert.equal(await exists(root, "filter-invocations.ignored"), false, "excluded paths must not run clean filters");
+	assert.deepEqual(await readFile(path.resolve(root, indexPath)), beforeIndex);
+	for (const tree of [checkpoint.indexTree, checkpoint.worktreeTree]) {
+		const paths = await treePaths(root, tree);
+		assert.ok(paths.includes("tracked.txt"));
+		assert.ok(!paths.includes("excluded.bin"));
+		assert.ok(!paths.includes("excluded[1].bin"));
+	}
+	assert.equal(await read(root, "excluded.bin"), "changed excluded worktree content\n");
+	assert.equal(await indexContent(root, "excluded.bin"), "staged excluded content\n");
+});
+
+test("managed ignore rules exclude installation artifacts but retain recoverable agent source", async (t) => {
+	const root = await createRepository(t);
+	const ignore = await readFile(new URL("../../../.gitignore", import.meta.url), "utf8");
+	await write(root, "pi/agent/.gitignore", ignore);
+	await write(root, "pi/agent/install/releases/runtime.js", "generated runtime\n");
+	await write(root, "pi/agent/extensions/source.ts", "original source\n");
+	await write(root, "pi/agent/extensions/install/source.ts", "nested ordinary source\n");
+	const repository = await findGitRepository(root);
+	const checkpoint = await capture(repository);
+	const artifact = "pi/agent/install/releases/runtime.js";
+	assert.ok(!checkpoint.textPaths.includes(artifact));
+	assert.ok(!(await treePaths(root, checkpoint.worktreeTree)).includes(artifact));
+	assert.ok(checkpoint.textPaths.includes("pi/agent/extensions/install/source.ts"));
+	await write(root, "pi/agent/extensions/source.ts", "later source\n");
+	await write(root, artifact, "runtime remains untouched\n");
+	await restoreCheckpoint(repository, checkpoint);
+	assert.equal(await read(root, "pi/agent/extensions/source.ts"), "original source\n");
+	assert.equal(await read(root, artifact), "runtime remains untouched\n");
+	assert.equal((await git(root, ["rev-parse", checkpoint.sessionRef])).stdout.trim(), checkpoint.anchorCommit);
 });
 
 test("cleans temporary indexes after command failure, cancellation, and ref-update failure", async (t) => {
