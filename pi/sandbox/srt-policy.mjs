@@ -99,6 +99,8 @@ export function buildSrtPolicy(options) {
   const socketPaths = [dockerSocket];
   if (fs.existsSync("/var/run/mDNSResponder")) socketPaths.unshift("/var/run/mDNSResponder");
   const policy = {
+    // macOS system certificate verification needs trustd.agent for sandboxed clients.
+    enableWeakerNetworkIsolation: true,
     filesystem: {
       // SRT's write policy is allow-only.  A home-level denyWrite masks a
       // workspace nested below home, so controller state is protected by the

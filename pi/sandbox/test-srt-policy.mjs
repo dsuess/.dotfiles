@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildSrtPolicy } from "./srt-policy.mjs";
+import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 
 async function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-srt-policy-")));
@@ -21,8 +22,18 @@ test("grants complete writes only to trusted roots and exact Unix sockets", asyn
   assert(policy.filesystem.allowCompleteWorkspaceWrites.includes(policy.workspaceRoot));
   assert(!policy.filesystem.allowWrite.includes(policy.controllerRoot));
   for (const root of ["/opt/homebrew", "/usr/local", "/usr/bin", "/bin"]) assert(!policy.filesystem.allowWrite.includes(root), root);
+  assert.equal(policy.enableWeakerNetworkIsolation, true);
   assert(policy.network.allowUnrestrictedIp); assert(policy.network.allowUnixSockets.includes(fs.realpathSync(item.socket)));
   assert.match(policy.generation, /^[0-9a-f]{64}$/);
+});
+test("macOS SRT profile adds only the intended trustd lookup when enabled", async (t) => {
+  const item = await fixture(t);
+  const policy = buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket });
+  const options = { command: "true", needsNetworkRestriction: true, allowUnrestrictedIp: true };
+  const enabled = wrapCommandWithSandboxMacOS({ ...options, enableWeakerNetworkIsolation: policy.enableWeakerNetworkIsolation });
+  const disabled = wrapCommandWithSandboxMacOS(options);
+  assert.match(enabled, /\(allow mach-lookup \(global-name "com\.apple\.trustd\.agent"\)\)/);
+  assert.doesNotMatch(disabled, /\(allow mach-lookup \(global-name "com\.apple\.trustd\.agent"\)\)/);
 });
 test("rejects protected and overlapping grants", async (t) => {
   const item = await fixture(t);
