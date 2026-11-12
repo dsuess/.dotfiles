@@ -167,3 +167,16 @@ test("each mode offers only its opposite action; cancellation changes nothing", 
     assert.deepEqual(f.reports, []);
   }
 });
+
+test("file paths use the same explicit and menu grant controls", async () => {
+  assert.match(SANDBOX_HELP, /file or directory/);
+  const direct = fixture();
+  await direct.command.handler("grants add ro ~/.phab-helper.json", direct.ctx);
+  await direct.command.handler("grants add rw ~/config/state file.json", direct.ctx);
+  await direct.command.handler("grants remove ~/.phab-helper.json", direct.ctx);
+  assert.deepEqual(direct.calls, [["add", "ro", "~/.phab-helper.json"], ["add", "rw", "~/config/state file.json"], ["remove", "~/.phab-helper.json"]]);
+  const menu = fixture({ selections: ["Add or change a saved grant", "Read-only (ro)"], inputs: ["~/config/file.json"] });
+  await menu.command.handler("", menu.ctx);
+  assert.deepEqual(menu.calls, [["status"], ["add", "ro", "~/config/file.json"]]);
+  assert.match(menu.dialogs.at(-1).title, /file or directory/);
+});

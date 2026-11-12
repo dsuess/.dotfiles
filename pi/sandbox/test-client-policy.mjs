@@ -165,6 +165,9 @@ test("policy RPCs are bounded complete snapshots and operation env cannot select
   }
   assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, config: { ...prepare.config, network: {} } })), /unknown key/);
   assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, grants: Array(33).fill({}) })), /bounded/);
+  const grant = { path: "/a", canonicalPath: "/a", access: "ro", targetType: "file" };
+  assert.equal(validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, grants: [grant] })).params.grants[0].targetType, "file");
+  for (const targetType of [undefined, "socket"]) assert.throws(() => validateRequest(makeRequest(1, "policy.prepare", auth, { ...prepare, grants: [{ ...grant, targetType }] })), /target type/);
   assert.throws(() => validateRequest(makeRequest(1, "policy.activate", auth, { preparation: auth, revision, context: auth })), /unknown key/);
   assert.throws(() => validateRequest(makeRequest(1, "exec", auth, { argv: ["echo"], cwd: "/workspace", env: {}, timeoutMs: 1, maxOutputBytes: 1, policyGeneration: auth, policyContext: auth })), /unknown key/);
 });
@@ -209,4 +212,47 @@ test("Git identity is snapshot-bound, changes the generation, and detects retarg
   const pending = f.policies.prepare(old, { ...f.configuration.read(), config: { ...config, git: { sshIdentityFile: "~/.ssh/agent/key one" } } });
   fs.unlinkSync(path.join(agent, "key one")); fs.writeFileSync(path.join(agent, "key one"), "key", { mode: 0o600 });
   assert.throws(() => f.policies.activate(old, pending.preparation, f.configuration.read().revision), /identity target changed/i);
+});
+
+test("file grant snapshots revalidate type at prepare, commit, activation and capture", async (t) => {
+  const f = fixture(t), file = path.join(f.home, "file with spaces"), alias = path.join(f.home, "alias-file"), first = {};
+  fs.writeFileSync(file, "fixture"); fs.symlinkSync(file, alias);
+  const candidate = f.configuration.prepare({ type: "add", access: "rw", path: alias });
+  const prepared = f.policies.prepare(first, candidate);
+  const saved = await f.configuration.commit(candidate);
+  f.policies.activate(first, prepared.preparation, saved.revision);
+  const active = f.policies.capture(first);
+  const duplicate = f.configuration.prepare({ type: "add", access: "ro", path: file });
+  const pending = f.policies.prepare(first, duplicate);
+  const bytes = fs.readFileSync(f.configPath);
+  fs.unlinkSync(file); fs.mkdirSync(file);
+  assert.throws(() => f.policies.capture(first), /target type changed/);
+  assert.throws(() => f.policies.prepare(first, duplicate), /target type changed/);
+  assert.throws(() => f.policies.activate(first, pending.preparation, saved.revision), /target type changed/);
+  await assert.rejects(f.configuration.commit(duplicate), /target type changed/);
+  assert.deepEqual(fs.readFileSync(f.configPath), bytes);
+  assert.equal(active.configuration.grants.at(-1).targetType, "file");
+});
+
+test("file grant downgrade, removal and sibling refresh retain client isolation", async (t) => {
+  const f = fixture(t), file = path.join(f.home, "file with spaces"), first = {}, sibling = {};
+  fs.writeFileSync(file, "fixture"); f.policies.capture(sibling);
+  async function apply(type, access) {
+    const candidate = f.configuration.prepare({ type, access, path: "~/file with spaces" });
+    const prepared = f.policies.prepare(first, candidate), saved = await f.configuration.commit(candidate);
+    f.policies.activate(first, prepared.preparation, saved.revision);
+    return saved;
+  }
+  await apply("add", "rw");
+  assert(f.policies.capture(first).policy.filesystem.allowWrite.includes(file));
+  assert(!f.policies.capture(sibling).policy.filesystem.allowRead.includes(file));
+  await apply("add", "ro");
+  assert(f.policies.capture(first).policy.filesystem.allowRead.includes(file));
+  assert(!f.policies.capture(first).policy.filesystem.allowWrite.includes(file));
+  const refresh = f.policies.prepare(sibling, f.configuration.read());
+  f.policies.activate(sibling, refresh.preparation, f.configuration.read().revision);
+  assert(f.policies.capture(sibling).policy.filesystem.allowRead.includes(file));
+  await apply("remove");
+  assert(!f.policies.capture(first).policy.filesystem.allowRead.includes(file));
+  assert(f.policies.capture(sibling).policy.filesystem.allowRead.includes(file));
 });

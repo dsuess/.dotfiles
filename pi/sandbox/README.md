@@ -20,7 +20,7 @@ Sandbox filesystem, environment, and Docker restrictions apply while sandboxing 
 - The optional `git.sshIdentityFile` is the only SSH private material that the controller explicitly permits sandboxed tools to read. The file must be directly inside `~/.ssh/agent/`. It must be a regular file with no group or other permissions. Its name must not start with `s.`. The controller checks the lexical and canonical locations. The primary and signing keys and SSH agent sockets stay inaccessible. Hard-link handling is path-based. This account key can push or delete branches wherever the account permits. You can revoke the key independently. Git uses a controller-owned SSH command with strict host-key checking, no SSH configuration, and no agent.
 - IP egress is unrestricted. Unix-socket access is limited to the exact private Docker broker socket and reviewed system exceptions. SRT's `enableWeakerNetworkIsolation` also allows all sandboxed commands to look up the macOS `com.apple.trustd.agent` Mach service for system TLS certificate verification. This broadens IPC authority and presents a potential data exfiltration path through trustd. It does not disable certificate verification.
 - Workspace writes are allow-only. A workspace below the real home directory remains writable; controller and broker state are never granted. Installed tool roots, including `/opt/homebrew`, `/usr/local`, `~/.local/bin`, `~/.local/share/uv/tools`, and `~/.local/share/uv/python`, are read-only. The uv credentials directory remains denied.
-- `config.json` stores versioned saved grants for explicitly shared tool-plane directories. Its initial grant is read-only `~/.agents`. `readWrite` is empty. Each client has its own effective policy snapshot. Saved grants do not replace derived workspace or tool access. Grants never create Docker sidecar mounts, PATH entries, generated-HOME files, or environment forwarding.
+- `config.json` stores versioned saved grants for explicitly shared tool-plane files or directories. Its initial grant is read-only `~/.agents`. `readWrite` is empty. Each client has its own effective policy snapshot. Saved grants do not replace derived workspace or tool access. Grants never create Docker sidecar mounts, PATH entries, generated-HOME files, or environment forwarding.
 
 ## Buzz bot
 
@@ -283,8 +283,8 @@ pi-sbx prune --force          # removes validated stopped Pi sidecars only
 | `/sandbox on` | Restore sandboxed execution after controller and effective-policy readiness checks. |
 | `/sandbox off` | Select host execution immediately for this conversation, without a confirmation dialog. |
 | `/sandbox grants list` | Display saved and effective grants, separate from derived access. |
-| `/sandbox grants add ro <path>` | Save a read-only directory grant and apply the result to this client. |
-| `/sandbox grants add rw <path>` | Save a read-write directory grant and apply the result to this client. |
+| `/sandbox grants add ro <path>` | Save a read-only file or directory grant and apply the result to this client. |
+| `/sandbox grants add rw <path>` | Save a read-write file or directory grant and apply the result to this client. |
 | `/sandbox grants remove <path>` | Remove a saved grant and apply the result to this client. |
 | `/sandbox reload` | Reload saved grants into this client's effective policy snapshot. |
 | `/sandbox help` | Display command syntax. |
@@ -294,6 +294,8 @@ Paths must be absolute or home-relative, such as `/path/to/shared` or `~/shared`
 ```text
 /sandbox grants add ro ~/Reference Documents
 /sandbox grants add rw /path/to/shared work
+/sandbox grants add ro ~/.phab-helper.json
+/sandbox grants add rw ~/config/state.json
 /sandbox grants remove /path/to/shared work
 ```
 
@@ -305,7 +307,7 @@ Without UI, `/sandbox` displays status. Only status, grants list, and help are a
 
 The saved configuration is `~/.pi/sandbox/config.json`, deployed through Stow from this repository's `pi/sandbox/config.json`. The schema contains `version`, `filesystem.readOnly`, `filesystem.readWrite`, and optional `git.sshIdentityFile`. The identity must exist and pass validation before a client policy can load. Grant edits preserve it. Command edits write atomically through the resolved Stow target without replacing the symlink. The edits remain visible in git. Concurrent edits use a configuration lock and revision checks.
 
-Each new client loads the current saved grants and Git identity, even if it shares an existing controller. Each active client retains its own effective policy snapshot. A successful grant edit updates the saved configuration and the current client's snapshot. Repeating `grants add` replaces all entries for the same canonical folder with one entry at the requested access level. The command retains the first saved spelling. `grants remove` removes all entries for that canonical folder. Other active clients retain their snapshots until `/sandbox reload`. A saved grant edit does not restart the shared controller.
+Each new client loads the current saved grants and Git identity, even if it shares an existing controller. Each active client retains its own effective policy snapshot. A successful grant edit updates the saved configuration and the current client's snapshot. Repeating `grants add` replaces all entries for the same canonical target with one entry at the requested access level. The command retains the first saved spelling. `grants remove` removes all entries for that canonical target. Other active clients retain their snapshots until `/sandbox reload`. A saved grant edit does not restart the shared controller.
 
 `/sandbox reload` refreshes this client's saved grants and Git identity. It is not Pi's `/reload`, a controller restart, or a Docker reset. Pi's `/reload` preserves the current effective snapshot. A new, resumed, or forked conversation loads current saved defaults, as does a process restart.
 
@@ -313,16 +315,22 @@ Status distinguishes the saved revision from the effective revision and reports 
 
 Grant limits:
 
-- Targets must be safe existing directories. Grants do not create directories or change OS file permissions.
+- Targets must be safe existing regular files or directories; missing paths, sockets, FIFOs, devices, and other special files are rejected. Grants do not create targets or change OS file permissions.
+- File grants cover only the configured path and its validated canonical alias, not their parent or siblings. Authority is path-based: replacement by another regular file at the same canonical path is permitted.
+- `*`, `?`, `[` and `]` are rejected in both configured and canonical paths because SRT treats them as patterns.
 - Read-write access includes read access. Grants do not elevate OS privileges.
 - Validation bounds both the configured lexical path and its canonical target, including Stow and other symlink aliases.
-- Folder identity uses the canonical directory path, including symlink aliases. Identical saved folders combine their effective access. Read-write includes read access.
-- A saved folder can equal the workspace. Derived workspace access remains read-write, even with a matching read-only grant.
-- Non-identical parent/child overlaps with the workspace or other grants remain invalid.
-- Every saved alias must pass lexical and canonical safety validation before policy composition. A changed symlink target blocks the snapshot, even with another valid duplicate.
-- Protected credential and runtime roots remain ungrantable, including folders identical to the workspace.
+- Identity uses the canonical target path, including symlink aliases. Identical saved targets combine their effective access. Read-write includes read access.
+- Safe saved grants may equal, contain, or lie inside the workspace. Workspace access remains read-write, including through validated aliases of saved children, even when their saved access is read-only. A read-only parent remains read-only outside the workspace.
+- Non-identical parent/child overlaps between saved grants remain invalid; workspace composition does not permit nested saved grants.
+- Every saved alias must pass lexical and canonical safety validation before policy composition. A changed symlink target or target type blocks the snapshot before further operations, even with another valid duplicate.
+- Protected credential and runtime roots remain ungrantable, including paths inside those roots and folders identical to the workspace.
 - Removing a grant removes only configured access. It does not revoke independently derived workspace or tool access.
 - Grants do not expose host Docker sockets, credential stores, SSH agents, controller state, or additional environment values.
+
+An explicitly granted ordinary configuration file may contain credentials. Any sandboxed command able to read it can use or disclose them; network egress is unrestricted. Grants do not populate the generated HOME: helpers must use the actual granted path.
+
+A read-write file grant permits in-place writes subject to SRT and OS restrictions. Atomic replacement, deletion, and renames may require parent-directory authority and are not guaranteed across platforms; a file grant never adds that authority.
 
 Startup and configuration reads preserve saved bytes and all aliases. Policy composition deduplicates effective paths without rewriting saved entries. A shared grant retains its saved access level in other workspaces. Only derived workspace and common Git roots receive complete-workspace-write exceptions.
 

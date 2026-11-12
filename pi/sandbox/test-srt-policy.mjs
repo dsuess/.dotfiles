@@ -35,11 +35,11 @@ test("macOS SRT profile adds only the intended trustd lookup when enabled", asyn
   assert.match(enabled, /\(allow mach-lookup \(global-name "com\.apple\.trustd\.agent"\)\)/);
   assert.doesNotMatch(disabled, /\(allow mach-lookup \(global-name "com\.apple\.trustd\.agent"\)\)/);
 });
-test("rejects protected and overlapping grants", async (t) => {
+test("rejects protected grants and permits workspace children", async (t) => {
   const item = await fixture(t);
   fs.mkdirSync(path.join(item.workspace, "nested"));
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: item.home, access: "ro" }] }), /protected/);
-  assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.workspace, "nested"), access: "rw" }] }), /overlaps/);
+  assert.ok(buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.workspace, "nested"), access: "rw" }] }).filesystem.allowWrite.includes(path.join(item.workspace, "nested")));
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.home, ".local"), access: "ro" }] }), /user-tool credential/);
   assert.throws(() => buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants: [{ path: path.join(item.home, ".local/share/uv"), access: "ro" }] }), /user-tool credential/);
 });

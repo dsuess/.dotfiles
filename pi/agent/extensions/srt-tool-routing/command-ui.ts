@@ -33,12 +33,12 @@ export const SANDBOX_HELP = [
   "/sandbox on — enable sandboxed execution for this conversation",
   "/sandbox off — use host access for this conversation",
   "/sandbox grants list — list saved and effective grants",
-  "/sandbox grants add ro <path> — save a read-only directory grant",
-  "/sandbox grants add rw <path> — save a read-write directory grant",
+  "/sandbox grants add ro <path> — save a read-only file or directory grant",
+  "/sandbox grants add rw <path> — save a read-write file or directory grant",
   "/sandbox grants remove <path> — remove a saved grant, not derived workspace access",
   "/sandbox reload — reload saved grants for this client, not extensions or the controller",
   "/sandbox help — show this help",
-  "Paths must be existing absolute or home-relative directories. The remainder is the literal path, including spaces. Do not add shell quotes.",
+  "Paths must be existing files or directories with absolute or home-relative paths. The remainder is the literal path, including spaces. Do not add shell quotes.",
   "Without interactive or RPC UI, only status, grants list, and help are available. An empty command shows status.",
 ].join("\n");
 
@@ -82,10 +82,10 @@ const menuOptions = (mode: "on" | "off") => [
 ];
 
 async function inputPath(ctx: ExtensionContext): Promise<string | undefined> {
-  const value = await ctx.ui.input("Existing directory path (absolute or ~/)", "/path with spaces or ~/directory");
+  const value = await ctx.ui.input("Existing file or directory path (absolute or ~/)", "/path with spaces or ~/file");
   if (value === undefined) return undefined;
   const path = value.trim();
-  if (!path || /[\r\n\0]/.test(path)) throw new Error("Enter a directory path. Use an absolute path or ~/path.");
+  if (!path || /[\r\n\0]/.test(path)) throw new Error("Enter a file or directory path. Use an absolute path or ~/path.");
   return path;
 }
 
@@ -135,7 +135,7 @@ export function createSandboxCommand(actions: SandboxCommandActions): Pick<Regis
   };
 
   return {
-    description: "Show sandbox status, control this conversation, and edit saved directory grants",
+    description: "Show sandbox status, control this conversation, and edit saved file or directory grants",
     getArgumentCompletions: sandboxArgumentCompletions,
     handler: async (args, ctx) => {
       try {

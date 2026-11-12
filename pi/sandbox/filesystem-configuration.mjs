@@ -41,7 +41,7 @@ export function prepareFilesystemGrantChange(saved, change, options = {}) {
   const requested = resolveFilesystemGrant(change.path, change.type === "add" ? change.access : "ro", options);
   const spellings = [...saved.config.filesystem.readOnly, ...saved.config.filesystem.readWrite];
   const index = existing.findIndex((grant) => grant.canonicalPath === requested.canonicalPath);
-  if (change.type === "remove" && index === -1) throw new Error("No saved grant matches this directory; derived workspace access cannot be removed here");
+  if (change.type === "remove" && index === -1) throw new Error("No saved grant matches this target; derived workspace access cannot be removed here");
   const config = { version: 1, filesystem: { readOnly: [], readWrite: [] }, ...(saved.config.git ? { git: { ...saved.config.git } } : {}) };
   existing.forEach((grant, entryIndex) => {
     if (grant.canonicalPath !== requested.canonicalPath) config.filesystem[grant.access === "ro" ? "readOnly" : "readWrite"].push(spellings[entryIndex]);

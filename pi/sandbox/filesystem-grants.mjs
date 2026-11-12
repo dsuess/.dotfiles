@@ -56,12 +56,10 @@ export function filesystemGrantContext(options = {}) {
     return [{ path: lexical, part }, { path: canonicalBoundary(lexical), part }];
   }));
   return { home, homes, workspaceRoot, controllerRoot, protectedRoots,
-    workspaceRoots: [...new Set([path.resolve(options.workspaceRoot), workspaceRoot])],
     controllerRoots: [...new Set([path.resolve(options.controllerRoot ?? options.runtimeRoot), controllerRoot])] };
 }
-function assertSafe(pathname, context, canonicalPath = pathname) {
-  if (pathname === path.parse(pathname).root || context.homes.some((root) => within(root, pathname))) throw new Error("filesystem grant overlaps protected home root; choose a narrower directory");
-  if (canonicalPath !== context.workspaceRoot && context.workspaceRoots.some((root) => overlaps(pathname, root))) throw new Error("filesystem grant overlaps workspace; only identical canonical folders are allowed");
+function assertSafe(pathname, context) {
+  if (pathname === path.parse(pathname).root || context.homes.some((root) => within(root, pathname))) throw new Error("filesystem grant overlaps protected home root; choose a narrower file or directory");
   if (context.controllerRoots.some((root) => overlaps(pathname, root))) throw new Error("filesystem grant overlaps controller state");
   for (const root of context.protectedRoots) {
     if (!overlaps(pathname, root.path)) continue;
@@ -72,20 +70,24 @@ function assertSafe(pathname, context, canonicalPath = pathname) {
 export function resolveFilesystemGrant(value, access, options = {}) {
   if (access !== "ro" && access !== "rw") throw new Error("filesystem grant access must be ro or rw");
   const context = options.protectedRoots ? options : filesystemGrantContext(options);
-  const lexicalPath = path.resolve(expandHome(value, context.home));
+  const expanded = expandHome(value, context.home);
+  if (/[*?\[\]]/.test(expanded)) throw new Error("filesystem grant path cannot contain SRT pattern characters (* ? [ ])");
+  const lexicalPath = path.resolve(expanded);
   if (lexicalPath.length > MAX_PATH_LENGTH) throw new Error("filesystem grant path is too long after home expansion");
-  let canonicalPath;
+  let canonicalPath, stat;
   try {
-    if (!fs.statSync(lexicalPath).isDirectory()) throw new Error("filesystem grant is not a directory");
     canonicalPath = fs.realpathSync(lexicalPath);
-  } catch (error) {
-    if (error?.message === "filesystem grant is not a directory") throw error;
-    throw new Error("filesystem grant directory does not exist or cannot be accessed; create it separately before granting access");
+    stat = fs.statSync(canonicalPath);
+  } catch {
+    throw new Error("filesystem grant target does not exist or cannot be accessed; create it separately before granting access");
   }
+  const targetType = stat.isDirectory() ? "directory" : stat.isFile() ? "file" : null;
+  if (!targetType) throw new Error("filesystem grant target must be a regular file or directory");
   if (canonicalPath.length > MAX_PATH_LENGTH) throw new Error("filesystem grant canonical path is too long");
-  assertSafe(lexicalPath, context, canonicalPath);
+  if (/[*?\[\]]/.test(canonicalPath)) throw new Error("filesystem grant canonical path cannot contain SRT pattern characters (* ? [ ])");
+  assertSafe(lexicalPath, context);
   assertSafe(canonicalPath, context);
-  return Object.freeze({ path: lexicalPath, canonicalPath, access });
+  return Object.freeze({ path: lexicalPath, canonicalPath, access, targetType });
 }
 
 export function resolveGitSshIdentity(config, options = {}) {
@@ -113,6 +115,7 @@ export function validateFilesystemGrants(entries, options = {}) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("filesystem grant has an invalid shape");
     const grant = resolveFilesystemGrant(entry.path, entry.access, context);
     if (entry.canonicalPath !== undefined && entry.canonicalPath !== grant.canonicalPath) throw new Error("filesystem grant symlink target changed; reload and retry");
+    if (entry.targetType !== undefined && entry.targetType !== grant.targetType) throw new Error("filesystem grant target type changed; reload and retry");
     return grant;
   });
   for (let index = 0; index < grants.length; index += 1) {
@@ -162,7 +165,7 @@ export function readFilesystemConfigurationSource(configPath = CONFIG_PATH) {
   } finally { fs.closeSync(fd); }
 }
 
-/** Load the existing versioned JSON schema; never creates grant directories. */
+/** Load the existing versioned JSON schema; never creates grant targets. */
 export function loadFilesystemGrants(options = {}) {
   let source;
   try { source = readFilesystemConfigurationSource(options.configPath); } catch (error) {

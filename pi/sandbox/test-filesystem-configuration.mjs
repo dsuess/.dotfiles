@@ -223,3 +223,20 @@ test("grant edits preserve the optional Git identity through saved bytes", async
     assert(Object.isFrozen(saved.config.git));
   }
 });
+
+test("file grants round-trip through Stow, preserving spelling, schema, and modes", async (t) => {
+  const item = fixture(t), file = path.join(item.home, "config file.json"), alias = path.join(item.home, "config-alias");
+  fs.writeFileSync(file, "synthetic", { mode: 0o600 }); fs.symlinkSync(file, alias);
+  let saved = await item.service.commit(item.service.prepare({ type: "add", access: "ro", path: "~/config file.json" }));
+  assert.deepEqual(saved.config.filesystem.readOnly, ["~/.agents", "~/config file.json"]);
+  assert.equal(item.service.list().grants.at(-1).targetType, "file");
+  saved = await item.service.commit(item.service.prepare({ type: "add", access: "rw", path: alias }));
+  assert.deepEqual(saved.config.filesystem.readWrite, ["~/config file.json"]);
+  saved = await item.service.commit(item.service.prepare({ type: "add", access: "ro", path: file }));
+  assert.deepEqual(saved.config.filesystem.readOnly, ["~/.agents", "~/config file.json"]);
+  saved = await item.service.commit(item.service.prepare({ type: "remove", path: alias }));
+  assert.deepEqual(saved.config.filesystem, { readOnly: ["~/.agents"], readWrite: [] });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(item.target).mode & 0o777, 0o640);
+  assert.equal(fs.readlinkSync(item.configPath), item.target);
+});

@@ -223,10 +223,11 @@ function validateMethod(method, params) {
       if (!Array.isArray(params.grants) || params.grants.length > 32) throw protocolError("invalid_request", "filesystem grants must be bounded arrays");
       for (const grant of params.grants) {
         plainObject(grant, "grant");
-        exactKeys(grant, new Set(["path", "canonicalPath", "access"]), "grant");
+        exactKeys(grant, new Set(["path", "canonicalPath", "access", "targetType"]), "grant");
         absolutePath(grant.path, "grant.path");
         absolutePath(grant.canonicalPath, "grant.canonicalPath");
         if (!["ro", "rw"].includes(grant.access)) throw protocolError("invalid_request", "invalid grant access");
+        if (!["file", "directory"].includes(grant.targetType)) throw protocolError("invalid_request", "invalid grant target type");
       }
       break;
     }

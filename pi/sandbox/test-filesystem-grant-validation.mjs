@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync as requireSpawn } from "node:child_process";
 import { validateFilesystemConfiguration, validateFilesystemGrants } from "./filesystem-grants.mjs";
 import { buildSrtPolicy } from "./srt-policy.mjs";
 
@@ -43,20 +44,21 @@ test("canonical targets of protected symlinks remain ungrantable outside home", 
   checkBoth(item, [{ path: runtime, access: "rw" }], /credential|protected/);
 });
 
-test("lexical and canonical workspace/controller aliases and home ancestors are excluded", (t) => {
+test("workspace aliases are allowed while controller aliases and home ancestors are excluded", (t) => {
   const item = fixture(t);
   for (const key of ["workspaceRoot", "controllerRoot"]) {
     const alias = path.join(item.root, `${key}-alias`); fs.symlinkSync(item.options[key], alias);
     if (key === "controllerRoot") checkBoth(item, [{ path: alias, access: "rw" }], /controller/);
     else assert.equal(validateFilesystemGrants([{ path: alias, access: "rw" }], item.options)[0].canonicalPath, fs.realpathSync(item.options.workspaceRoot));
     const child = path.join(item.options[key], "child"); fs.mkdirSync(child);
-    checkBoth(item, [{ path: child, access: "ro" }], /workspace|controller/);
+    if (key === "controllerRoot") checkBoth(item, [{ path: child, access: "ro" }], /controller/);
+    else assert.equal(validateFilesystemGrants([{ path: child, access: "ro" }], item.options)[0].canonicalPath, fs.realpathSync(child));
   }
   checkBoth(item, [{ path: item.root, access: "ro" }], /protected/);
   checkBoth(item, [{ path: path.parse(item.root).root, access: "rw" }], /protected/);
 });
 
-test("bounds, directory-only scope, and lexical/canonical overlaps apply to policy and saved config", (t) => {
+test("bounds and lexical/canonical overlaps apply to policy and saved config", (t) => {
   const item = fixture(t), child = path.join(item.shared, "child"), alias = path.join(item.root, "alias");
   fs.mkdirSync(child); fs.symlinkSync(item.shared, alias);
   for (const grants of [
@@ -64,7 +66,6 @@ test("bounds, directory-only scope, and lexical/canonical overlaps apply to poli
     [{ path: item.shared, access: "rw" }, { path: child, access: "ro" }],
   ]) checkBoth(item, grants, /overlapping/);
   for (const value of ["", "relative", "~user/path", "a".repeat(4097), `${item.shared}\0`, `${item.shared}\n`]) checkBoth(item, [{ path: value, access: "ro" }], /path/);
-  checkBoth(item, [{ path: item.options.dockerSocket, access: "rw" }], /not a directory/);
   checkBoth(item, Array.from({ length: 33 }, () => ({ path: item.shared, access: "ro" })), /bounded/);
   checkBoth(item, Array.from({ length: 33 }, (_, index) => ({ path: item.shared, access: index < 16 ? "ro" : "rw" })), /bounded/);
   assert.throws(() => validateFilesystemGrants([{ path: item.shared, access: "execute" }], item.options), /ro or rw/);
@@ -105,7 +106,7 @@ test("workspace matches preserve derived writes and all safety exclusions", (t) 
   checkBoth(item, [{ path: item.options.workspaceRoot, access: "ro" }, { path: path.join(item.home, ".aws"), access: "rw" }], /credential|protected/);
   const parent = path.join(item.root, "parent"), workspace = path.join(parent, "workspace");
   fs.mkdirSync(workspace, { recursive: true });
-  checkBoth({ ...item, options: { ...item.options, workspaceRoot: workspace } }, [{ path: parent, access: "rw" }], /workspace/);
+  assert.equal(validateFilesystemGrants([{ path: parent, access: "rw" }], { ...item.options, workspaceRoot: workspace })[0].canonicalPath, fs.realpathSync(parent));
 });
 
 test("policy refuses a stale validated grant after a symlink moves", (t) => {
@@ -133,4 +134,47 @@ test("configured Git identity requires a private regular file directly in the ag
   assert.throws(() => validateFilesystemConfiguration(config({ sshIdentityFile: key, extra: true }), item.options));
   assert.throws(() => validateFilesystemConfiguration(config({}), item.options));
   assert.throws(() => validateFilesystemConfiguration({ ...config({ sshIdentityFile: key }), extra: true }, item.options));
+});
+
+test("file grants compose exact aliases and reject overlaps, protected paths, and patterns", (t) => {
+  const item = fixture(t), file = path.join(item.shared, "config file"), alias = path.join(item.root, "file-alias");
+  fs.writeFileSync(file, "fixture"); fs.symlinkSync(file, alias);
+  const grants = validateFilesystemGrants([{ path: alias, access: "ro" }, { path: file, access: "rw" }], item.options);
+  assert.equal(grants[0].targetType, "file");
+  const policy = buildSrtPolicy({ ...item.options, grants });
+  for (const target of [alias, fs.realpathSync(file)]) {
+    assert(policy.filesystem.allowRead.includes(target));
+    assert(policy.filesystem.allowWrite.includes(target));
+    assert(!policy.filesystem.allowCompleteWorkspaceWrites.includes(target));
+  }
+  assert(!policy.filesystem.allowRead.includes(item.shared));
+  assert(!policy.filesystem.allowWrite.includes(item.shared));
+  checkBoth(item, [{ path: item.shared, access: "ro" }, { path: file, access: "rw" }], /overlapping/);
+  const workspaceFile = path.join(item.options.workspaceRoot, "file"); fs.writeFileSync(workspaceFile, "x");
+  assert.equal(validateFilesystemGrants([{ path: workspaceFile, access: "ro" }], item.options)[0].targetType, "file");
+  const secret = path.join(item.home, ".ssh", "key"); fs.mkdirSync(path.dirname(secret)); fs.writeFileSync(secret, "synthetic");
+  checkBoth(item, [{ path: secret, access: "ro" }], /credential|protected/);
+  for (const character of ["*", "?", "[", "]"]) {
+    const patterned = path.join(item.shared, `file${character}`), patternedAlias = path.join(item.root, `alias-${character}`);
+    fs.writeFileSync(patterned, "x"); fs.symlinkSync(file, patternedAlias);
+    checkBoth(item, [{ path: patternedAlias, access: "ro" }], /pattern/);
+    const cleanAlias = path.join(item.root, `clean-${character.charCodeAt(0)}`); fs.symlinkSync(patterned, cleanAlias);
+    checkBoth(item, [{ path: cleanAlias, access: "rw" }], /pattern/);
+  }
+});
+
+test("file snapshots allow regular replacement but reject type changes and special files", (t) => {
+  const item = fixture(t), file = path.join(item.shared, "file"), alias = path.join(item.root, "alias");
+  fs.writeFileSync(file, "first"); fs.symlinkSync(file, alias);
+  const grants = validateFilesystemGrants([{ path: alias, access: "ro" }, { path: file, access: "rw" }], item.options);
+  fs.unlinkSync(file); fs.writeFileSync(file, "replacement");
+  assert.deepEqual(validateFilesystemGrants(grants, item.options), grants);
+  fs.unlinkSync(file); fs.mkdirSync(file);
+  assert.throws(() => validateFilesystemGrants(grants, item.options), /target type changed/);
+  assert.throws(() => buildSrtPolicy({ ...item.options, grants }), /target type changed/);
+  if (process.platform !== "win32") {
+    const fifo = path.join(item.root, "fifo");
+    const result = requireSpawn("mkfifo", [fifo]);
+    if (result.status === 0) checkBoth(item, [{ path: fifo, access: "ro" }], /regular file or directory/);
+  }
 });

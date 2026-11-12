@@ -79,11 +79,12 @@ export function buildSrtPolicy(options) {
   }
   const grants = validateFilesystemGrants(options.grants ?? [], { ...options, home: options.home ?? home, controllerRoot: options.controllerRoot ?? options.runtimeRoot });
   // Validate every saved spelling before composing authority by canonical identity.
-  const writableFolders = new Set([workspaceRoot, ...grants.filter((grant) => grant.access === "rw").map((grant) => grant.canonicalPath)]);
+  const writableTargets = new Set(grants.filter((grant) => grant.access === "rw").map((grant) => grant.canonicalPath));
   for (const grant of grants) {
     for (const item of aliases(grant.path)) {
       reads.add(item);
-      if (writableFolders.has(grant.canonicalPath)) writes.add(item);
+      // Derived workspace writes also apply to validated aliases of its children.
+      if (within(grant.canonicalPath, workspaceRoot) || writableTargets.has(grant.canonicalPath)) writes.add(item);
     }
   }
   // Explicit, narrow denies must override even a broad workspace grant. This

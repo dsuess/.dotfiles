@@ -25,7 +25,7 @@ test("loads strict home-relative grants and retains a Stow-style lexical alias",
   fs.symlinkSync(item.shared, path.join(item.home, ".agents"));
   const grants = item.load(config(["~/.agents"]));
   const lexical = path.join(fs.realpathSync(item.home), ".agents"), canonical = fs.realpathSync(item.shared);
-  assert.deepEqual(grants, [{ path: lexical, canonicalPath: canonical, access: "ro" }]);
+  assert.deepEqual(grants, [{ path: lexical, canonicalPath: canonical, access: "ro", targetType: "directory" }]);
   const policy = buildSrtPolicy({ home: item.home, workspaceRoot: item.workspace, controllerRoot: item.controller, dockerSocket: item.socket, grants });
   assert(policy.filesystem.allowRead.includes(lexical));
   assert(policy.filesystem.allowRead.includes(canonical));
@@ -72,7 +72,7 @@ test("fails closed for missing, malformed, overlapping, and unsafe grants", (t) 
   assert.throws(() => item.load(config([item.root])), /protected|workspace|controller/);
   assert.equal(item.load(config([item.workspace]))[0].canonicalPath, fs.realpathSync(item.workspace));
   assert.throws(() => item.load(config([item.controller])), /controller/);
-  assert.throws(() => item.load(config([path.join(item.home, ".ssh")])), /directory does not exist|credential/);
+  assert.throws(() => item.load(config([path.join(item.home, ".ssh")])), /target does not exist|credential/);
   fs.mkdirSync(path.join(item.home, ".ssh"));
   assert.throws(() => item.load(config([path.join(item.home, ".ssh")])), /credential/);
   assert.throws(() => item.load(config([path.join(item.root, "missing")])), /does not exist/);

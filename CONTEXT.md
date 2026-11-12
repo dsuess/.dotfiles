@@ -5,11 +5,11 @@ This glossary defines Pi's sandbox authority and grant scopes. It separates shar
 ## Language
 
 **Saved grant**:
-A global configured default for read-only or read-write access to a safe existing directory.
+A global configured default for read-only or read-write access to a safe existing regular file or directory.
 _Avoid_: Session grant, once grant
 
 **Effective grant**:
-A configured directory grant in one client's active effective policy.
+A configured file or directory grant, including validated target identity and type, in one client's active effective policy.
 _Avoid_: Global active grant
 
 **Derived access**:
