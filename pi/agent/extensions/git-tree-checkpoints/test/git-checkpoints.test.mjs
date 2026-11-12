@@ -49,6 +49,21 @@ test("detects and canonicalizes a worktree root, and returns null outside Git", 
 	assert.equal(await findGitRepository(outside), null);
 });
 
+test("captures tracked text files under paths that are now ignored", async (t) => {
+	const root = await createRepository(t);
+	await write(root, "nb/.ipynb_checkpoints/cell.txt", "tracked base\n");
+	await git(root, ["add", "nb"]);
+	await git(root, ["commit", "-m", "track checkpoint dir"]);
+	await write(root, ".gitignore", "ignored/\n*.ignored\n.ipynb_checkpoints\n");
+	await write(root, "nb/.ipynb_checkpoints/cell.txt", "modified\n");
+	await write(root, "nb/.ipynb_checkpoints/untracked.txt", "ignored untracked\n");
+	const repository = await findGitRepository(root);
+
+	const checkpoint = await capture(repository);
+	assert.equal((await git(root, ["show", `${checkpoint.worktreeTree}:nb/.ipynb_checkpoints/cell.txt`])).stdout, "modified\n");
+	assert.ok(!(await treePaths(root, checkpoint.worktreeTree)).includes("nb/.ipynb_checkpoints/untracked.txt"));
+});
+
 test("captures a clean checkpoint without changing the real index or worktree", async (t) => {
 	const root = await createRepository(t);
 	const repository = await findGitRepository(root);

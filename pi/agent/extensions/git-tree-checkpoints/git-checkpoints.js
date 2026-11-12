@@ -260,7 +260,9 @@ async function removeIndexPaths(repository, paths, runner, signal, env) {
 
 async function addWorktreePaths(repository, paths, runner, signal, env) {
 	for (const batch of batches(paths)) {
-		if (batch.length) await runGit(repository.root, ["add", "-A", "--", ...batch], { runner, signal, env });
+		// Paths are already selected (tracked, or untracked and not ignored). Force
+		// so tracked files under a since-ignored path do not abort the capture.
+		if (batch.length) await runGit(repository.root, ["add", "-A", "-f", "--", ...batch], { runner, signal, env });
 	}
 }
 

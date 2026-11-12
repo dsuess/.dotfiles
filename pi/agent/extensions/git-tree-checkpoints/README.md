@@ -39,7 +39,7 @@ Capture uses a temporary alternate index:
 
 1. write the user's real index tree;
 2. load only the selected tracked text entries into an alternate index;
-3. run path-limited `git add -A` there to collect selected text worktree content and non-ignored text untracked files;
+3. run path-limited `git add -A -f` there to collect selected text worktree content and non-ignored text untracked files (forcing keeps tracked files under since-ignored paths, such as `.ipynb_checkpoints`, from aborting capture);
 4. write the resulting worktree tree;
 5. create synthetic index and worktree commits;
 6. atomically advance `refs/pi/checkpoints/<session-id>`.
